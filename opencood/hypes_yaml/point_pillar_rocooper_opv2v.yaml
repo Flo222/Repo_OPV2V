@@ -1,0 +1,471 @@
+name: point_pillar_rocooper_opv2v
+
+# ----------------------------------------------------------------------
+# Dataset paths
+# 改成你本机 OPV2V 的实际路径
+# 例如:
+# root_dir: "/data/opv2v/train"
+# validate_dir: "/data/opv2v/validate"
+# ----------------------------------------------------------------------
+root_dir: "opv2v_data_dumping/train"
+validate_dir: "opv2v_data_dumping/validate"
+
+# OpenCOOD PointPillar yaml parser
+yaml_parser: "load_point_pillar_params"
+
+# ----------------------------------------------------------------------
+# Wild setting / communication-related basic setting
+# 这部分是 OpenCOOD/V2X-ViT/Where2comm 风格的通信与异步配置。
+# RoCooper 自己的通信损伤参数放在 model.args.rocooper_comm 下面。
+# ----------------------------------------------------------------------
+wild_setting:
+  seed: 25
+
+  # RoCooper 主要关心通信损伤本身，第一版先不打开异步。
+  async: false
+  async_mode: "sim"
+  async_overhead: 100
+
+  # 第一版先不加定位误差，避免和通信损伤混在一起。
+  loc_err: false
+  xyz_std: 0.2
+  ryp_std: 0.2
+
+  # OpenCOOD 原始通信参数，部分模型可能会读取。
+  data_size: 1.06              # Mb
+  transmission_speed: 27       # Mbps
+  backbone_delay: 10           # ms
+
+# ----------------------------------------------------------------------
+# Training params
+# ----------------------------------------------------------------------
+train_params:
+  batch_size: &batch_size 2
+  epoches: &epoches 60
+  eval_freq: 1
+  save_freq: 1
+
+  # RoCooper 原文 OPV2V 为 2-7 vehicles；
+  # OpenCOOD 常见中间融合配置通常限制 max_cav=5。
+  # 如果显存足够且你的 dataloader 支持，也可以改成 7。
+  max_cav: &max_cav 5
+
+# ----------------------------------------------------------------------
+# Fusion dataset
+# RoCooper 是 intermediate fusion 方法。
+# ----------------------------------------------------------------------
+fusion:
+  core_method: "IntermediateFusionDataset"
+  args: []
+
+# ----------------------------------------------------------------------
+# Preprocess
+# PointPillar voxelization / pillarization
+# RoCooper 原文实验 voxel resolution H/W = 0.4m。
+# ----------------------------------------------------------------------
+preprocess:
+  core_method: "SpVoxelPreprocessor"
+  args:
+    voxel_size: &voxel_size [0.4, 0.4, 4]
+    max_points_per_voxel: 32
+    max_voxel_train: 32000
+    max_voxel_test: 70000
+
+# ----------------------------------------------------------------------
+# LiDAR range
+# RoCooper 原文写 evaluation ranges:
+# x: [-140, 140]m
+# y: [-40, 40]m
+# OpenCOOD 常用写法为了整除 feature map，x 用 -140.8 到 140.8。
+# ----------------------------------------------------------------------
+cav_lidar_range: &cav_lidar [-140.8, -40, -3, 140.8, 40, 1]
+
+# ----------------------------------------------------------------------
+# Data augmentation
+# ----------------------------------------------------------------------
+data_augment:
+  - NAME: random_world_flip
+    ALONG_AXIS_LIST: ["x"]
+
+  - NAME: random_world_rotation
+    WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]
+
+  - NAME: random_world_scaling
+    WORLD_SCALE_RANGE: [0.95, 1.05]
+
+# ----------------------------------------------------------------------
+# Postprocess / anchor / NMS
+# ----------------------------------------------------------------------
+postprocess:
+  core_method: "VoxelPostprocessor"
+
+  anchor_args:
+    cav_lidar_range: *cav_lidar
+    l: 3.9
+    w: 1.6
+    h: 1.56
+    r: [0, 90]
+
+    # RoCooper 会在 backbone 后使用 shrink_header，把 384 通道压到 256，
+    # 通常 detection head 对应 feature_stride=4。
+    feature_stride: 4
+    num: &anchor_num 2
+
+  target_args:
+    pos_threshold: 0.6
+    neg_threshold: 0.45
+    score_threshold: 0.20
+
+  order: "hwl"
+
+  # maximum number of objects in a single frame.
+  # use this number to make sure different frames have the same dimension
+  # in the same batch.
+  max_num: 100
+
+  nms_thresh: 0.15
+
+# ----------------------------------------------------------------------
+# Model
+# 你需要创建:
+# opencood/models/point_pillar_rocooper.py
+# ----------------------------------------------------------------------
+model:
+  core_method: point_pillar_rocooper
+
+  args:
+    voxel_size: *voxel_size
+    lidar_range: *cav_lidar
+    anchor_number: *anchor_num
+    max_cav: *max_cav
+
+    # OpenCOOD 常见字段
+    compression: 0
+    backbone_fix: false
+
+    # ------------------------------------------------------------------
+    # PointPillar backbone
+    # ------------------------------------------------------------------
+    pillar_vfe:
+      use_norm: true
+      with_distance: false
+      use_absolute_xyz: true
+      num_filters: [64]
+
+    point_pillar_scatter:
+      num_features: 64
+
+    base_bev_backbone:
+      layer_nums: &layer_nums [3, 5, 8]
+      layer_strides: [2, 2, 2]
+      num_filters: &num_filters [64, 128, 256]
+      upsample_strides: [1, 2, 4]
+      num_upsample_filter: [128, 128, 128]
+
+    # 384 = 128 * 3，OpenCOOD PointPillar backbone concat 后通常是 384 channels。
+    # RoCooper Aggregator/Attention 用 256-dim feature 更方便。
+    shrink_header:
+      kernal_size: [3]
+      stride: [2]
+      padding: [1]
+      dim: [256]
+      input_dim: 384
+
+    # ------------------------------------------------------------------
+    # RoCooper main config
+    # 对应 rocooper_fuse.py / rocooper_augmentor.py /
+    # rocooper_aggregator.py / rocooper_block_prioritizer.py
+    # ------------------------------------------------------------------
+    rocooper:
+      enabled: true
+
+      # 原文核心：ego feature 是 lossless anchor。
+      use_ego_anchor: true
+
+      # 原文三大组件
+      use_augmentor: true
+      use_aggregator: true
+      use_block_prioritizer: true
+
+      # 原文 pk = 0.6
+      selected_block_ratio: 0.6
+
+      # 多尺度窗口，参考 V2X-ViT/CoBEVT 类似 split-window setting。
+      # 你的 rocooper_aggregator.py 需要读取这个字段。
+      scales: [4, 8, 16]
+
+      # Aggregator 进行多轮 single-process。
+      # 原文说 Aggregator 会 perform multiple rounds。
+      num_rounds: 2
+
+      # feature dimension after shrink_header
+      in_channels: 256
+      hidden_channels: 256
+
+      # Multi-head attention
+      num_heads: 8
+      dropout: 0.1
+
+      # Split Attention for multi-scale merging
+      use_split_attention: true
+
+      # Self Attention after scattering selected blocks back
+      use_self_attention_after_scatter: true
+
+    # ------------------------------------------------------------------
+    # RoCooper communication impairment config
+    # 对应 rocooper_comm.py
+    # ------------------------------------------------------------------
+    rocooper_comm:
+      enabled: true
+
+      # ego feature should not be impaired.
+      impair_ego: false
+
+      # 原文通信范围 70m
+      communication_range: 70
+
+      # 是否训练时启用损伤
+      train_with_impairment: true
+
+      # 是否测试时启用损伤
+      test_with_impairment: true
+
+      # VCQI 控制
+      use_vcqi: true
+
+      # 原文 average impairment 下 VCQI = 10，ideal state = 20。
+      vcqi:
+        ideal_value: 20.0
+        average_loss_value: 10.0
+        min_value: 2.3
+        max_value: 20.0
+
+        # 这些系数原文没有给具体固定值，先设成可调参数。
+        alpha0: 1.0
+        alpha1: 1.0
+        alpha2: 1.0
+        alpha3: 1.0
+        alpha4: 1.0
+        alpha_c: 1.0
+        beta: 1.0
+        gamma: 1.0
+
+      # --------------------------------------------------------------
+      # Wireless channel fading
+      # 原文使用 Rician fading + AWGN。
+      # --------------------------------------------------------------
+      channel_fading:
+        enabled: true
+        type: "rician"
+
+        # 原文 average loss transmission channel: SNR = 15 dB
+        snr_db: 15.0
+
+        # channel/path loss parameters
+        p0: 1.0
+        path_loss_exponent: 2.0
+
+        # Rician h ~ CN(mu_h, sigma_h^2)
+        # 这里先给默认值，后续你可以根据复现实验重新扫参。
+        mu_h_real: 1.0
+        mu_h_imag: 0.0
+        sigma_h: 0.1
+
+        # AWGN w ~ CN(0, sigma_w^2)
+        sigma_w: 0.01
+
+        # 是否按距离增强损伤
+        distance_aware: true
+
+      # --------------------------------------------------------------
+      # Network performance degradation
+      # 原文 network loss 包括:
+      # bandwidth limitation, packet loss, delay, communication disruption
+      # --------------------------------------------------------------
+      network_loss:
+        enabled: true
+
+        # 原文平均 bandwidth constraints 均值 0.1，std 0.05。
+        bandwidth_limit:
+          enabled: true
+          mean: 0.10
+          std: 0.05
+
+          # compression ratio cb，可在测试时扫 [1, 2, 4, 8, 16, 32]
+          compression_ratio: 1
+
+          # 第一版实现可以先做 feature map 分辨率下采样再上采样。
+          mode: "resolution_reduction"
+
+        # 原文 packet loss rate 均值 0.15，std 0.05。
+        packet_loss:
+          enabled: true
+          mean: 0.15
+          std: 0.05
+
+          # 原文说 randomly zeroing out a portion of transmitted feature blocks。
+          granularity: "block"
+          zero_fraction: 0.15
+
+          # block size 用于 rocooper_comm.py 中把 BEV feature 切块丢包。
+          block_size: 4
+
+        # 原文平均 delay = 60 ms。
+        delay:
+          enabled: true
+          mean_ms: 60
+          std_ms: 10
+
+          # OPV2V 一般是 10Hz，100ms 一帧。
+          frame_interval_ms: 100
+
+          # 第一版可以根据 delay_ms / frame_interval_ms 四舍五入成 delay frame。
+          max_delay_frames: 3
+
+        # 原文 communication disruptions / frame drop 均值 0.05，std 0.05。
+        frame_drop:
+          enabled: true
+          mean: 0.05
+          std: 0.05
+
+          # drop entire frame for specific CAVs
+          drop_whole_cav_feature: true
+
+    # ------------------------------------------------------------------
+    # Augmentor config
+    # 对应 rocooper_augmentor.py
+    # ------------------------------------------------------------------
+    augmentor:
+      enabled: true
+
+      # Spatial-channel semantic enhancement
+      spatial_channel_attention:
+        enabled: true
+        in_channels: 256
+        hidden_channels: 256
+        num_heads: 8
+        dropout: 0.1
+
+        # residual learnable scaling factor
+        use_learnable_scale: true
+        init_scale: 0.0
+
+      # Temporal history feature enhancement
+      temporal_history:
+        enabled: true
+
+        # 原文公式:
+        # F_h = tau * F_c,others^t + (1 - tau) * F_h
+        tau: 0.8
+
+        # history buffer length
+        history_len: 1
+
+        # temporal cross attention
+        use_cross_attention: true
+        num_heads: 8
+        dropout: 0.1
+
+        # 如果没有历史帧，使用当前帧初始化
+        init_with_current: true
+
+    # ------------------------------------------------------------------
+    # Aggregator config
+    # 对应 rocooper_aggregator.py
+    # ------------------------------------------------------------------
+    aggregator:
+      enabled: true
+
+      in_channels: 256
+      hidden_channels: 256
+
+      scales: [4, 8, 16]
+      num_rounds: 2
+
+      # ScaleSelector
+      scale_selector:
+        enabled: true
+        type: "mlp"
+
+        # 第一版可以先全部选择，后续再改成 learnable selector。
+        select_all_at_start: true
+        selected_scales: [4, 8, 16]
+
+      # Cross attention between ego selected blocks and other CAV selected blocks
+      cross_attention:
+        enabled: true
+        num_heads: 8
+        dim_head: 32
+        dropout: 0.1
+        use_relative_position_bias: true
+
+      # Self attention after scattering processed blocks back
+      self_attention:
+        enabled: true
+        num_heads: 8
+        dim_head: 32
+        dropout: 0.1
+
+      # Multi-scale feature merging
+      split_attention:
+        enabled: true
+        radix: 3
+        reduction_factor: 4
+
+    # ------------------------------------------------------------------
+    # BlockPrioritizer config
+    # 对应 rocooper_block_prioritizer.py
+    # ------------------------------------------------------------------
+    block_prioritizer:
+      enabled: true
+
+      # 原文 pk = selected top-k ratio
+      selected_block_ratio: 0.6
+
+      # top-k selection should be based on ego feature.
+      self_centric_selection: true
+
+      # Deep routing learning with multiple experts + gating unit.
+      num_experts: 4
+      expert_hidden_dim: 128
+      gating_hidden_dim: 128
+
+      # block score normalization
+      use_layer_norm: true
+
+      # threshold is the kth largest block weight
+      threshold_mode: "topk"
+
+      # unselected blocks bypass attention layer
+      bypass_unselected_blocks: true
+
+# ----------------------------------------------------------------------
+# Loss
+# 第一版直接复用 OpenCOOD PointPillar loss。
+# 如果后续加 feature recovery / consistency loss，再新增 rocooper_loss.py。
+# ----------------------------------------------------------------------
+loss:
+  core_method: point_pillar_loss
+  args:
+    cls_weight: 1.0
+    reg: 2.0
+
+# ----------------------------------------------------------------------
+# Optimizer
+# RoCooper 原文使用 Adam，initial lr = 1e-3，并在训练中衰减 0.1。
+# ----------------------------------------------------------------------
+optimizer:
+  core_method: Adam
+  lr: 0.001
+  args:
+    eps: 1e-10
+    weight_decay: 1e-4
+
+# ----------------------------------------------------------------------
+# LR scheduler
+# ----------------------------------------------------------------------
+lr_scheduler:
+  core_method: multistep
+  gamma: 0.1
+  step_size: [30, 50]
