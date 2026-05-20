@@ -253,21 +253,38 @@ class PointPillarTransformerOpv2vArce(nn.Module):
         """
         if not self.arce_enabled:
             comm_info = {
-                'enabled': False,
-                'mode': 'disabled'
+                "enabled": False,
+                "mode": "disabled",
             }
             return spatial_features_2d, comm_info
 
-        spatial_features_2d, comm_info = self.arce_comm(
-            spatial_features_2d,
-            record_len,
-            data_dict=data_dict
-        )
+        if self.arce_comm is None:
+            comm_info = {
+                "enabled": True,
+                "mode": "enabled_but_missing_arce_comm",
+            }
+            return spatial_features_2d, comm_info
+
+        if hasattr(self.arce_comm, "communicate_flattened_features"):
+            spatial_features_2d, comm_info = self.arce_comm.communicate_flattened_features(
+                features=spatial_features_2d,
+                record_len=record_len,
+                data_dict=data_dict,
+                ego_index=0,
+                update_cache=True,
+                return_records=True,
+            )
+        else:
+            spatial_features_2d, comm_info = self.arce_comm(
+                spatial_features_2d,
+                record_len,
+                data_dict=data_dict,
+            )
 
         if comm_info is None:
             comm_info = {
-                'enabled': True,
-                'mode': 'enabled_but_no_info'
+                "enabled": True,
+                "mode": "enabled_but_no_info",
             }
 
         return spatial_features_2d, comm_info

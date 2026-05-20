@@ -934,6 +934,162 @@ class ARCEFixedComm:
     # batch / agent helpers
     # ------------------------------------------------------------------
 
+    def _infer_frame_id_from_data_dict(self, data_dict: Any = None, fallback: Any = None):
+        """
+        Try to infer frame id from OpenCOOD data_dict.
+
+        If unavailable, return fallback.
+        """
+        if fallback is not None:
+            return fallback
+
+        if not isinstance(data_dict, dict):
+            return None
+
+        for key in ("frame_id", "timestamp", "sample_idx", "sample_id"):
+            if key in data_dict:
+                value = data_dict[key]
+                if torch.is_tensor(value):
+                    if value.numel() == 1:
+                        return int(value.detach().cpu().item())
+                    return tuple(value.detach().cpu().flatten().tolist())
+                return value
+
+        return None
+
+    def communicate_flattened_features(
+        self,
+        features: torch.Tensor,
+        record_len: Any,
+        data_dict: Any = None,
+        frame_id: Optional[int] = None,
+        ego_index: Optional[int] = None,
+        update_cache: bool = True,
+        return_records: bool = True,
+    ):
+        """
+        Communicate OpenCOOD flattened CAV features.
+
+        Parameters
+        ----------
+        features : torch.Tensor
+            Flattened CAV features with shape [sum(record_len), C, H, W].
+
+        record_len : torch.Tensor / list
+            Number of CAVs in each batch item. Shape [B].
+
+        data_dict : dict, optional
+            OpenCOOD batch dict. Used only to infer frame_id if available.
+
+        frame_id : int, optional
+            Current frame id for logging / temporal cache age.
+
+        ego_index : int, optional
+            Ego index inside each batch group. Usually 0.
+
+        update_cache : bool
+            Whether to update temporal cache.
+
+        return_records : bool
+            Whether to return communication records in comm_info.
+
+        Returns
+        -------
+        recovered_features : torch.Tensor
+            Same shape as input features.
+
+        comm_info : dict
+            Communication records and summary.
+        """
+        features = _require_tensor(features, "features")
+
+        if features.dim() != 4:
+            raise ValueError(
+                "communicate_flattened_features expects features with shape "
+                f"[sum(record_len), C, H, W], got {tuple(features.shape)}."
+            )
+
+        if torch.is_tensor(record_len):
+            record_len_list = [
+                int(x) for x in record_len.detach().cpu().flatten().tolist()
+            ]
+        elif isinstance(record_len, (list, tuple)):
+            record_len_list = [int(x) for x in record_len]
+        else:
+            raise TypeError(
+                "record_len should be a torch.Tensor, list, or tuple, "
+                f"got {type(record_len)}."
+            )
+
+        if len(record_len_list) == 0:
+            raise ValueError("record_len should not be empty.")
+
+        total_cav = int(sum(record_len_list))
+
+        if total_cav != int(features.shape[0]):
+            raise ValueError(
+                "record_len does not match flattened feature count: "
+                f"sum(record_len)={total_cav}, features.shape[0]={features.shape[0]}."
+            )
+
+        if ego_index is None:
+            ego_index = self.default_ego_index
+
+        frame_id = self._infer_frame_id_from_data_dict(
+            data_dict=data_dict,
+            fallback=frame_id,
+        )
+
+        recovered = features.clone()
+        records: List[Dict[str, Any]] = []
+
+        offset = 0
+
+        for batch_idx, num_cav in enumerate(record_len_list):
+            for cav_idx in range(num_cav):
+                global_idx = offset + cav_idx
+
+                # Do NOT include frame_id in link_id.
+                # Temporal cache and GE state should persist across frames
+                # for the same logical link.
+                link_id = (
+                    int(batch_idx),
+                    int(ego_index),
+                    int(cav_idx),
+                )
+
+                feature_hat, record = self.communicate_feature(
+                    feature=features[global_idx],
+                    link_id=link_id,
+                    frame_id=frame_id,
+                    agent_index=cav_idx,
+                    ego_index=ego_index,
+                    update_cache=update_cache,
+                    return_result=False,
+                )
+
+                recovered[global_idx] = feature_hat
+                records.append(record)
+
+            offset += num_cav
+
+        comm_info = {
+            "enabled": bool(self.enabled),
+            "mode": self.mode,
+            "link_scope": self.link_scope,
+            "frame_id": frame_id,
+            "num_batches": int(len(record_len_list)),
+            "record_len": tuple(int(x) for x in record_len_list),
+            "num_input_features": int(features.shape[0]),
+            "num_records_this_forward": int(len(records)),
+            "summary": self.get_summary(),
+        }
+
+        if return_records:
+            comm_info["records"] = records
+
+        return recovered, comm_info
+
     def communicate_agent_features(
         self,
         features: torch.Tensor,
@@ -1026,11 +1182,44 @@ class ARCEFixedComm:
             f"got {tuple(features.shape)}."
         )
 
-    def __call__(self, *args, **kwargs):
+    def __call__(self, features: torch.Tensor, *args, **kwargs):
         """
-        Alias of communicate_agent_features().
+        Dispatch ARCE communication call.
+
+        Supported calling styles:
+
+        1. OpenCOOD flattened style:
+            self.arce_comm(features, record_len, data_dict=data_dict)
+
+            where:
+                features: [sum(record_len), C, H, W]
+                record_len: [B]
+
+        2. Direct grouped style:
+            self.arce_comm(features, frame_id=..., ego_index=...)
+
+            where:
+                features: [N, C, H, W] or [B, N, C, H, W]
         """
-        return self.communicate_agent_features(*args, **kwargs)
+        if len(args) >= 1:
+            maybe_record_len = args[0]
+
+            if (
+                torch.is_tensor(maybe_record_len)
+                or isinstance(maybe_record_len, (list, tuple))
+            ):
+                return self.communicate_flattened_features(
+                    features,
+                    maybe_record_len,
+                    *args[1:],
+                    **kwargs,
+                )
+
+        return self.communicate_agent_features(
+            features,
+            *args,
+            **kwargs,
+        )
 
     # ------------------------------------------------------------------
     # summaries
