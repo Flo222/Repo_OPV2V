@@ -1,0 +1,306 @@
+data_augment:
+- ALONG_AXIS_LIST:
+  - x
+  NAME: random_world_flip
+- NAME: random_world_rotation
+  WORLD_ROT_ANGLE:
+  - -0.78539816
+  - 0.78539816
+- NAME: random_world_scaling
+  WORLD_SCALE_RANGE:
+  - 0.95
+  - 1.05
+fusion:
+  args: []
+  core_method: IntermediateFusionDataset
+loss:
+  args:
+    cls_weight: 1.0
+    reg: 2.0
+  core_method: point_pillar_loss
+lr_scheduler:
+  core_method: multistep
+  gamma: 0.1
+  step_size:
+  - 30
+  - 50
+model:
+  args:
+    aggregator:
+      cross_attention:
+        dim_head: 32
+        dropout: 0.1
+        enabled: true
+        num_heads: 8
+        use_relative_position_bias: true
+      enabled: true
+      hidden_channels: 256
+      in_channels: 256
+      num_rounds: 2
+      scale_selector:
+        enabled: true
+        select_all_at_start: true
+        selected_scales:
+        - 4
+        - 8
+        - 16
+        type: mlp
+      scales:
+      - 4
+      - 8
+      - 16
+      self_attention:
+        dim_head: 32
+        dropout: 0.1
+        enabled: true
+        num_heads: 8
+      split_attention:
+        enabled: true
+        radix: 3
+        reduction_factor: 4
+    anchor_number: 2
+    augmentor:
+      enabled: true
+      spatial_channel_attention:
+        dropout: 0.1
+        enabled: true
+        hidden_channels: 256
+        in_channels: 256
+        init_scale: 0.0
+        num_heads: 8
+        use_learnable_scale: true
+      temporal_history:
+        dropout: 0.1
+        enabled: true
+        history_len: 1
+        init_with_current: true
+        num_heads: 8
+        tau: 0.8
+        use_cross_attention: true
+    backbone_fix: false
+    base_bev_backbone:
+      layer_nums:
+      - 3
+      - 5
+      - 8
+      layer_strides:
+      - 2
+      - 2
+      - 2
+      num_filters:
+      - 64
+      - 128
+      - 256
+      num_upsample_filter:
+      - 128
+      - 128
+      - 128
+      upsample_strides:
+      - 1
+      - 2
+      - 4
+    block_prioritizer:
+      bypass_unselected_blocks: true
+      enabled: true
+      expert_hidden_dim: 128
+      gating_hidden_dim: 128
+      num_experts: 4
+      selected_block_ratio: 0.6
+      self_centric_selection: true
+      threshold_mode: topk
+      use_layer_norm: true
+    compression: 0
+    lidar_range: &id001
+    - -140.8
+    - -40
+    - -3
+    - 140.8
+    - 40
+    - 1
+    max_cav: 5
+    pillar_vfe:
+      num_filters:
+      - 64
+      use_absolute_xyz: true
+      use_norm: true
+      with_distance: false
+    point_pillar_scatter:
+      grid_size: !!python/object/apply:numpy.core.multiarray._reconstruct
+        args:
+        - !!python/name:numpy.ndarray ''
+        - !!python/tuple
+          - 0
+        - !!binary |
+          Yg==
+        state: !!python/tuple
+        - 1
+        - !!python/tuple
+          - 3
+        - !!python/object/apply:numpy.dtype
+          args:
+          - i8
+          - false
+          - true
+          state: !!python/tuple
+          - 3
+          - <
+          - null
+          - null
+          - null
+          - -1
+          - -1
+          - 0
+        - false
+        - !!binary |
+          wAIAAAAAAADIAAAAAAAAAAEAAAAAAAAA
+      num_features: 64
+    rocooper:
+      dropout: 0.1
+      enabled: true
+      hidden_channels: 256
+      in_channels: 256
+      num_heads: 8
+      num_rounds: 2
+      scales:
+      - 4
+      - 8
+      - 16
+      selected_block_ratio: 0.6
+      use_aggregator: true
+      use_augmentor: true
+      use_block_prioritizer: true
+      use_ego_anchor: true
+      use_self_attention_after_scatter: true
+      use_split_attention: true
+    rocooper_comm:
+      channel_fading:
+        distance_aware: true
+        enabled: true
+        mu_h_imag: 0.0
+        mu_h_real: 1.0
+        p0: 1.0
+        path_loss_exponent: 2.0
+        sigma_h: 0.1
+        sigma_w: 0.01
+        snr_db: 15.0
+        type: rician
+      communication_range: 70
+      enabled: true
+      impair_ego: false
+      network_loss:
+        bandwidth_limit:
+          compression_ratio: 1
+          enabled: true
+          mean: 0.1
+          mode: resolution_reduction
+          std: 0.05
+        delay:
+          enabled: true
+          frame_interval_ms: 100
+          max_delay_frames: 3
+          mean_ms: 60
+          std_ms: 10
+        enabled: true
+        frame_drop:
+          drop_whole_cav_feature: true
+          enabled: true
+          mean: 0.05
+          std: 0.05
+        packet_loss:
+          block_size: 4
+          enabled: true
+          granularity: block
+          mean: 0.15
+          std: 0.05
+          zero_fraction: 0.15
+      test_with_impairment: true
+      train_with_impairment: true
+      use_vcqi: true
+      vcqi:
+        alpha0: 1.0
+        alpha1: 1.0
+        alpha2: 1.0
+        alpha3: 1.0
+        alpha4: 1.0
+        alpha_c: 1.0
+        average_loss_value: 10.0
+        beta: 1.0
+        gamma: 1.0
+        ideal_value: 20.0
+        max_value: 20.0
+        min_value: 2.3
+    shrink_header:
+      dim:
+      - 256
+      input_dim: 384
+      kernal_size:
+      - 3
+      padding:
+      - 1
+      stride:
+      - 2
+    voxel_size: &id002
+    - 0.4
+    - 0.4
+    - 4
+  core_method: point_pillar_rocooper
+name: point_pillar_rocooper_opv2v
+optimizer:
+  args:
+    eps: 1.0e-10
+    weight_decay: 0.0001
+  core_method: Adam
+  lr: 0.001
+postprocess:
+  anchor_args:
+    D: 1
+    H: 200
+    W: 704
+    cav_lidar_range: *id001
+    feature_stride: 4
+    h: 1.56
+    l: 3.9
+    num: 2
+    r:
+    - 0
+    - 90
+    vd: 4
+    vh: 0.4
+    vw: 0.4
+    w: 1.6
+  core_method: VoxelPostprocessor
+  max_num: 100
+  nms_thresh: 0.15
+  order: hwl
+  target_args:
+    neg_threshold: 0.45
+    pos_threshold: 0.6
+    score_threshold: 0.2
+preprocess:
+  args:
+    max_points_per_voxel: 32
+    max_voxel_test: 70000
+    max_voxel_train: 32000
+    voxel_size: *id002
+  cav_lidar_range: *id001
+  core_method: SpVoxelPreprocessor
+root_dir: opv2v_data_dumping/train
+train_params:
+  batch_size: 1
+  epoches: 60
+  eval_freq: 5
+  max_cav: 5
+  save_freq: 5
+validate_dir: opv2v_data_dumping/validate
+wild_setting:
+  async: false
+  async_mode: sim
+  async_overhead: 100
+  backbone_delay: 10
+  data_size: 1.06
+  loc_err: false
+  ryp_std: 0.2
+  seed: 25
+  transmission_speed: 27
+  xyz_std: 0.2
+yaml_parser: load_point_pillar_params

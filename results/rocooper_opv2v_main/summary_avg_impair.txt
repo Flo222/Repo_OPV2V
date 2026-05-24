@@ -1,0 +1,10 @@
+Method: RoCooper-style
+Dataset: OPV2V
+Backbone: PointPillar
+Fusion: Intermediate Fusion
+Setting: average impairment
+Model dir: opencood/logs/point_pillar_rocooper_opv2v_2026_05_15_10_48_10
+
+AP@0.3 =0.62
+AP@0.5 =0.58
+AP@0.7 =0.41
