@@ -10,7 +10,7 @@ validate_dir: "opv2v_data_dumping/validate"
 # Keep this block for compatibility with V2X-ViT / OpenCOOD wild settings.
 # For OPV2V baseline debug, keep all impairments disabled.
 wild_setting:
-  async: false
+  async: true
   async_mode: 'sim'
   async_overhead: 100
   seed: 25
@@ -32,7 +32,11 @@ train_params:
 
 fusion:
   core_method: 'IntermediateFusionDataset'
-  args: []
+  args: 
+    proj_first: true
+    # 不启用 STTF，所以 dataset 阶段就要把 delayed CAV
+    # 直接投到 current ego pose，否则历史帧会停留在 delayed ego pose。
+    cur_ego_pose_flag: true
 
 preprocess:
   core_method: 'SpVoxelPreprocessor'
@@ -94,6 +98,9 @@ model:
     
     arce:
       enabled: false
+      # enabled: true          # 如果你仍然要保留 ARCE 丢包/量化/FEC
+      # late_policy: allow
+      # enable_deadline_drop: false
 
     pillar_vfe:
       use_norm: true

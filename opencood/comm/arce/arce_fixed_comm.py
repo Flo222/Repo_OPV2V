@@ -368,6 +368,10 @@ class ARCEFixedComm:
         self.late_policy = _normalize_late_policy(
             self.arce_cfg_raw.get("late_policy", None)
         )
+        
+        self.enable_deadline_drop = _as_bool(
+            self.arce_cfg_raw.get("enable_deadline_drop", False)
+        )
 
         self.default_ego_index = int(self.arce_cfg_raw.get("ego_index", 0))
 
@@ -613,6 +617,13 @@ class ARCEFixedComm:
         packets are treated as lost in the current frame.
         """
         loss_mask = loss_mask.to(dtype=torch.bool, device=device).flatten()
+        if not self.enable_deadline_drop:
+            return loss_mask, {
+                "late": bool(latency_info.get("late", False)),
+                "late_policy": "disabled",
+                "overridden": False,
+                "reason": "ARCE deadline/late drop disabled; delay is handled by dataset historical-frame sampling."
+            }
 
         late = bool(latency_info.get("late", False))
         policy = self.late_policy
