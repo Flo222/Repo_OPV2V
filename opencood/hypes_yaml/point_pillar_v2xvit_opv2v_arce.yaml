@@ -96,11 +96,66 @@ model:
 
     backbone_fix: false
     
-    arce:
-      enabled: false
+    # arce:
+    #   enabled: false
       # enabled: true          # 如果你仍然要保留 ARCE 丢包/量化/FEC
       # late_policy: allow
       # enable_deadline_drop: false
+    arce:
+      enabled: true
+      mode: fixed
+      seed: 2026
+      link_scope: non_ego
+      late_policy: allow
+      enable_deadline_drop: false
+
+      channel:
+        mode: fixed
+        fixed_state: medium
+
+      packetizer:
+        mode: patch_max_size
+
+        # 含义：每个 source patch 最多 80 个 BEV 空间 cell。
+        # 如果你的中间特征约为 [256, 48, 176]，
+        # patch_max_size=80 大约会得到 100 左右 source packets。
+        patch_max_size: 80
+
+        pad_value: 0.0
+
+      quantization:
+        granularity: per_tensor
+        compute_error: true
+
+      fec:
+        enabled: true
+        use_padded_packet_size: true
+
+      recovery:
+        temporal_cache: true
+        spatial_interpolation: true
+        zero_fill: true
+
+      fixed_policy:
+        profiles:
+          good:
+            quant_mode: fp16
+            fec_type: none
+            redundancy_ratio: 0.0
+            recovery_priority: [temporal, spatial, zero]
+
+          medium:
+            quant_mode: int8
+            fec_type: xor
+            xor_group_size: 4
+            redundancy_ratio: 0.25
+            recovery_priority: [temporal, spatial, zero]
+
+          bad:
+            quant_mode: int4
+            fec_type: raptor_sim
+            redundancy_ratio: 0.5
+            recovery_priority: [temporal, spatial, zero]
 
     pillar_vfe:
       use_norm: true

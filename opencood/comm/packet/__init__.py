@@ -29,11 +29,14 @@ Design note:
 
 PACKET_MODE_GRID = "grid"
 PACKET_MODE_BLOCK = "block"
+PACKET_MODE_PATCH_MAX_SIZE = "patch_max_size"
 
 VALID_PACKET_MODES = (
     PACKET_MODE_GRID,
     PACKET_MODE_BLOCK,
+    PACKET_MODE_PATCH_MAX_SIZE,
 )
+
 
 DEFAULT_PACKET_MODE = PACKET_MODE_GRID
 DEFAULT_GRID_SIZE = (10, 10)
@@ -274,6 +277,17 @@ def receive_mask_to_loss_mask(receive_mask):
     """
     return ~receive_mask
 
+def normalize_patch_max_size(patch_max_size, default=64):
+    try:
+        value = int(patch_max_size if patch_max_size is not None else default)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"patch_max_size should be convertible to int, got {patch_max_size}."
+        )
+    if value <= 0:
+        raise ValueError(f"patch_max_size should be positive, got {value}.")
+    return value
+
 
 __all__ = [
     "PACKET_MODE_GRID",
@@ -290,4 +304,5 @@ __all__ = [
     "infer_num_packets_from_grid",
     "loss_mask_to_receive_mask",
     "receive_mask_to_loss_mask",
+    "PACKET_MODE_PATCH_MAX_SIZE",
 ]

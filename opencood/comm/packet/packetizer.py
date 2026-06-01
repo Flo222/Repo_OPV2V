@@ -34,11 +34,13 @@ import torch
 from opencood.comm.packet import (
     PACKET_MODE_GRID,
     PACKET_MODE_BLOCK,
+    PACKET_MODE_PATCH_MAX_SIZE,
     DEFAULT_PACKET_MODE,
     DEFAULT_GRID_SIZE,
     normalize_packet_mode,
     normalize_grid_size,
     normalize_block_size,
+    normalize_patch_max_size,
 )
 
 
@@ -364,9 +366,20 @@ class FeaturePacketizer:
                 cfg.get("grid_size", DEFAULT_GRID_SIZE)
             )
             self.block_size = None
+            self.patch_max_size = None
+
         elif self.mode == PACKET_MODE_BLOCK:
             self.block_size = normalize_block_size(cfg.get("block_size"))
             self.grid_size = None
+            self.patch_max_size = None
+
+        elif self.mode == PACKET_MODE_PATCH_MAX_SIZE:
+            self.patch_max_size = normalize_patch_max_size(
+                cfg.get("patch_max_size", cfg.get("max_patch_size", 64))
+            )
+            self.grid_size = None
+            self.block_size = None
+
         else:
             raise ValueError(f"Unsupported packetizer mode: {self.mode}")
 
@@ -464,6 +477,123 @@ class FeaturePacketizer:
 
         return metas, (num_rows, num_cols), (block_h, block_w)
 
+    def _build_patch_max_size_slices(
+        self,
+        c: int,
+        h: int,
+        w: int,
+    ) -> Tuple[
+        List[FeaturePacketMeta],
+        Tuple[int, int],
+        Tuple[int, int],
+    ]:
+        """
+        Build packet metadata by maximum spatial patch size.
+
+        Each patch satisfies:
+            valid_h * valid_w <= self.patch_max_size
+
+        Internally we convert patch_max_size to a rectangular block_h/block_w,
+        then reuse block-style raster scan.
+        """
+        block_h, block_w = self._infer_block_size_from_patch_max_size(
+            h=h,
+            w=w,
+            patch_max_size=self.patch_max_size,
+        )
+
+        num_rows = int(math.ceil(h / float(block_h)))
+        num_cols = int(math.ceil(w / float(block_w)))
+
+        metas: List[FeaturePacketMeta] = []
+        packet_id = 0
+
+        for row_idx in range(num_rows):
+            h_start = row_idx * block_h
+            h_end = min((row_idx + 1) * block_h, h)
+
+            for col_idx in range(num_cols):
+                w_start = col_idx * block_w
+                w_end = min((col_idx + 1) * block_w, w)
+
+                valid_h = h_end - h_start
+                valid_w = w_end - w_start
+
+                if valid_h * valid_w > self.patch_max_size:
+                    raise RuntimeError(
+                        "patch_max_size violation: "
+                        f"valid_h={valid_h}, valid_w={valid_w}, "
+                        f"area={valid_h * valid_w}, "
+                        f"patch_max_size={self.patch_max_size}"
+                    )
+
+                metas.append(
+                    FeaturePacketMeta(
+                        packet_id=packet_id,
+                        row_idx=row_idx,
+                        col_idx=col_idx,
+                        h_start=h_start,
+                        h_end=h_end,
+                        w_start=w_start,
+                        w_end=w_end,
+                        valid_h=valid_h,
+                        valid_w=valid_w,
+                        padded_h=block_h,
+                        padded_w=block_w,
+                    )
+                )
+                packet_id += 1
+
+        return metas, (num_rows, num_cols), (block_h, block_w)
+
+    def _infer_block_size_from_patch_max_size(
+        self,
+        h: int,
+        w: int,
+        patch_max_size: int,
+    ) -> Tuple[int, int]:
+        """
+        Infer a rectangular block size from patch_max_size.
+
+        patch_max_size means:
+            max valid spatial cells per patch, i.e. valid_h * valid_w <= patch_max_size.
+
+        The returned block_h/block_w follows the BEV aspect ratio roughly,
+        so patches are not overly thin when H and W are very different.
+        """
+        h = int(h)
+        w = int(w)
+        patch_max_size = int(patch_max_size)
+
+        if h <= 0 or w <= 0:
+            raise ValueError(f"Invalid feature spatial shape: H={h}, W={w}")
+        if patch_max_size <= 0:
+            raise ValueError(f"patch_max_size should be positive, got {patch_max_size}")
+
+        # If the whole feature is smaller than the cap, one packet is enough.
+        if h * w <= patch_max_size:
+            return h, w
+
+        # Aspect-aware rectangle:
+        # block_h / block_w roughly follows h / w,
+        # while block_h * block_w <= patch_max_size.
+        block_h = int(math.floor(math.sqrt(patch_max_size * h / float(w))))
+        block_h = max(1, min(block_h, h))
+
+        block_w = int(patch_max_size // block_h)
+        block_w = max(1, min(block_w, w))
+
+        # Safety: ensure area <= patch_max_size.
+        while block_h * block_w > patch_max_size:
+            if block_w >= block_h and block_w > 1:
+                block_w -= 1
+            elif block_h > 1:
+                block_h -= 1
+            else:
+                break
+
+        return int(block_h), int(block_w)
+
     def build_packet_metas(
         self,
         feature_or_shape: Union[torch.Tensor, Sequence[int]],
@@ -489,6 +619,9 @@ class FeaturePacketizer:
 
         if self.mode == PACKET_MODE_BLOCK:
             return self._build_block_slices(c, h, w)
+
+        if self.mode == PACKET_MODE_PATCH_MAX_SIZE:
+            return self._build_patch_max_size_slices(c, h, w)
 
         raise ValueError(f"Unsupported packetizer mode: {self.mode}")
 
@@ -846,13 +979,21 @@ class FeaturePacketizer:
             "mode": self.mode,
             "grid_size": tuple(self.grid_size) if self.grid_size else None,
             "block_size": tuple(self.block_size) if self.block_size else None,
+            "patch_max_size": (
+                int(self.patch_max_size)
+                if self.patch_max_size is not None
+                else None
+            ),
             "pad_value": float(self.pad_value),
         }
 
     def __repr__(self) -> str:
         if self.mode == PACKET_MODE_GRID:
             detail = f"grid_size={self.grid_size}"
-        else:
+        elif self.mode == PACKET_MODE_BLOCK:
             detail = f"block_size={self.block_size}"
-
+        elif self.mode == PACKET_MODE_PATCH_MAX_SIZE:
+            detail = f"patch_max_size={self.patch_max_size}"
+        else:
+            detail = "unknown"
         return f"FeaturePacketizer(mode={self.mode}, {detail})"
