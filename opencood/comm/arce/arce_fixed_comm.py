@@ -721,9 +721,35 @@ class ARCEFixedComm:
                 f"got {tuple(feature.shape)}."
             )
 
+        # if ego_index is None:
+        #     ego_index = self.default_ego_index
+
+        # if agent_index is None:
+        #     agent_index = -1
+
+        # apply_to_this_agent = should_apply_to_agent(
+        #     agent_index=agent_index,
+        #     ego_index=ego_index,
+        #     link_scope=self.link_scope,
+        # )
+
+        # base_record = {
+        #     "frame_id": frame_id,
+        #     "link_id": repr(link_id),
+        #     "agent_index": int(agent_index),
+        #     "ego_index": int(ego_index),
+        #     "input_shape": tuple(int(x) for x in feature.shape),
+        #     "input_dtype": str(feature.dtype),
+        #     "device": str(feature.device),
+        #     "arce_enabled": bool(self.enabled),
+        #     "arce_mode": self.mode,
+        #     "applied": bool(apply_to_this_agent),
+        #     "channel_state": active_channel_state,
+        #     "channel_state_source": channel_state_source,  
+        # }
+
         if ego_index is None:
             ego_index = self.default_ego_index
-
         if agent_index is None:
             agent_index = -1
 
@@ -731,6 +757,30 @@ class ARCEFixedComm:
             agent_index=agent_index,
             ego_index=ego_index,
             link_scope=self.link_scope,
+        )
+
+        # -------------------------------------------------------------
+        # Normalize externally provided link-level Markov channel state.
+        #
+        # Important:
+        #   base_record is created before ChannelManager.step().
+        #   Therefore active_channel_state cannot be used here yet.
+        # -------------------------------------------------------------
+        if channel_state is None:
+            requested_channel_state = None
+            channel_state_source = "channel_manager"
+        else:
+            requested_channel_state = str(channel_state).lower()
+            channel_state = requested_channel_state
+            channel_state_source = "dataset_link_markov"
+
+        # This is only an initial value for bypass / disabled records.
+        # For non-bypassed records, we overwrite channel_state after
+        # channel_profile is returned by ChannelManager.
+        initial_channel_state = (
+            requested_channel_state
+            if requested_channel_state is not None
+            else ("ego" if int(agent_index) == int(ego_index) else "channel_manager")
         )
 
         base_record = {
@@ -744,8 +794,11 @@ class ARCEFixedComm:
             "arce_enabled": bool(self.enabled),
             "arce_mode": self.mode,
             "applied": bool(apply_to_this_agent),
-            "channel_state": active_channel_state,
-            "channel_state_source": channel_state_source,  
+
+            # Safe fields available before channel_manager.step().
+            "channel_state": initial_channel_state,
+            "requested_channel_state": requested_channel_state,
+            "channel_state_source": channel_state_source,
         }
 
         if (not self.enabled) or self.mode == ARCE_MODE_DISABLED:
@@ -793,8 +846,32 @@ class ARCEFixedComm:
         else:
             channel_state = str(channel_state).lower()
             channel_state_source = "dataset_link_markov"
-            
+
         # 1. channel profile
+        # channel_profile = self.channel_manager.step(
+        #     frame_id=frame_id,
+        #     link_id=link_id,
+        #     state=channel_state,
+        # )
+
+        # # Determine the actually used channel state for logging and summary.
+        # # If channel_state is passed from dataset link-level Markov, use it first.
+        # # Otherwise fall back to fields returned by ChannelManager.
+        # active_channel_state = channel_state
+
+        # if active_channel_state is None and isinstance(channel_profile, dict):
+        #     active_channel_state = (
+        #         channel_profile.get("state_name", None)
+        #         or channel_profile.get("state", None)
+        #         or channel_profile.get("channel_state", None)
+        #         or channel_profile.get("name", None)
+        #     )
+
+        # if active_channel_state is None:
+        #     active_channel_state = "unknown"
+
+        # active_channel_state = str(active_channel_state).lower()
+
         channel_profile = self.channel_manager.step(
             frame_id=frame_id,
             link_id=link_id,
@@ -802,9 +879,7 @@ class ARCEFixedComm:
         )
 
         # Determine the actually used channel state for logging and summary.
-        # If channel_state is passed from dataset link-level Markov, use it first.
-        # Otherwise fall back to fields returned by ChannelManager.
-        active_channel_state = channel_state
+        active_channel_state = requested_channel_state
 
         if active_channel_state is None and isinstance(channel_profile, dict):
             active_channel_state = (
@@ -926,11 +1001,44 @@ class ARCEFixedComm:
         )
 
         # 15. logging record
+        # record = copy.deepcopy(base_record)
+        # record.update(
+        #     {
+        #         "bypassed": False,
+        #         "output_shape": tuple(int(x) for x in recovered_feature.shape),
+        #         "channel": {
+        #             "profile": copy.deepcopy(channel_profile),
+        #             "loss": copy.deepcopy(channel_loss_info),
+        #             "latency": copy.deepcopy(latency_info),
+        #             "late_policy": copy.deepcopy(late_policy_info),
+        #         },
+        #         "action": action.as_dict(),
+        #         "packetization": packet_result.to_meta_dict(),
+        #         "quantization": quant_result.as_dict(),
+        #         "fec_encode": encode_result.as_dict(include_metas=False),
+        #         "fec_decode": decode_result.as_dict(),
+        #         "partial_reconstruction": partial_result.as_dict(),
+        #         "size": size_info,
+        #         "raw_loss_mask_summary": _mask_summary(raw_loss_mask, true_name="lost"),
+        #         "final_loss_mask_summary": _mask_summary(final_loss_mask, true_name="lost"),
+        #         "notes": {
+        #             "source_packets": "K original spatial packets.",
+        #             "encoded_packets": "K source packets plus FEC parity / repair packets.",
+        #             "recovered_packets": "Recovered back to K source packets before unpacketize.",
+        #         },
+        #     }
+        # )
         record = copy.deepcopy(base_record)
         record.update(
             {
                 "bypassed": False,
                 "output_shape": tuple(int(x) for x in recovered_feature.shape),
+
+                # Actual state used by ARCE for this link.
+                "channel_state": active_channel_state,
+                "requested_channel_state": requested_channel_state,
+                "channel_state_source": channel_state_source,
+
                 "channel": {
                     "profile": copy.deepcopy(channel_profile),
                     "loss": copy.deepcopy(channel_loss_info),
