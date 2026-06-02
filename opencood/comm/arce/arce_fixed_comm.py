@@ -112,6 +112,13 @@ from opencood.comm.recovery.partial_reconstruction import (
     PartialReconstructor,
 )
 
+CHANNEL_STATE_ID_TO_NAME = {
+    0: "good",
+    1: "medium",
+    2: "bad",
+}
+
+VALID_CHANNEL_STATE_NAMES = ("good", "medium", "bad")
 
 LATE_POLICY_ALLOW = "allow"
 LATE_POLICY_DROP = "drop"
@@ -737,6 +744,8 @@ class ARCEFixedComm:
             "arce_enabled": bool(self.enabled),
             "arce_mode": self.mode,
             "applied": bool(apply_to_this_agent),
+            "channel_state": active_channel_state,
+            "channel_state_source": channel_state_source,  
         }
 
         if (not self.enabled) or self.mode == ARCE_MODE_DISABLED:
@@ -1069,15 +1078,36 @@ class ARCEFixedComm:
                     int(cav_idx),
                 )
 
+                # feature_hat, record = self.communicate_feature(
+                #     feature=features[global_idx],
+                #     link_id=link_id,
+                #     frame_id=frame_id,
+                #     agent_index=cav_idx,
+                #     ego_index=ego_index,
+                #     update_cache=update_cache,
+                #     return_result=False,
+                # )
+
+                channel_state, channel_state_source = self._get_external_channel_state(
+                    data_dict=data_dict,
+                    batch_idx=batch_idx,
+                    cav_idx=cav_idx,
+                )
+
                 feature_hat, record = self.communicate_feature(
                     feature=features[global_idx],
                     link_id=link_id,
                     frame_id=frame_id,
                     agent_index=cav_idx,
                     ego_index=ego_index,
+                    channel_state=channel_state,
                     update_cache=update_cache,
                     return_result=False,
                 )
+
+                record["channel_state_source"] = channel_state_source
+                if channel_state is not None:
+                    record["requested_channel_state"] = channel_state
 
                 recovered[global_idx] = feature_hat
                 records.append(record)
@@ -1333,6 +1363,47 @@ class ARCEFixedComm:
             f"late_policy={self.late_policy}, "
             f"num_records={len(self.records)})"
         )
+
+    def _get_external_channel_state(self, data_dict, batch_idx, cav_idx):
+        """
+        Read per-link channel state from data_dict['channel_state_ids'].
+
+        Expected:
+            channel_state_ids: [B, max_cav]
+
+        Mapping:
+            0 -> good
+            1 -> medium
+            2 -> bad
+        -1 -> ego / padding
+        """
+        if not isinstance(data_dict, dict):
+            return None, "no_data_dict"
+
+        if "channel_state_ids" not in data_dict:
+            return None, "no_channel_state_ids"
+
+        state_ids = data_dict["channel_state_ids"]
+
+        try:
+            if torch.is_tensor(state_ids):
+                state_id = int(
+                    state_ids[int(batch_idx), int(cav_idx)].detach().cpu().item()
+                )
+            else:
+                state_id = int(state_ids[int(batch_idx)][int(cav_idx)])
+        except Exception as e:
+            return None, "failed_to_read_channel_state_ids:{}".format(repr(e))
+
+        if state_id < 0:
+            return None, "ego_or_padding"
+
+        state_name = CHANNEL_STATE_ID_TO_NAME.get(state_id, None)
+
+        if state_name not in VALID_CHANNEL_STATE_NAMES:
+            return None, "invalid_channel_state_id:{}".format(state_id)
+
+        return state_name, "dataset_link_markov"
 
 
 # Compatibility aliases.
