@@ -87,6 +87,11 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
         velocity = []
         time_delay = []
         infra = []
+        # link-level Markov channel state, used by ARCE
+        channel_state_ids = []
+        channel_delay_ms = []
+        channel_delay_slots = []
+
         spatial_correction_matrix = []
 
         if self.visualize:
@@ -115,6 +120,31 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
 
             velocity.append(selected_cav_processed['velocity'])
             time_delay.append(float(selected_cav_base['time_delay']))
+
+            # -------------------------------------------------------------
+            # Link-level Markov channel state.
+            # These fields are produced by BaseDataset.retrieve_base_data().
+            # They are later used by point_pillar_transformer_opv2v_arce.py
+            # to choose good / medium / bad ARCE profile per ego->CAV link.
+            # -------------------------------------------------------------
+            channel_state_ids.append(
+                int(selected_cav_base.get(
+                    'channel_state_id',
+                    -1 if selected_cav_base.get('ego', False) else 1
+                ))
+            )
+
+            channel_delay_ms.append(
+                float(selected_cav_base.get('channel_delay_ms', 0.0))
+            )
+
+            channel_delay_slots.append(
+                float(selected_cav_base.get(
+                    'channel_delay_slots',
+                    selected_cav_base.get('time_delay', 0)
+                ))
+            )
+
             # this is only useful when proj_first = True, and communication
             # delay is considered. Right now only V2X-ViT utilizes the
             # spatial_correction. There is a time delay when the cavs project
@@ -160,25 +190,56 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
         velocity = velocity + (self.max_cav - len(velocity)) * [0.]
         time_delay = time_delay + (self.max_cav - len(time_delay)) * [0.]
         infra = infra + (self.max_cav - len(infra)) * [0.]
+
+        # pad link-level Markov fields to max_cav
+        channel_state_ids = channel_state_ids + \
+            (self.max_cav - len(channel_state_ids)) * [-1]
+
+        channel_delay_ms = channel_delay_ms + \
+            (self.max_cav - len(channel_delay_ms)) * [0.0]
+
+        channel_delay_slots = channel_delay_slots + \
+            (self.max_cav - len(channel_delay_slots)) * [0.0]
+
         spatial_correction_matrix = np.stack(spatial_correction_matrix)
         padding_eye = np.tile(np.eye(4)[None],(self.max_cav - len(
                                                spatial_correction_matrix),1,1))
         spatial_correction_matrix = np.concatenate([spatial_correction_matrix,
                                                    padding_eye], axis=0)
 
+        # processed_data_dict['ego'].update(
+        #     {'object_bbx_center': object_bbx_center,
+        #      'object_bbx_mask': mask,
+        #      'object_ids': [object_id_stack[i] for i in unique_indices],
+        #      'anchor_box': anchor_box,
+        #      'processed_lidar': merged_feature_dict,
+        #      'label_dict': label_dict,
+        #      'cav_num': cav_num,
+        #      'velocity': velocity,
+        #      'time_delay': time_delay,
+        #      'infra': infra,
+        #      'spatial_correction_matrix': spatial_correction_matrix,
+        #      'pairwise_t_matrix': pairwise_t_matrix})
+
         processed_data_dict['ego'].update(
             {'object_bbx_center': object_bbx_center,
-             'object_bbx_mask': mask,
-             'object_ids': [object_id_stack[i] for i in unique_indices],
-             'anchor_box': anchor_box,
-             'processed_lidar': merged_feature_dict,
-             'label_dict': label_dict,
-             'cav_num': cav_num,
-             'velocity': velocity,
-             'time_delay': time_delay,
-             'infra': infra,
-             'spatial_correction_matrix': spatial_correction_matrix,
-             'pairwise_t_matrix': pairwise_t_matrix})
+            'object_bbx_mask': mask,
+            'object_ids': [object_id_stack[i] for i in unique_indices],
+            'anchor_box': anchor_box,
+            'processed_lidar': merged_feature_dict,
+            'label_dict': label_dict,
+            'cav_num': cav_num,
+            'velocity': velocity,
+            'time_delay': time_delay,
+            'infra': infra,
+
+            # link-level Markov channel state
+            'channel_state_ids': channel_state_ids,
+            'channel_delay_ms': channel_delay_ms,
+            'channel_delay_slots': channel_delay_slots,
+
+            'spatial_correction_matrix': spatial_correction_matrix,
+            'pairwise_t_matrix': pairwise_t_matrix})
 
         if self.visualize:
             processed_data_dict['ego'].update({'origin_lidar':
@@ -289,6 +350,10 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
         velocity = []
         time_delay = []
         infra = []
+        # used for link-level Markov ARCE state
+        channel_state_ids = []
+        channel_delay_ms = []
+        channel_delay_slots = []
 
         # pairwise transformation matrix
         pairwise_t_matrix_list = []
@@ -316,6 +381,18 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
             infra.append(ego_dict['infra'])
             spatial_correction_matrix_list.append(
                 ego_dict['spatial_correction_matrix'])
+            channel_state_ids.append(ego_dict.get(
+                'channel_state_ids',
+                [-1] * self.max_cav
+            ))
+            channel_delay_ms.append(ego_dict.get(
+                'channel_delay_ms',
+                [0.0] * self.max_cav
+            ))
+            channel_delay_slots.append(ego_dict.get(
+                'channel_delay_slots',
+                [0.0] * self.max_cav
+            ))
 
             if self.visualize:
                 origin_lidar.append(ego_dict['origin_lidar'])
@@ -337,6 +414,18 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
         velocity = torch.from_numpy(np.array(velocity))
         time_delay = torch.from_numpy(np.array(time_delay))
         infra = torch.from_numpy(np.array(infra))
+        # (B, max_cav), used by ARCE to select per-link good/medium/bad
+        channel_state_ids = torch.from_numpy(
+            np.array(channel_state_ids, dtype=np.int64)
+        )
+
+        channel_delay_ms = torch.from_numpy(
+            np.array(channel_delay_ms, dtype=np.float32)
+        )
+
+        channel_delay_slots = torch.from_numpy(
+            np.array(channel_delay_slots, dtype=np.float32)
+        )
         spatial_correction_matrix_list = \
             torch.from_numpy(np.array(spatial_correction_matrix_list))
         # (B, max_cav, 3)
@@ -347,15 +436,30 @@ class IntermediateFusionDataset(basedataset.BaseDataset):
 
         # object id is only used during inference, where batch size is 1.
         # so here we only get the first element.
+        # output_dict['ego'].update({'object_bbx_center': object_bbx_center,
+        #                            'object_bbx_mask': object_bbx_mask,
+        #                            'processed_lidar': processed_lidar_torch_dict,
+        #                            'record_len': record_len,
+        #                            'label_dict': label_torch_dict,
+        #                            'object_ids': object_ids[0],
+        #                            'prior_encoding': prior_encoding,
+        #                            'spatial_correction_matrix': spatial_correction_matrix_list,
+        #                            'pairwise_t_matrix': pairwise_t_matrix})
         output_dict['ego'].update({'object_bbx_center': object_bbx_center,
-                                   'object_bbx_mask': object_bbx_mask,
-                                   'processed_lidar': processed_lidar_torch_dict,
-                                   'record_len': record_len,
-                                   'label_dict': label_torch_dict,
-                                   'object_ids': object_ids[0],
-                                   'prior_encoding': prior_encoding,
-                                   'spatial_correction_matrix': spatial_correction_matrix_list,
-                                   'pairwise_t_matrix': pairwise_t_matrix})
+                           'object_bbx_mask': object_bbx_mask,
+                           'processed_lidar': processed_lidar_torch_dict,
+                           'record_len': record_len,
+                           'label_dict': label_torch_dict,
+                           'object_ids': object_ids[0],
+                           'prior_encoding': prior_encoding,
+
+                           # link-level Markov channel state
+                           'channel_state_ids': channel_state_ids,
+                           'channel_delay_ms': channel_delay_ms,
+                           'channel_delay_slots': channel_delay_slots,
+
+                           'spatial_correction_matrix': spatial_correction_matrix_list,
+                           'pairwise_t_matrix': pairwise_t_matrix})
 
         if self.visualize:
             origin_lidar = \

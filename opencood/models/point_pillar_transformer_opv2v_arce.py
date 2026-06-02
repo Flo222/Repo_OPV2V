@@ -16,6 +16,11 @@ except Exception as e:
     ARCEFixedComm = None
     _ARCE_IMPORT_ERROR = e
 
+ID_TO_CHANNEL_STATE = {
+    0: "good",
+    1: "medium",
+    2: "bad",
+}
 
 class PointPillarTransformerOpv2vArce(nn.Module):
     """

@@ -19,6 +19,7 @@ from opencood.data_utils.augmentor.data_augmentor import DataAugmentor
 from opencood.hypes_yaml.yaml_utils import load_yaml
 from opencood.utils.pcd_utils import downsample_lidar_minimum
 from opencood.utils.transformation_utils import x1_to_x2
+from opencood.comm.channel.markov_state import LinkLevelMarkovChannel
 
 
 class BaseDataset(Dataset):
@@ -92,6 +93,25 @@ class BaseDataset(Dataset):
             self.backbone_delay = \
                 params['wild_setting']['backbone_delay'] \
                     if 'backbone_delay' in params['wild_setting'] else 0
+
+            self.frame_interval_ms = params['wild_setting'].get('frame_interval_ms', 100)
+
+            markov_cfg = params['wild_setting'].get('channel_state_markov', {})
+            self.use_channel_state_markov = bool(markov_cfg.get('enabled', False))
+            self.channel_state_markov_scope = markov_cfg.get('scope', 'frame')
+
+            if self.use_channel_state_markov:
+                if self.channel_state_markov_scope != 'link':
+                    raise ValueError(
+                        f"Expected link-level Markov, got scope={self.channel_state_markov_scope}"
+                    )
+
+                self.channel_state_scheduler = LinkLevelMarkovChannel(
+                    markov_cfg,
+                    frame_interval_ms=self.frame_interval_ms
+                )
+            else:
+                self.channel_state_scheduler = None
 
         else:
             self.async_flag = False
@@ -196,6 +216,72 @@ class BaseDataset(Dataset):
         """
         pass
 
+    # def retrieve_base_data(self, idx, cur_ego_pose_flag=True):
+    #     """
+    #     Given the index, return the corresponding data.
+
+    #     Parameters
+    #     ----------
+    #     idx : int
+    #         Index given by dataloader.
+
+    #     cur_ego_pose_flag : bool
+    #         Indicate whether to use current timestamp ego pose to calculate
+    #         transformation matrix. If set to false, meaning when other cavs
+    #         project their LiDAR point cloud to ego, they are projecting to
+    #         past ego pose.
+
+    #     Returns
+    #     -------
+    #     data : dict
+    #         The dictionary contains loaded yaml params and lidar data for
+    #         each cav.
+    #     """
+    #     # we loop the accumulated length list to see get the scenario index
+    #     scenario_index = 0
+    #     for i, ele in enumerate(self.len_record):
+    #         if idx < ele:
+    #             scenario_index = i
+    #             break
+    #     scenario_database = self.scenario_database[scenario_index]
+
+    #     # check the timestamp index
+    #     timestamp_index = idx if scenario_index == 0 else \
+    #         idx - self.len_record[scenario_index - 1]
+    #     # retrieve the corresponding timestamp key
+    #     timestamp_key = self.return_timestamp_key(scenario_database,
+    #                                               timestamp_index)
+    #     # calculate distance to ego for each cav
+    #     ego_cav_content = \
+    #         self.calc_dist_to_ego(scenario_database, timestamp_key)
+
+    #     data = OrderedDict()
+    #     # load files for all CAVs
+    #     for cav_id, cav_content in scenario_database.items():
+    #         data[cav_id] = OrderedDict()
+    #         data[cav_id]['ego'] = cav_content['ego']
+
+    #         # calculate delay for this vehicle
+    #         timestamp_delay = \
+    #             self.time_delay_calculation(cav_content['ego'])
+
+    #         if timestamp_index - timestamp_delay <= 0:
+    #             timestamp_delay = timestamp_index
+    #         timestamp_index_delay = max(0, timestamp_index - timestamp_delay)
+    #         timestamp_key_delay = self.return_timestamp_key(scenario_database,
+    #                                                         timestamp_index_delay)
+    #         # add time delay to vehicle parameters
+    #         data[cav_id]['time_delay'] = timestamp_delay
+    #         # load the corresponding data into the dictionary
+    #         data[cav_id]['params'] = self.reform_param(cav_content,
+    #                                                    ego_cav_content,
+    #                                                    timestamp_key,
+    #                                                    timestamp_key_delay,
+    #                                                    cur_ego_pose_flag)
+    #         data[cav_id]['lidar_np'] = \
+    #             pcd_utils.pcd_to_np(cav_content[timestamp_key_delay]['lidar'])
+    #     return data
+
     def retrieve_base_data(self, idx, cur_ego_pose_flag=True):
         """
         Given the index, return the corresponding data.
@@ -223,43 +309,125 @@ class BaseDataset(Dataset):
             if idx < ele:
                 scenario_index = i
                 break
+
         scenario_database = self.scenario_database[scenario_index]
 
         # check the timestamp index
         timestamp_index = idx if scenario_index == 0 else \
             idx - self.len_record[scenario_index - 1]
+
         # retrieve the corresponding timestamp key
-        timestamp_key = self.return_timestamp_key(scenario_database,
-                                                  timestamp_index)
+        timestamp_key = self.return_timestamp_key(
+            scenario_database,
+            timestamp_index
+        )
+
         # calculate distance to ego for each cav
-        ego_cav_content = \
-            self.calc_dist_to_ego(scenario_database, timestamp_key)
+        ego_cav_content = self.calc_dist_to_ego(
+            scenario_database,
+            timestamp_key
+        )
 
         data = OrderedDict()
+
         # load files for all CAVs
         for cav_id, cav_content in scenario_database.items():
             data[cav_id] = OrderedDict()
             data[cav_id]['ego'] = cav_content['ego']
 
-            # calculate delay for this vehicle
-            timestamp_delay = \
-                self.time_delay_calculation(cav_content['ego'])
+            # -------------------------------------------------------------
+            # Link-level Markov channel state and V2X-ViT-style delay
+            # -------------------------------------------------------------
+            if getattr(self, "use_channel_state_markov", False):
+                if cav_content['ego']:
+                    # ego does not communicate with itself
+                    markov_info = {
+                        "channel_state": "ego",
+                        "channel_state_id": -1,
+                        "delay_ms": 0.0,
+                        "delay_slots": 0,
+                    }
+                    link_key = "ego"
+                    timestamp_delay = 0
+                else:
+                    # Each ego->cav link has its own independent Markov chain.
+                    # scenario_index separates different scenarios.
+                    # cav_id separates different non-ego CAV links.
+                    link_key = "scenario_{}_ego_to_cav_{}".format(
+                        scenario_index,
+                        cav_id
+                    )
 
+                    markov_info = self.channel_state_scheduler.get_info(
+                        link_key=link_key,
+                        frame_idx=timestamp_index
+                    )
+
+                    timestamp_delay = int(markov_info["delay_slots"])
+
+            else:
+                # Original V2X-ViT sim/real delay path
+                timestamp_delay = self.time_delay_calculation(cav_content['ego'])
+
+                if cav_content['ego']:
+                    markov_info = {
+                        "channel_state": "ego",
+                        "channel_state_id": -1,
+                        "delay_ms": 0.0,
+                        "delay_slots": 0,
+                    }
+                    link_key = "ego"
+                else:
+                    frame_interval_ms = float(
+                        getattr(self, "frame_interval_ms", 100)
+                    )
+                    markov_info = {
+                        "channel_state": "fixed",
+                        "channel_state_id": -2,
+                        "delay_ms": float(timestamp_delay) * frame_interval_ms,
+                        "delay_slots": int(timestamp_delay),
+                    }
+                    link_key = "fixed_delay"
+
+            # avoid negative timestamp index
             if timestamp_index - timestamp_delay <= 0:
                 timestamp_delay = timestamp_index
+
             timestamp_index_delay = max(0, timestamp_index - timestamp_delay)
-            timestamp_key_delay = self.return_timestamp_key(scenario_database,
-                                                            timestamp_index_delay)
-            # add time delay to vehicle parameters
-            data[cav_id]['time_delay'] = timestamp_delay
+
+            timestamp_key_delay = self.return_timestamp_key(
+                scenario_database,
+                timestamp_index_delay
+            )
+
+            # -------------------------------------------------------------
+            # Store delay/state information
+            # -------------------------------------------------------------
+            # This one is used by IntermediateFusionDataset to build:
+            # prior_encoding[..., 1]
+            data[cav_id]['time_delay'] = int(timestamp_delay)
+
+            # These fields are used for debugging and for passing
+            # link-level channel state to ARCE.
+            data[cav_id]['channel_state'] = markov_info["channel_state"]
+            data[cav_id]['channel_state_id'] = int(markov_info["channel_state_id"])
+            data[cav_id]['channel_delay_ms'] = float(markov_info["delay_ms"])
+            data[cav_id]['channel_delay_slots'] = int(markov_info["delay_slots"])
+            data[cav_id]['channel_link_key'] = link_key
+
             # load the corresponding data into the dictionary
-            data[cav_id]['params'] = self.reform_param(cav_content,
-                                                       ego_cav_content,
-                                                       timestamp_key,
-                                                       timestamp_key_delay,
-                                                       cur_ego_pose_flag)
-            data[cav_id]['lidar_np'] = \
-                pcd_utils.pcd_to_np(cav_content[timestamp_key_delay]['lidar'])
+            data[cav_id]['params'] = self.reform_param(
+                cav_content,
+                ego_cav_content,
+                timestamp_key,
+                timestamp_key_delay,
+                cur_ego_pose_flag
+            )
+
+            data[cav_id]['lidar_np'] = pcd_utils.pcd_to_np(
+                cav_content[timestamp_key_delay]['lidar']
+            )
+
         return data
 
     @staticmethod
@@ -342,7 +510,7 @@ class BaseDataset(Dataset):
 
         return ego_cav_content
 
-    def time_delay_calculation(self, ego_flag):
+    # def time_delay_calculation(self, ego_flag):
         """
         Calculate the time delay for a certain vehicle.
 
@@ -357,23 +525,60 @@ class BaseDataset(Dataset):
             The time delay quantization.
         """
         # there is not time delay for ego vehicle
-        if ego_flag:
-            return 0
-        # time delay real mode
-        if self.async_mode == 'real':
-            # in the real mode, time delay = systematic async time + data
-            # transmission time + backbone computation time
-            overhead_noise = np.random.uniform(0, self.async_overhead)
-            tc = self.data_size / self.transmission_speed * 1000
-            time_delay = int(overhead_noise + tc + self.backbone_delay)
-        elif self.async_mode == 'sim':
-            # in the simulation mode, the time delay is constant
-            time_delay = np.abs(self.async_overhead)
+        # if ego_flag:
+        #     return 0
+        # # time delay real mode
+        # if self.async_mode == 'real':
+        #     # in the real mode, time delay = systematic async time + data
+        #     # transmission time + backbone computation time
+        #     overhead_noise = np.random.uniform(0, self.async_overhead)
+        #     tc = self.data_size / self.transmission_speed * 1000
+        #     time_delay = int(overhead_noise + tc + self.backbone_delay)
+        # elif self.async_mode == 'sim':
+        #     # in the simulation mode, the time delay is constant
+        #     time_delay = np.abs(self.async_overhead)
 
-        # the data is 10 hz for both opv2v and v2x-set
-        # todo: it may not be true for other dataset like DAIR-V2X and V2X-Sim
-        time_delay = time_delay // 100
-        return time_delay if self.async_flag else 0
+        # # the data is 10 hz for both opv2v and v2x-set
+        # # todo: it may not be true for other dataset like DAIR-V2X and V2X-Sim
+        # time_delay = time_delay // 100
+        # return time_delay if self.async_flag else 0
+
+    def time_delay_calculation(self, ego_flag, frame_idx=None, link_key=None):
+        """
+        Calculate delay slots.
+
+        For link-level Markov:
+            each ego->non-ego link has independent state chain.
+        """
+        if ego_flag or not self.async_flag:
+            return 0
+
+        if getattr(self, "use_channel_state_markov", False):
+            if frame_idx is None:
+                raise ValueError("frame_idx is required when link-level Markov is enabled.")
+            if link_key is None:
+                raise ValueError("link_key is required when link-level Markov is enabled.")
+
+            return self.channel_state_scheduler.get_delay_slots(
+                link_key=link_key,
+                frame_idx=frame_idx
+            )
+
+        frame_interval_ms = float(getattr(self, "frame_interval_ms", 100))
+
+        if self.async_mode == 'real':
+            overhead_noise = np.random.uniform(0, self.async_overhead)
+            transmission_delay_ms = self.data_size / self.transmission_speed * 1000
+            delay_ms = overhead_noise + transmission_delay_ms + self.backbone_delay
+
+        elif self.async_mode == 'sim':
+            delay_ms = np.abs(self.async_overhead)
+
+        else:
+            raise ValueError(f"Unsupported async_mode: {self.async_mode}")
+
+        delay_slots = int(delay_ms // frame_interval_ms)
+        return max(0, delay_slots)
 
     def add_loc_noise(self, pose, xyz_std, ryp_std):
         """

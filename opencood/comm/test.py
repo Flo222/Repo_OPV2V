@@ -1,0 +1,31 @@
+MODEL_DIR=opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval
+
+for state in good medium bad; do
+  python opencood/tools/set_delay_by_channel_state.py \
+    --config ${MODEL_DIR}/config.yaml \
+    --state ${state}
+
+  python opencood/tools/debug_v2xvit_delay_prior.py \
+    --hypes_yaml ${MODEL_DIR}/config.yaml \
+    --num_samples 5 \
+    2>&1 | tee ${MODEL_DIR}/debug_delay_${state}.log
+
+  python opencood/tools/inference_arce.py \
+    --model_dir ${MODEL_DIR} \
+    --fusion_method intermediate \
+    --save_comm \
+    --arce_enabled true \
+    --arce_channel_state ${state} \
+    --arce_late_policy allow \
+    --num_workers 0 \
+    --comm_log_dir ${MODEL_DIR}/eval_patchmax_delay_${state} \
+    2>&1 | tee ${MODEL_DIR}/eval_patchmax_delay_${state}_stdout.log
+doneFileNotFoundError: [Errno 2] No such file or directory: 'opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval~/config.yaml'
+
+python opencood/tools/inference_arce.py \
+  --model_dir ${MODEL_DIR} \
+  --fusion_method intermediate \
+  --arce_enabled false \
+  --num_workers 0 \
+  2>&1 | tee ${MODEL_DIR}/eval_delay_only_no_arce_stdout.log
+
