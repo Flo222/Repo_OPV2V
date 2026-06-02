@@ -788,12 +788,36 @@ class ARCEFixedComm:
 
         self.num_processed_links += 1
 
+        if channel_state is None:
+            channel_state_source = "channel_manager"
+        else:
+            channel_state = str(channel_state).lower()
+            channel_state_source = "dataset_link_markov"
+            
         # 1. channel profile
         channel_profile = self.channel_manager.step(
             frame_id=frame_id,
             link_id=link_id,
             state=channel_state,
         )
+
+        # Determine the actually used channel state for logging and summary.
+        # If channel_state is passed from dataset link-level Markov, use it first.
+        # Otherwise fall back to fields returned by ChannelManager.
+        active_channel_state = channel_state
+
+        if active_channel_state is None and isinstance(channel_profile, dict):
+            active_channel_state = (
+                channel_profile.get("state_name", None)
+                or channel_profile.get("state", None)
+                or channel_profile.get("channel_state", None)
+                or channel_profile.get("name", None)
+            )
+
+        if active_channel_state is None:
+            active_channel_state = "unknown"
+
+        active_channel_state = str(active_channel_state).lower()
 
         # 2. fixed policy action
         action = self.fixed_policy.select(
