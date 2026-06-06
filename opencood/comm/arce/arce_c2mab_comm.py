@@ -99,7 +99,28 @@ class ARCEC2MABComm:
     def __init__(self, cfg: Optional[Dict[str, Any]] = None):
         self.full_cfg = cfg or {}
         self.arce_cfg = _extract_arce_cfg(cfg or {})
-        self.executor = ARCEFixedComm(cfg)
+        # ARCEC2MABComm is the policy layer, but ARCEFixedComm is reused as
+        # the low-level executor. The executor itself only supports
+        # mode in {fixed, bypass, disabled}, so do not pass mode=dc2mab into it.
+        executor_cfg = copy.deepcopy(cfg)
+        if isinstance(executor_cfg, dict):
+            executor_cfg["mode"] = "fixed"
+            # The actual action is supplied through action_override.
+            # Keep the executor policy simple and deterministic.
+            executor_cfg["policy"] = "fixed"
+
+            # Some lower-level utilities also read a generic `mode` key from
+            # quantization config. If no explicit quantization mode is provided,
+            # they may accidentally see ARCE mode='fixed' as quantization mode.
+            # Use fp32 as the neutral base mode; the real per-link mode is still
+            # supplied by action_override.
+            quant_cfg = executor_cfg.get("quantization", None)
+            if not isinstance(quant_cfg, dict):
+                quant_cfg = {}
+            quant_cfg.setdefault("mode", "fp32")
+            executor_cfg["quantization"] = quant_cfg
+
+        self.executor = ARCEFixedComm(executor_cfg)
 
         action_cfg = self.arce_cfg.get("action_space", {})
         self.actions = build_pdf_action_space(
@@ -112,6 +133,8 @@ class ARCEC2MABComm:
             decode_overhead=float(action_cfg.get("decode_overhead", 0.0)),
         )
         self.action_ids = [a.action_id for a in self.actions]
+        # Compatibility alias for scripts/tests that expect action_space.
+        self.action_space = self.actions
 
         context_cfg = self.arce_cfg.get("context", {})
         self.context_builder = PDFContextBuilder(
