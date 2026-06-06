@@ -81,7 +81,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import torch
 
 from opencood.comm.arce import (
-    ARCE_POLICY_RANDOM,
     ARCE_MODE_DISABLED,
     ARCE_MODE_BYPASS,
     normalize_arce_config,
@@ -94,7 +93,6 @@ from opencood.comm.arce.fixed_policy import (
     FixedARCEPolicy,
 )
 
-from opencood.comm.arce.random_policy import RandomARCEPolicy
 from opencood.comm.channel.channel_manager import ChannelManager
 from opencood.comm.packet.packetizer import FeaturePacketizer
 from opencood.comm.packet.size_estimator import FeatureSizeEstimator
@@ -385,13 +383,7 @@ class ARCEFixedComm:
         self.default_ego_index = int(self.arce_cfg_raw.get("ego_index", 0))
 
         self.channel_manager = ChannelManager(self.arce_cfg_raw)
-        self.policy_name = str(self.arce_cfg.get("policy", "fixed")).strip().lower()
-        if self.policy_name == ARCE_POLICY_RANDOM:
-            self.action_policy = RandomARCEPolicy(self.arce_cfg_raw)
-        else:
-            self.action_policy = FixedARCEPolicy(self.arce_cfg_raw)
-        # Compatibility: existing code / logs may still refer to fixed_policy.
-        self.fixed_policy = self.action_policy
+        self.fixed_policy = FixedARCEPolicy(self.arce_cfg_raw)
         self.packetizer = FeaturePacketizer(self.arce_cfg_raw)
         self.size_estimator = FeatureSizeEstimator(self.arce_cfg_raw)
         self.partial_reconstructor = PartialReconstructor(self.arce_cfg_raw)
@@ -903,7 +895,7 @@ class ARCEFixedComm:
         active_channel_state = str(active_channel_state).lower()
 
         # 2. fixed policy action
-        action = self.action_policy.select(
+        action = self.fixed_policy.select(
             channel_profile=channel_profile,
         )
 
@@ -1488,7 +1480,6 @@ class ARCEFixedComm:
             "max_records": int(self.max_records),
             "keep_tensor_results": bool(self.keep_tensor_results),
             "channel_manager": self.channel_manager.get_config(),
-            "action_policy": self.action_policy.get_config(),
             "fixed_policy": self.fixed_policy.get_config(),
             "packetizer": self.packetizer.get_config(),
             "size_estimator": self.size_estimator.get_config(),
