@@ -441,6 +441,23 @@ class PartialReconstructor:
             self.recovery_cfg_raw.get("update_cache_when_temporal_disabled", False)
         )
 
+        temporal_fusion_cfg = {}
+        if isinstance(self.full_cfg, dict):
+            temporal_fusion_cfg = self.full_cfg.get("temporal_fusion", {}) or {}
+            if not temporal_fusion_cfg and isinstance(self.full_cfg.get("arce", None), dict):
+                temporal_fusion_cfg = self.full_cfg.get("arce", {}).get("temporal_fusion", {}) or {}
+
+        self.temporal_fusion_enabled = _as_bool(
+            temporal_fusion_cfg.get("enabled", True)
+        )
+        self.temporal_fusion_beta = float(
+            temporal_fusion_cfg.get("beta", 5.0)
+        )
+        self.update_if_recv_ge_cache = (
+            str(temporal_fusion_cfg.get("update_rule", "recv_ge_cache")).strip().lower()
+            == "recv_ge_cache"
+        )
+
     def _build_cache_update_mask(
         self,
         direct_received_mask: torch.Tensor,
@@ -479,6 +496,9 @@ class PartialReconstructor:
         cache_update_mask: torch.Tensor,
         update_cache: bool,
         method_infos: Dict[str, Any],
+        q_recv: Optional[float] = None,
+        q_cache: Optional[float] = None,
+        temporal_alpha: Optional[float] = None,
     ) -> Optional[Any]:
         """
         Update temporal cache if enabled and requested.
@@ -519,6 +539,10 @@ class PartialReconstructor:
             info={
                 "source": "partial_reconstruction",
                 "num_cache_update_packets": int(cache_update_mask.sum().item()),
+                "quality": None if q_recv is None else float(q_recv),
+                "q_recv": None if q_recv is None else float(q_recv),
+                "q_cache": None if q_cache is None else float(q_cache),
+                "temporal_alpha": None if temporal_alpha is None else float(temporal_alpha),
             },
         )
 
@@ -743,6 +767,103 @@ class PartialReconstructor:
                     "reason": f"unsupported recovery method in priority: {method}",
                 }
 
+        # PDF Step 4: temporal quality-aware fusion.
+        # q_recv measures current recovered packet completeness.
+        # q_cache is read from the previous cache entry for the same link.
+        q_recv = (
+            1.0
+            if num_packets <= 0
+            else max(
+                0.0,
+                min(
+                    1.0,
+                    1.0 - float(current_missing.sum().item()) / float(num_packets),
+                ),
+            )
+        )
+
+        cache_entry_for_fusion = None
+        q_cache = 0.0
+        if hasattr(self, "temporal_cache") and self.temporal_cache is not None:
+            try:
+                cache_entry_for_fusion = self.temporal_cache.get_entry(link_id)
+            except Exception:
+                cache_entry_for_fusion = None
+
+        if cache_entry_for_fusion is not None:
+            try:
+                cache_info = getattr(cache_entry_for_fusion, "info", {}) or {}
+                q_cache = float(
+                    cache_info.get(
+                        "quality",
+                        cache_info.get(
+                            "q_recv",
+                            cache_info.get("recovery_ratio", 0.0),
+                        ),
+                    )
+                    or 0.0
+                )
+            except Exception:
+                q_cache = 0.0
+
+            if q_cache <= 0.0:
+                try:
+                    q_cache = float(
+                        cache_entry_for_fusion.num_available_packets
+                        / max(1, cache_entry_for_fusion.num_packets)
+                    )
+                except Exception:
+                    q_cache = 0.0
+
+        temporal_alpha = 1.0
+        fusion_info = {
+            "enabled": bool(self.temporal_fusion_enabled),
+            "applied": False,
+            "q_recv": float(q_recv),
+            "q_cache": float(q_cache),
+            "alpha": float(temporal_alpha),
+        }
+
+        if (
+            bool(self.temporal_fusion_enabled)
+            and cache_entry_for_fusion is not None
+            and hasattr(cache_entry_for_fusion, "is_shape_compatible")
+            and cache_entry_for_fusion.is_shape_compatible(current_packets)
+        ):
+            cache_entry_device = cache_entry_for_fusion.to_device(
+                device=current_packets.device,
+                dtype=current_packets.dtype,
+            )
+            alpha_tensor = torch.sigmoid(
+                torch.tensor(
+                    float(self.temporal_fusion_beta) * (float(q_recv) - float(q_cache)),
+                    dtype=current_packets.dtype,
+                    device=current_packets.device,
+                )
+            )
+            current_packets = (
+                alpha_tensor * current_packets
+                + (1.0 - alpha_tensor) * cache_entry_device.packets
+            )
+            temporal_alpha = float(alpha_tensor.detach().cpu().item())
+            fusion_info.update(
+                {
+                    "applied": True,
+                    "alpha": float(temporal_alpha),
+                    "beta": float(self.temporal_fusion_beta),
+                    "cache_frame_id": getattr(cache_entry_for_fusion, "frame_id", None),
+                }
+            )
+        else:
+            if cache_entry_for_fusion is None:
+                fusion_info["reason"] = "no cache entry"
+            elif not bool(self.temporal_fusion_enabled):
+                fusion_info["reason"] = "temporal fusion disabled"
+            else:
+                fusion_info["reason"] = "cache shape incompatible"
+
+        method_infos["temporal_quality_fusion"] = fusion_info
+
         cache_update_mask = self._build_cache_update_mask(
             direct_received_mask=direct_received_mask,
             fec_recovered_mask=fec_recovered_mask,
@@ -751,13 +872,30 @@ class PartialReconstructor:
             zero_filled_mask=zero_filled_mask,
         )
 
+        update_cache_after_quality_gate = bool(update_cache)
+        if self.update_if_recv_ge_cache:
+            update_cache_after_quality_gate = (
+                update_cache_after_quality_gate
+                and float(q_recv) >= float(q_cache)
+            )
+            method_infos["cache_update_quality_gate"] = {
+                "enabled": True,
+                "passed": bool(float(q_recv) >= float(q_cache)),
+                "q_recv": float(q_recv),
+                "q_cache": float(q_cache),
+                "rule": "q_recv >= q_cache",
+            }
+
         self._maybe_update_cache(
             link_id=link_id,
             packets=current_packets,
             frame_id=frame_id,
             cache_update_mask=cache_update_mask,
-            update_cache=update_cache,
+            update_cache=update_cache_after_quality_gate,
             method_infos=method_infos,
+            q_recv=float(q_recv),
+            q_cache=float(q_cache),
+            temporal_alpha=float(temporal_alpha),
         )
 
         counts = build_recovery_count_dict(
@@ -785,6 +923,10 @@ class PartialReconstructor:
             "num_zero_filled_packets": int(zero_filled_mask.sum().item()),
             "num_cache_update_packets": int(cache_update_mask.sum().item()),
             "recovery_ratio": float(counts["recovery_ratio"]),
+            "q_recv": float(q_recv),
+            "q_cache": float(q_cache),
+            "temporal_alpha": float(temporal_alpha),
+            "temporal_fusion_applied": bool(method_infos.get("temporal_quality_fusion", {}).get("applied", False)),
             "counts": counts,
             "note": (
                 "Partial reconstruction applies temporal cache, spatial "
