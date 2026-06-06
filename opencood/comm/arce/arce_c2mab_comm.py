@@ -135,6 +135,7 @@ class ARCEC2MABComm:
         self.action_ids = [a.action_id for a in self.actions]
         # Compatibility alias for scripts/tests that expect action_space.
         self.action_space = self.actions
+        self.no_send_action = next((a for a in self.actions if getattr(a, "is_no_send", False)), None)
 
         context_cfg = self.arce_cfg.get("context", {})
         self.context_builder = PDFContextBuilder(
@@ -344,21 +345,25 @@ class ARCEC2MABComm:
                 ego_confidence=ego_conf,
                 cache_quality=cache_q,
             )
-            # Per-CAV feasible set uses the same per-frame total budget upper bound.
+            # Proposal stage should only propose real send actions.
+            # no-send is handled after ego-side oracle selection as fallback.
             feasible = feasible_action_costs(
                 self.actions,
                 raw_fp32_bytes=raw_fp32,
                 budget_bytes=total_budget_bytes,
-                include_no_send=True,
+                include_no_send=False,
             )
+            feasible = [(a, c) for a, c in feasible if not getattr(a, "is_no_send", False)]
+
+            if not feasible:
+                no_send_candidates[sender_idx] = self.no_send_action
+                continue
+
             policy = self.get_policy(ego_id, sender_idx)
             feasible_ids = [a.action_id for a, _ in feasible]
             best_score = policy.select(feasible_ids, context.vector)
             action_cost_map = {a.action_id: (a, c) for a, c in feasible}
             best_action, best_cost = action_cost_map[best_score.action_id]
-            if best_action.is_no_send:
-                no_send_candidates[sender_idx] = best_action
-                continue
             proposals.append(
                 CAVProposal(
                     ego_id=ego_id,
