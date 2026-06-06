@@ -16,6 +16,13 @@ except Exception as e:
     ARCEFixedComm = None
     _ARCE_IMPORT_ERROR = e
 
+try:
+    from opencood.comm.arce.arce_c2mab_comm import ARCEC2MABComm
+    _ARCE_C2MAB_IMPORT_ERROR = None
+except Exception as e:
+    ARCEC2MABComm = None
+    _ARCE_C2MAB_IMPORT_ERROR = e
+
 ID_TO_CHANNEL_STATE = {
     0: "good",
     1: "medium",
@@ -79,16 +86,40 @@ class PointPillarTransformerOpv2vArce(nn.Module):
         self.arce_enabled = bool(self.arce_cfg.get('enabled', False))
 
         if self.arce_enabled:
-            if ARCEFixedComm is None:
-                raise ImportError(
-                    "ARCE is enabled, but ARCEFixedComm cannot be imported from "
-                    "opencood.comm.arce.arce_fixed_comm. "
-                    "Please create opencood/comm/arce/arce_fixed_comm.py first. "
-                    f"Original import error: {_ARCE_IMPORT_ERROR}"
-                )
-            self.arce_comm = ARCEFixedComm(self.arce_cfg)
+            arce_mode = str(
+                self.arce_cfg.get("mode", self.arce_cfg.get("policy", "fixed"))
+            ).strip().lower()
+            arce_policy = str(
+                self.arce_cfg.get("policy", arce_mode)
+            ).strip().lower()
+
+            use_dc2mab = (
+                arce_mode in ("dc2mab", "c2mab")
+                or arce_policy in ("dc2mab_sender_ego", "c2mab_sender_ego")
+            )
+
+            if use_dc2mab:
+                if ARCEC2MABComm is None:
+                    raise ImportError(
+                        "ARCE DC2MAB is enabled, but ARCEC2MABComm cannot be imported from "
+                        "opencood.comm.arce.arce_c2mab_comm. "
+                        f"Original import error: {_ARCE_C2MAB_IMPORT_ERROR}"
+                    )
+                self.arce_comm = ARCEC2MABComm(self.arce_cfg)
+                self.arce_comm_type = "dc2mab"
+            else:
+                if ARCEFixedComm is None:
+                    raise ImportError(
+                        "ARCE is enabled, but ARCEFixedComm cannot be imported from "
+                        "opencood.comm.arce.arce_fixed_comm. "
+                        "Please create opencood/comm/arce/arce_fixed_comm.py first. "
+                        f"Original import error: {_ARCE_IMPORT_ERROR}"
+                    )
+                self.arce_comm = ARCEFixedComm(self.arce_cfg)
+                self.arce_comm_type = "fixed_or_random"
         else:
             self.arce_comm = None
+            self.arce_comm_type = "disabled"
 
         # -------------------------
         # V2X-ViT fusion transformer
@@ -271,7 +302,7 @@ class PointPillarTransformerOpv2vArce(nn.Module):
             return spatial_features_2d, comm_info
 
         if hasattr(self.arce_comm, "communicate_flattened_features"):
-            spatial_features_2d, comm_info = self.arce_comm.communicate_flattened_features(
+            arce_out = self.arce_comm.communicate_flattened_features(
                 features=spatial_features_2d,
                 record_len=record_len,
                 data_dict=data_dict,
@@ -279,6 +310,15 @@ class PointPillarTransformerOpv2vArce(nn.Module):
                 update_cache=True,
                 return_records=True,
             )
+            if isinstance(arce_out, tuple):
+                spatial_features_2d, comm_info = arce_out
+            else:
+                spatial_features_2d = arce_out
+                comm_info = {
+                    "enabled": True,
+                    "mode": getattr(self, "arce_comm_type", "unknown"),
+                    "note": "ARCE comm returned tensor only.",
+                }
         else:
             spatial_features_2d, comm_info = self.arce_comm(
                 spatial_features_2d,
