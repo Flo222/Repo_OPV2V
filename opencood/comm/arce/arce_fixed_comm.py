@@ -684,6 +684,7 @@ class ARCEFixedComm:
         agent_index: Optional[int] = None,
         ego_index: Optional[int] = None,
         channel_state: Optional[str] = None,
+        action_override: Optional[ARCEAction] = None,
         update_cache: bool = True,
         return_result: bool = False,
     ):
@@ -902,10 +903,74 @@ class ARCEFixedComm:
 
         active_channel_state = str(active_channel_state).lower()
 
-        # 2. fixed policy action
-        action = self.action_policy.select(
-            channel_profile=channel_profile,
-        )
+        # 2. policy action
+        if action_override is not None:
+            action = action_override
+        else:
+            action = self.action_policy.select(
+                channel_profile=channel_profile,
+            )
+
+        action_source = "override" if action_override is not None else str(self.policy_name)
+
+        # PDF action space includes a send/no-send switch.
+        # send=0 means this sender does not transmit current-frame feature.
+        if int(getattr(action, "send", 1)) == 0:
+            record = copy.deepcopy(base_record)
+            record.update(
+                {
+                    "bypassed": False,
+                    "bypass_reason": None,
+                    "action_source": action_source,
+                    "action": action.as_dict() if hasattr(action, "as_dict") else {
+                        "quant_mode": getattr(action, "quant_mode", None),
+                        "fec_type": getattr(action, "fec_type", None),
+                        "redundancy_ratio": float(getattr(action, "redundancy_ratio", 0.0)),
+                        "send": int(getattr(action, "send", 0)),
+                        "cache_enabled": int(getattr(action, "cache_enabled", 0)),
+                    },
+                    "channel_state": active_channel_state,
+                    "channel_state_source": channel_state_source,
+                    "requested_channel_state": requested_channel_state,
+                    "output_shape": tuple(int(x) for x in feature.shape),
+                    "output_dtype": str(feature.dtype),
+                    "tx_bytes": 0,
+                    "rx_bytes": 0,
+                    "raw_bytes": int(feature.numel() * feature.element_size()),
+                    "compressed_bytes": 0,
+                    "encoded_bytes": 0,
+                    "received_bytes": 0,
+                    "effective_received_bytes": 0,
+                    "packet": {
+                        "num_source_packets": 0,
+                        "num_encoded_packets": 0,
+                        "num_received_packets": 0,
+                    },
+                    "recovery": {
+                        "num_fec_recovered": 0,
+                        "num_temporal_filled": 0,
+                        "num_spatial_filled": 0,
+                        "num_zero_filled": 0,
+                        "num_still_missing": 0,
+                    },
+                    "quality": {
+                        "q_recv": 0.0,
+                        "q_cache": 0.0,
+                        "num_source_packets": 0,
+                        "num_still_missing": 0,
+                    },
+                    "late": False,
+                    "dropped_by_late": False,
+                    "no_send": True,
+                }
+            )
+            recovered_feature = torch.zeros_like(feature)
+            self._append_record(record)
+            result = ARCECommResult(
+                recovered_feature=recovered_feature,
+                record=record,
+            )
+            return result if return_result else (recovered_feature, record)
 
         # 3. packetization
         packet_result = self.packetizer.packetize(feature)
@@ -1054,12 +1119,31 @@ class ARCEFixedComm:
                     "late_policy": copy.deepcopy(late_policy_info),
                 },
                 "action": action.as_dict(),
+                "action_source": action_source,
+                "no_send": False,
                 "packetization": packet_result.to_meta_dict(),
                 "quantization": quant_result.as_dict(),
                 "fec_encode": encode_result.as_dict(include_metas=False),
                 "fec_decode": decode_result.as_dict(),
                 "partial_reconstruction": partial_result.as_dict(),
                 "size": size_info,
+                "quality": {
+                    "q_recv": float(
+                        max(
+                            0.0,
+                            min(
+                                1.0,
+                                1.0 - (
+                                    float(getattr(partial_result, "counts", {}).get("still_missing", 0))
+                                    / float(max(1, int(getattr(encode_result, "num_source_packets", 0) or getattr(packet_result, "num_packets", 0) or len(packet_result.packets))))
+                                ),
+                            ),
+                        )
+                    ),
+                    "q_cache": float(getattr(partial_result, "q_cache", 0.0) or 0.0),
+                    "num_source_packets": int(getattr(encode_result, "num_source_packets", 0) or getattr(packet_result, "num_packets", 0) or len(packet_result.packets)),
+                    "num_still_missing": int(getattr(partial_result, "counts", {}).get("still_missing", 0)),
+                },
                 "raw_loss_mask_summary": _mask_summary(raw_loss_mask, true_name="lost"),
                 "final_loss_mask_summary": _mask_summary(final_loss_mask, true_name="lost"),
                 "notes": {
