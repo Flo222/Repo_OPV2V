@@ -138,3 +138,7 @@ opv2v_data_dumping
 checkpoints
 DCOS.md
 spconv/
+
+# temporary DC2MAB patch source
+pdf_dc2mab_patch/
+pdf_dc2mab_patch.zip
