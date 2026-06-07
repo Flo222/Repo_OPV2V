@@ -156,8 +156,10 @@ model:
       enable_deadline_drop: false
       late_policy: cache_only
       packetizer:
-        mode: patch_max_size
-        patch_max_size: 4096
+        mode: block
+        block_size:
+        - 4
+        - 4
       action_space:
         type: pdf_48
         send_values:
@@ -254,9 +256,11 @@ model:
         tx_window_ms: 100.0
         budget_scope: global_sum_link
         budget_source: channel_profiles
-        min_patch_ratio: 0.05
-        min_patch_count: 16
+        min_patch_ratio: 0.01
+        min_patch_count: 4
         patch_selector: activation_topk
+        metadata_bytes_per_packet: 8
+        strict_min_patch: true
   core_method: point_pillar_transformer_opv2v_arce
 name: point_pillar_v2xvit_opv2v
 optimizer:
