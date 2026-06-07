@@ -38,6 +38,7 @@ from opencood.comm.arce.policies.ego_greedy_oracle import (
 )
 from opencood.comm.arce.policies.reward import RewardBuffer, pdf_proxy_reward
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
+from opencood.comm.arce.policies.bandwidth_patch_selector import BandwidthAwarePatchSelector
 
 
 CHANNEL_STATE_ID_TO_NAME = {
@@ -139,6 +140,10 @@ class ARCEC2MABComm:
             executor_cfg["channel"] = channel_cfg
 
         self.executor = ARCEFixedComm(executor_cfg)
+        # Proposal stage must use the same bandwidth-aware patch cost model
+        # as the low-level ARCE executor. Otherwise C2MAB would reject all
+        # send actions under formal CoSDH-style frame budgets.
+        self.proposal_patch_selector = BandwidthAwarePatchSelector(self.arce_cfg)
 
         action_cfg = self.arce_cfg.get("action_space", {})
         self.actions = build_pdf_action_space(
@@ -391,6 +396,8 @@ class ARCEC2MABComm:
             raise ValueError(f"Expected features [N,C,H,W], got {tuple(features.shape)}")
         n = int(features.shape[0])
         ego_id = int(ego_index)
+        # Raw full-map cost is no longer used for proposal feasibility.
+        # Proposal feasibility is estimated by bandwidth-aware patch selection.
         raw_fp32 = raw_feature_bytes_fp32(features.shape[1:])
         ego_conf = float(self.last_ego_confidence)
 
@@ -442,23 +449,55 @@ class ARCEC2MABComm:
             )
             # Proposal stage should only propose real send actions.
             # no-send is handled after ego-side oracle selection as fallback.
-            feasible = feasible_action_costs(
-                self.actions,
-                raw_fp32_bytes=raw_fp32,
-                budget_bytes=link_budget_bytes,
-                include_no_send=False,
-            )
-            feasible = [(a, c) for a, c in feasible if not getattr(a, "is_no_send", False)]
+            #
+            # IMPORTANT:
+            # Cost must be estimated at patch/message level, not full feature-map
+            # level. This aligns C2MAB proposal feasibility with the executor:
+            #   feature -> packetize -> top-K patch selection -> estimated tx bytes
+            packet_result = self.executor.packetizer.packetize(features[sender_idx])
+
+            feasible = []
+            for action in self.actions:
+                if getattr(action, "is_no_send", False):
+                    continue
+
+                arce_action = normalize_runtime_action(
+                    action.to_arce_action(),
+                    send=int(action.send),
+                    cache_enabled=int(action.cache_enabled),
+                    action_id=str(action.action_id),
+                )
+
+                selection_result = self.proposal_patch_selector.select(
+                    packetization_result=packet_result,
+                    action=arce_action,
+                    budget_bytes=float(link_budget_bytes),
+                )
+
+                if not selection_result.feasible:
+                    continue
+
+                feasible.append(
+                    (
+                        action,
+                        float(selection_result.estimated_transmitted_bytes),
+                        selection_result,
+                    )
+                )
 
             if not feasible:
                 no_send_candidates[sender_idx] = self.no_send_action
                 continue
 
             policy = self.get_policy(ego_id, sender_idx)
-            feasible_ids = [a.action_id for a, _ in feasible]
+            feasible_ids = [a.action_id for a, _, _ in feasible]
             best_score = policy.select(feasible_ids, context.vector)
-            action_cost_map = {a.action_id: (a, c) for a, c in feasible}
-            best_action, best_cost = action_cost_map[best_score.action_id]
+            action_cost_map = {
+                a.action_id: (a, c, sel)
+                for a, c, sel in feasible
+            }
+            best_action, best_cost, best_selection = action_cost_map[best_score.action_id]
+
             proposals.append(
                 CAVProposal(
                     ego_id=ego_id,
@@ -477,6 +516,16 @@ class ARCEC2MABComm:
                         "total_budget_bytes": float(total_budget_bytes),
                         "budget_scope": self.budget_scope,
                         "budget_source": self.budget_source,
+                        "proposal_cost_model": "bandwidth_patch_selector",
+                        "estimated_tx_bytes": float(best_selection.estimated_transmitted_bytes),
+                        "estimated_source_bytes": float(best_selection.source_bytes),
+                        "estimated_parity_bytes": float(best_selection.parity_bytes),
+                        "estimated_metadata_bytes": float(best_selection.metadata_bytes),
+                        "estimated_patch_ratio": float(best_selection.effective_patch_ratio),
+                        "num_selected_patches": int(best_selection.num_selected_patches),
+                        "num_total_patches": int(best_selection.num_total_patches),
+                        "bandwidth_selection": best_selection.as_dict(),
+                        "num_feasible_actions": int(len(feasible)),
                     },
                 )
             )
