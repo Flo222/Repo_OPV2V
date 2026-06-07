@@ -50,18 +50,24 @@ DEFAULT_CHANNEL_PROFILES = {
     "good": {
         "state_name": "good",
         "bandwidth_mbps": 27.0,
+        "loss_rate": 0.03,
+        "delay_ms": 25.0,
         "ge": {"p_GB": 0.378, "p_BG": 0.883, "h": 0.905, "k": 0.969},
         "jitter_ms": [2.0, 8.0],
     },
     "medium": {
         "state_name": "medium",
         "bandwidth_mbps": 5.0,
+        "loss_rate": 0.12,
+        "delay_ms": 95.0,
         "ge": {"p_GB": 0.378, "p_BG": 0.883, "h": 0.810, "k": 0.938},
         "jitter_ms": [5.0, 20.0],
     },
     "bad": {
         "state_name": "bad",
         "bandwidth_mbps": 1.0,
+        "loss_rate": 0.28,
+        "delay_ms": 200.0,
         "ge": {"p_GB": 0.417, "p_BG": 0.973, "h": 0.620, "k": 0.948},
         "jitter_ms": [10.0, 40.0],
     },
@@ -120,6 +126,17 @@ class ARCEC2MABComm:
             quant_cfg.setdefault("mode", "fp32")
             executor_cfg["quantization"] = quant_cfg
 
+            # ChannelManager currently supports fixed mode only.
+            # Link-level dynamic states are still passed at runtime via
+            # communicate_feature(..., channel_state=state_name).
+            channel_cfg = executor_cfg.get("channel", None)
+            if not isinstance(channel_cfg, dict):
+                channel_cfg = {}
+            channel_cfg["mode"] = "fixed"
+            channel_cfg.setdefault("fixed_state", "medium")
+            channel_cfg.setdefault("state_source", "dataset_link_markov_override")
+            executor_cfg["channel"] = channel_cfg
+
         self.executor = ARCEFixedComm(executor_cfg)
 
         action_cfg = self.arce_cfg.get("action_space", {})
@@ -154,8 +171,40 @@ class ARCEC2MABComm:
         self.oracle = EgoGreedyKnapsackOracle(
             eps_cost=float(oracle_cfg.get("eps_cost", 1.0)),
         )
-        self.total_budget_mbps = float(oracle_cfg.get("total_budget_mbps", oracle_cfg.get("max_budget_mbps", 10.0)))
-        self.tau_trans_ms = float(oracle_cfg.get("tau_trans_ms", self.arce_cfg.get("deadline_ms", 100.0)))
+        scheduler_cfg = self.arce_cfg.get("scheduler", {}) or {}
+        self.fps = float(scheduler_cfg.get("fps", 10.0))
+        self.tx_window_ms = float(
+            scheduler_cfg.get(
+                "tx_window_ms",
+                1000.0 / max(self.fps, 1e-6),
+            )
+        )
+        self.budget_scope = str(
+            scheduler_cfg.get(
+                "budget_scope",
+                oracle_cfg.get("budget_scope", "global_sum_link"),
+            )
+        ).strip().lower()
+        self.budget_source = str(
+            scheduler_cfg.get(
+                "budget_source",
+                oracle_cfg.get("budget_source", "channel_profiles"),
+            )
+        ).strip().lower()
+
+        # Fallback only. The main path uses per-link channel profile bandwidth.
+        self.total_budget_mbps = float(
+            oracle_cfg.get(
+                "total_budget_mbps",
+                oracle_cfg.get("fallback_total_budget_mbps", oracle_cfg.get("max_budget_mbps", 10.0)),
+            )
+        )
+        self.tau_trans_ms = float(
+            oracle_cfg.get(
+                "tau_trans_ms",
+                oracle_cfg.get("fallback_tx_window_ms", self.tx_window_ms),
+            )
+        )
 
         reward_cfg = self.arce_cfg.get("reward", {})
         self.reward_gamma = float(reward_cfg.get("gamma", reward_cfg.get("gamma_cost", 0.1)))
@@ -225,6 +274,26 @@ class ARCEC2MABComm:
         profile = copy.deepcopy(profiles.get(state_name, profiles.get("medium")))
         profile["state_name"] = state_name
         return profile
+
+    def _frame_budget_bytes_from_profile(self, profile: Dict[str, Any]) -> float:
+        """Return per-frame byte budget from the current link channel profile."""
+        if self.budget_source == "fixed_fallback":
+            return float(budget_bytes_from_bandwidth(self.total_budget_mbps, self.tau_trans_ms))
+
+        bandwidth_mbps = float(profile.get("bandwidth_mbps", self.total_budget_mbps))
+        return float(budget_bytes_from_bandwidth(bandwidth_mbps, self.tx_window_ms))
+
+    def _prepare_link_channel_budget(
+        self,
+        data_dict: Optional[Dict[str, Any]],
+        batch_idx: int,
+        sender_idx: int,
+    ) -> Tuple[str, Dict[str, Any], float]:
+        """Resolve link state/profile/frame budget for one sender."""
+        state_name = self._state_name_for_sender(data_dict, batch_idx, sender_idx)
+        profile = self._profile_for_state(state_name)
+        link_budget_bytes = self._frame_budget_bytes_from_profile(profile)
+        return state_name, profile, float(link_budget_bytes)
 
     def _extract_channel_state_ids(self, data_dict: Optional[Dict[str, Any]], local_batch_idx: int) -> Optional[List[int]]:
         if data_dict is None:
@@ -322,8 +391,31 @@ class ARCEC2MABComm:
         n = int(features.shape[0])
         ego_id = int(ego_index)
         raw_fp32 = raw_feature_bytes_fp32(features.shape[1:])
-        total_budget_bytes = budget_bytes_from_bandwidth(self.total_budget_mbps, self.tau_trans_ms)
         ego_conf = float(self.last_ego_confidence)
+
+        # Resolve dynamic per-link budgets from current channel states.
+        link_states: Dict[int, str] = {}
+        link_profiles: Dict[int, Dict[str, Any]] = {}
+        link_budgets: Dict[int, float] = {}
+
+        for sender_idx in range(n):
+            if sender_idx == ego_index:
+                continue
+            state_name, profile, link_budget_bytes = self._prepare_link_channel_budget(
+                data_dict=data_dict,
+                batch_idx=batch_idx,
+                sender_idx=sender_idx,
+            )
+            if state_name == "ego_or_padding":
+                continue
+            link_states[sender_idx] = state_name
+            link_profiles[sender_idx] = profile
+            link_budgets[sender_idx] = float(link_budget_bytes)
+
+        if self.budget_scope in ("global_sum_link", "global", "shared"):
+            total_budget_bytes = float(sum(link_budgets.values()))
+        else:
+            total_budget_bytes = float(budget_bytes_from_bandwidth(self.total_budget_mbps, self.tau_trans_ms))
 
         proposals: List[CAVProposal] = []
         no_send_candidates: Dict[int, PDFARCEAction] = {}
@@ -331,13 +423,15 @@ class ARCEC2MABComm:
         for sender_idx in range(n):
             if sender_idx == ego_index:
                 continue
-            state_name = self._state_name_for_sender(data_dict, batch_idx, sender_idx)
+            state_name = link_states.get(sender_idx, "medium")
             if state_name == "ego_or_padding":
                 continue
-            profile = self._profile_for_state(state_name)
-            # Estimate latency with the cheapest reference action for context only.
-            # Actual late/drop behavior is handled by ARCE executor during execution.
-            latency_ms = self.tau_trans_ms
+            profile = link_profiles.get(sender_idx, self._profile_for_state(state_name))
+            link_budget_bytes = float(link_budgets.get(sender_idx, total_budget_bytes))
+
+            # Feature delay is a temporal-misalignment context variable,
+            # not the same as the bandwidth budget window.
+            latency_ms = float(profile.get("delay_ms", self.tx_window_ms))
             cache_q = self._cache_quality(ego_id, sender_idx)
             context = self.context_builder.build(
                 channel_profile=profile,
@@ -350,7 +444,7 @@ class ARCEC2MABComm:
             feasible = feasible_action_costs(
                 self.actions,
                 raw_fp32_bytes=raw_fp32,
-                budget_bytes=total_budget_bytes,
+                budget_bytes=link_budget_bytes,
                 include_no_send=False,
             )
             feasible = [(a, c) for a, c in feasible if not getattr(a, "is_no_send", False)]
@@ -375,7 +469,14 @@ class ARCEC2MABComm:
                     mean=best_score.mean,
                     bonus=best_score.bonus,
                     cost_bytes=float(best_cost),
-                    record={"channel_state": state_name, "channel_profile": profile},
+                    record={
+                        "channel_state": state_name,
+                        "channel_profile": profile,
+                        "link_budget_bytes": float(link_budget_bytes),
+                        "total_budget_bytes": float(total_budget_bytes),
+                        "budget_scope": self.budget_scope,
+                        "budget_source": self.budget_source,
+                    },
                 )
             )
 
@@ -455,6 +556,12 @@ class ARCEC2MABComm:
             "ego_id": str(ego_id),
             "dc2mab_superarm": {
                 "budget_bytes": float(total_budget_bytes),
+                "budget_scope": self.budget_scope,
+                "budget_source": self.budget_source,
+                "tx_window_ms": float(self.tx_window_ms),
+                "fps": float(self.fps),
+                "link_budgets": {str(k): float(v) for k, v in link_budgets.items()},
+                "link_states": {str(k): str(v) for k, v in link_states.items()},
                 "used_budget_bytes": float(used_cost),
                 "selected_sender_ids": [str(x) for x in selected_by_sender.keys()],
                 "selected_action_ids": [p.action_id for p in selected_by_sender.values()],
