@@ -114,6 +114,15 @@ from opencood.comm.recovery.partial_reconstruction import (
     PartialReconstructor,
 )
 
+from opencood.comm.arce.policies.bandwidth_patch_selector import (
+    BandwidthAwarePatchSelector,
+)
+from opencood.comm.arce.policies.action_adapter import (
+    get_action_field,
+    normalize_runtime_action,
+    runtime_action_as_dict,
+)
+
 CHANNEL_STATE_ID_TO_NAME = {
     0: "good",
     1: "medium",
@@ -395,6 +404,18 @@ class ARCEFixedComm:
         self.packetizer = FeaturePacketizer(self.arce_cfg_raw)
         self.size_estimator = FeatureSizeEstimator(self.arce_cfg_raw)
         self.partial_reconstructor = PartialReconstructor(self.arce_cfg_raw)
+        self.patch_selector = BandwidthAwarePatchSelector(self.arce_cfg_raw)
+
+        scheduler_cfg = self.arce_cfg_raw.get("scheduler", {}) or {}
+        self.tx_window_ms = float(
+            scheduler_cfg.get(
+                "tx_window_ms",
+                self.arce_cfg_raw.get("deadline_ms", 100.0),
+            )
+        )
+        self.bandwidth_budget_source = str(
+            scheduler_cfg.get("budget_source", "channel_profiles")
+        ).strip().lower()
 
         self.records: List[Dict[str, Any]] = []
         self.frame_records: Dict[Any, List[Dict[str, Any]]] = {}
@@ -619,6 +640,30 @@ class ARCEFixedComm:
 
         return size_info
 
+    def _frame_budget_bytes_from_channel_profile(
+        self,
+        channel_profile: Dict[str, Any],
+        budget_bytes: Optional[float] = None,
+    ) -> float:
+        """
+        Resolve per-link frame budget.
+
+        If budget_bytes is provided by a higher-level controller such as
+        DC2MAB, use it directly. Otherwise derive the budget from the current
+        channel profile:
+            budget = bandwidth_mbps * tx_window_ms / 8
+        """
+        if budget_bytes is not None:
+            return float(max(0.0, budget_bytes))
+
+        bandwidth_mbps = float(channel_profile.get("bandwidth_mbps", 0.0))
+        if bandwidth_mbps <= 0:
+            return float("inf")
+
+        return float(
+            bandwidth_mbps * 1_000_000.0 * (self.tx_window_ms / 1000.0) / 8.0
+        )
+
     def _apply_late_policy(
         self,
         loss_mask: torch.Tensor,
@@ -685,6 +730,7 @@ class ARCEFixedComm:
         ego_index: Optional[int] = None,
         channel_state: Optional[str] = None,
         action_override: Optional[ARCEAction] = None,
+        budget_bytes: Optional[float] = None,
         update_cache: bool = True,
         return_result: bool = False,
     ):
@@ -912,23 +958,18 @@ class ARCEFixedComm:
             )
 
         action_source = "override" if action_override is not None else str(self.policy_name)
+        action = normalize_runtime_action(action)
 
         # PDF action space includes a send/no-send switch.
         # send=0 means this sender does not transmit current-frame feature.
-        if int(getattr(action, "send", 1)) == 0:
+        if int(get_action_field(action, "send", 1)) == 0:
             record = copy.deepcopy(base_record)
             record.update(
                 {
                     "bypassed": False,
                     "bypass_reason": None,
                     "action_source": action_source,
-                    "action": action.as_dict() if hasattr(action, "as_dict") else {
-                        "quant_mode": getattr(action, "quant_mode", None),
-                        "fec_type": getattr(action, "fec_type", None),
-                        "redundancy_ratio": float(getattr(action, "redundancy_ratio", 0.0)),
-                        "send": int(getattr(action, "send", 0)),
-                        "cache_enabled": int(getattr(action, "cache_enabled", 0)),
-                    },
+                    "action": runtime_action_as_dict(action),
                     "channel_state": active_channel_state,
                     "channel_state_source": channel_state_source,
                     "requested_channel_state": requested_channel_state,
@@ -975,10 +1016,92 @@ class ARCEFixedComm:
         # 3. packetization
         packet_result = self.packetizer.packetize(feature)
 
+        # 3.5 bandwidth-aware source-packet selection.
+        #
+        # Only selected source packets enter quantization/FEC/transmission.
+        # Unselected packets are treated as missing and recovered by
+        # temporal cache / spatial interpolation / zero fill.
+        frame_budget_bytes = self._frame_budget_bytes_from_channel_profile(
+            channel_profile=channel_profile,
+            budget_bytes=budget_bytes,
+        )
+        selection_result = self.patch_selector.select(
+            packetization_result=packet_result,
+            action=action,
+            budget_bytes=frame_budget_bytes,
+        )
+
+        if not selection_result.feasible:
+            record = copy.deepcopy(base_record)
+            record.update(
+                {
+                    "bypassed": False,
+                    "bypass_reason": None,
+                    "action_source": action_source,
+                    "action": runtime_action_as_dict(action),
+                    "channel_state": active_channel_state,
+                    "channel_state_source": channel_state_source,
+                    "requested_channel_state": requested_channel_state,
+                    "output_shape": tuple(int(x) for x in feature.shape),
+                    "output_dtype": str(feature.dtype),
+                    "tx_bytes": 0,
+                    "rx_bytes": 0,
+                    "raw_bytes": int(feature.numel() * feature.element_size()),
+                    "compressed_bytes": 0,
+                    "encoded_bytes": 0,
+                    "received_bytes": 0,
+                    "effective_received_bytes": 0,
+                    "bandwidth_selection": selection_result.as_dict(),
+                    "packet": {
+                        "num_source_packets": int(packet_result.num_packets),
+                        "num_encoded_packets": 0,
+                        "num_received_packets": 0,
+                    },
+                    "recovery": {
+                        "num_fec_recovered": 0,
+                        "num_temporal_filled": 0,
+                        "num_spatial_filled": 0,
+                        "num_zero_filled": int(packet_result.num_packets),
+                        "num_still_missing": int(packet_result.num_packets),
+                    },
+                    "quality": {
+                        "q_recv": 0.0,
+                        "q_cache": 0.0,
+                        "num_source_packets": int(packet_result.num_packets),
+                        "num_still_missing": int(packet_result.num_packets),
+                    },
+                    "late": False,
+                    "dropped_by_late": False,
+                    "no_send": True,
+                    "no_send_reason": selection_result.reason,
+                }
+            )
+            recovered_feature = torch.zeros_like(feature)
+            self._append_record(record)
+            result = ARCECommResult(
+                recovered_feature=recovered_feature,
+                record=record,
+            )
+            return result if return_result else (recovered_feature, record)
+
+        selected_mask = selection_result.selected_mask.to(
+            device=feature.device,
+            dtype=torch.bool,
+        )
+        selected_indices = torch.nonzero(
+            selected_mask,
+            as_tuple=False,
+        ).flatten()
+
+        selected_packets = packet_result.packets.index_select(
+            0,
+            selected_indices,
+        )
+
         # 4. quantization
         quantizer = self._build_quantizer(action)
         quant_result = quantizer.quantize_packets(
-            packet_result.packets,
+            selected_packets,
             mode=action.quant_mode,
         )
 
@@ -990,15 +1113,9 @@ class ARCEFixedComm:
         )
         encode_result = fec.encode(quant_result.q_tensor)
 
-        # 6. size before channel loss, used for latency
-        size_info_pre = self._estimate_actual_size(
-            feature=feature,
-            packetization_result=packet_result,
-            encode_result=encode_result,
-            action=action,
-            loss_mask=None,
-        )
-        transmitted_bytes = float(size_info_pre["actual_transmitted_bytes"])
+        # 6. size before channel loss, used for latency.
+        # Use selected-patch message size rather than full feature-map size.
+        transmitted_bytes = float(selection_result.estimated_transmitted_bytes)
 
         # 7. latency
         latency_info = self.channel_manager.estimate_latency(
@@ -1026,14 +1143,43 @@ class ARCEFixedComm:
             device=feature.device,
         )
 
-        # 10. final size after loss
-        size_info = self._estimate_actual_size(
-            feature=feature,
-            packetization_result=packet_result,
-            encode_result=encode_result,
-            action=action,
-            loss_mask=final_loss_mask,
+        # 10. final size after loss.
+        final_loss_mask_bool = final_loss_mask.to(dtype=torch.bool).flatten()
+        num_encoded_actual = int(encode_result.num_encoded_packets)
+        num_lost_actual = int(final_loss_mask_bool.sum().item())
+        num_received_actual = int(num_encoded_actual - num_lost_actual)
+
+        received_bytes_actual = (
+            transmitted_bytes * float(num_received_actual) / float(num_encoded_actual)
+            if num_encoded_actual > 0
+            else 0.0
         )
+
+        raw_bytes_actual = float(feature.numel() * 32 / 8)
+
+        size_info = {
+            "raw_numel": int(feature.numel()),
+            "raw_bytes_fp32_reference": float(raw_bytes_actual),
+            "compressed_bytes": float(selection_result.source_bytes),
+            "actual_num_source_packets": int(selection_result.num_selected_patches),
+            "actual_num_parity_packets": int(selection_result.num_parity_packets),
+            "actual_num_encoded_packets": int(num_encoded_actual),
+            "actual_effective_redundancy_ratio": (
+                float(selection_result.num_parity_packets / max(1, selection_result.num_selected_patches))
+            ),
+            "actual_avg_source_packet_bytes": (
+                float(selection_result.source_bytes / max(1, selection_result.num_selected_patches))
+            ),
+            "actual_parity_bytes": float(selection_result.parity_bytes),
+            "actual_metadata_bytes": float(selection_result.metadata_bytes),
+            "actual_transmitted_bytes": float(transmitted_bytes),
+            "actual_received_bytes": float(received_bytes_actual),
+            "actual_transmitted_mb": float(transmitted_bytes / 1_000_000.0),
+            "actual_received_mb": float(received_bytes_actual / 1_000_000.0),
+            "actual_num_received_encoded_packets": int(num_received_actual),
+            "actual_num_lost_encoded_packets": int(num_lost_actual),
+            "bandwidth_budget_bytes": float(frame_budget_bytes),
+        }
 
         # 11. FEC decode in quantized domain
         decode_result = fec.decode(
@@ -1041,11 +1187,38 @@ class ARCEFixedComm:
             loss_mask=final_loss_mask,
         )
 
-        # 12. dequantize recovered source packets
-        recovered_float_packets = quantizer.dequantize(
+        # 12. dequantize recovered selected source packets
+        recovered_selected_float_packets = quantizer.dequantize(
             q_tensor=decode_result.recovered_packets,
             meta=quant_result.meta,
             output_dtype=feature.dtype,
+        )
+
+        # Expand selected-packet decode results back to the full source-packet
+        # space. Unselected packets are missing by construction.
+        full_packets = packet_result.packets.new_zeros(packet_result.packets.shape)
+
+        full_missing_mask = torch.ones(
+            int(packet_result.num_packets),
+            dtype=torch.bool,
+            device=feature.device,
+        )
+        full_direct_received_mask = torch.zeros_like(full_missing_mask)
+        full_fec_recovered_mask = torch.zeros_like(full_missing_mask)
+
+        full_packets[selected_indices] = recovered_selected_float_packets
+
+        full_missing_mask[selected_indices] = decode_result.missing_source_mask.to(
+            device=feature.device,
+            dtype=torch.bool,
+        )
+        full_direct_received_mask[selected_indices] = decode_result.direct_received_source_mask.to(
+            device=feature.device,
+            dtype=torch.bool,
+        )
+        full_fec_recovered_mask[selected_indices] = decode_result.fec_recovered_source_mask.to(
+            device=feature.device,
+            dtype=torch.bool,
         )
 
         # 13. partial reconstruction in float domain
@@ -1053,11 +1226,11 @@ class ARCEFixedComm:
 
         try:
             partial_result = self.partial_reconstructor.recover_packets(
-                packets=recovered_float_packets,
+                packets=full_packets,
                 packet_metas=packet_result.metas,
-                missing_mask=decode_result.missing_source_mask,
-                direct_received_mask=decode_result.direct_received_source_mask,
-                fec_recovered_mask=decode_result.fec_recovered_source_mask,
+                missing_mask=full_missing_mask,
+                direct_received_mask=full_direct_received_mask,
+                fec_recovered_mask=full_fec_recovered_mask,
                 link_id=link_id,
                 frame_id=frame_id,
                 update_cache=update_cache,
@@ -1085,7 +1258,7 @@ class ARCEFixedComm:
         #             "latency": copy.deepcopy(latency_info),
         #             "late_policy": copy.deepcopy(late_policy_info),
         #         },
-        #         "action": action.as_dict(),
+        #         "action": runtime_action_as_dict(action),
         #         "packetization": packet_result.to_meta_dict(),
         #         "quantization": quant_result.as_dict(),
         #         "fec_encode": encode_result.as_dict(include_metas=False),
@@ -1118,10 +1291,11 @@ class ARCEFixedComm:
                     "latency": copy.deepcopy(latency_info),
                     "late_policy": copy.deepcopy(late_policy_info),
                 },
-                "action": action.as_dict(),
+                "action": runtime_action_as_dict(action),
                 "action_source": action_source,
                 "no_send": False,
                 "packetization": packet_result.to_meta_dict(),
+                "bandwidth_selection": selection_result.as_dict(),
                 "quantization": quant_result.as_dict(),
                 "fec_encode": encode_result.as_dict(include_metas=False),
                 "fec_decode": decode_result.as_dict(),

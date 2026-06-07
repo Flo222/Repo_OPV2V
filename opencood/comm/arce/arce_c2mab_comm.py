@@ -37,6 +37,7 @@ from opencood.comm.arce.policies.ego_greedy_oracle import (
     EgoGreedyKnapsackOracle,
 )
 from opencood.comm.arce.policies.reward import RewardBuffer, pdf_proxy_reward
+from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 
 
 CHANNEL_STATE_ID_TO_NAME = {
@@ -502,7 +503,12 @@ class ARCEC2MABComm:
                 continue
 
             pdf_action: PDFARCEAction = selected.action
-            arce_action = pdf_action.to_arce_action()
+            arce_action = normalize_runtime_action(
+                pdf_action.to_arce_action(),
+                send=int(pdf_action.send),
+                cache_enabled=int(pdf_action.cache_enabled),
+                action_id=str(pdf_action.action_id),
+            )
             state_name = selected.record.get("channel_state", "medium")
             # Requires action_override patch in ARCEFixedComm.
             try:
@@ -514,6 +520,7 @@ class ARCEC2MABComm:
                     ego_index=ego_index,
                     channel_state=state_name,
                     action_override=arce_action,
+                    budget_bytes=float(selected.record.get("link_budget_bytes", total_budget_bytes)),
                     update_cache=update_cache,
                     return_result=False,
                 )

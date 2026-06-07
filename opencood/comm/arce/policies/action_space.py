@@ -32,6 +32,8 @@ except Exception:  # pragma: no cover
     RECOVERY_METHOD_ZERO_FILL = "zero_fill"
 
 
+from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
+
 QUANT_MODES: Tuple[str, ...] = ("fp32", "fp16", "int8", "int4")
 RHO_VALUES: Tuple[float, ...] = (0.0, 0.25, 0.50)
 CACHE_VALUES: Tuple[int, ...] = (0, 1)
@@ -94,7 +96,8 @@ class PDFARCEAction:
         """Convert PDF action to the existing ARCEAction executor format."""
         if ARCEAction is None:
             raise ImportError("ARCEAction is unavailable; check OpenCOOD import path.")
-        return ARCEAction(
+
+        action = ARCEAction(
             name=self.action_id,
             channel_state=self.channel_state,
             quant_mode=self.quant_mode,
@@ -106,9 +109,23 @@ class PDFARCEAction:
             recovery_priority=self.recovery_priority(),
             extra={
                 "pdf_action_id": self.action_id,
+                "action_id": self.action_id,
                 "send": int(self.send),
                 "cache_enabled": int(self.cache_enabled),
+                "quant_mode": self.quant_mode,
+                "fec_type": self.fec_type,
+                "redundancy_ratio": float(self.redundancy_ratio),
+                "xor_group_size": int(self.xor_group_size),
+                "decode_overhead": float(self.decode_overhead),
+                "channel_state": self.channel_state,
             },
+        )
+
+        return normalize_runtime_action(
+            action,
+            send=int(self.send),
+            cache_enabled=int(self.cache_enabled),
+            action_id=str(self.action_id),
         )
 
 

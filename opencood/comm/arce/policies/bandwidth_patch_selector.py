@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
+from opencood.comm.arce.policies.action_adapter import get_action_field
+
 from opencood.comm.packet.size_estimator import (
     quant_mode_to_bits,
     estimate_redundancy_packets,
@@ -83,9 +85,7 @@ class BandwidthAwarePatchSelector:
 
     @staticmethod
     def _action_get(action: Any, name: str, default: Any = None) -> Any:
-        if isinstance(action, dict):
-            return action.get(name, default)
-        return getattr(action, name, default)
+        return get_action_field(action, name, default)
 
     def compute_activation_scores(self, packets: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
         """Compute score_m = mean(abs(packet_m)) over valid spatial cells."""
