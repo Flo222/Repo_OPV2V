@@ -1,8 +1,8 @@
 """PDF-aligned DC2MAB-ARCE communication controller.
 
 This module implements the strict PDF setting:
-    - 36-dimensional final action space
-    - 6D context c_t = [B_norm, p, d_norm, C_ego, q_cache, comp_i_ego]
+    - 48-dimensional PDF action space
+    - 5D context c_t = [B_norm, p, d_norm, C_ego, q_cache]
     - per-CAV Discounted LinUCB action selection
     - ego-side greedy knapsack over best CAV proposals
     - ARCE execution for selected sender-action pairs
@@ -36,7 +36,7 @@ from opencood.comm.arce.policies.ego_greedy_oracle import (
     CAVProposal,
     EgoGreedyKnapsackOracle,
 )
-from opencood.comm.arce.policies.reward import RewardBuffer, c2mab_link_proxy_reward, effective_receive_quality
+from opencood.comm.arce.policies.reward import RewardBuffer, pdf_proxy_reward
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 from opencood.comm.arce.policies.bandwidth_patch_selector import BandwidthAwarePatchSelector
 
@@ -149,7 +149,7 @@ class ARCEC2MABComm:
         self.actions = build_pdf_action_space(
             fec_mode=action_cfg.get("fec_main", action_cfg.get("fec_mode", "raptor_sim")),
             send_values=action_cfg.get("send_values", (0, 1)),
-            quant_modes=action_cfg.get("quant_modes", ("fp16", "int8", "int4")),
+            quant_modes=action_cfg.get("quant_modes", ("fp32", "fp16", "int8", "int4")),
             redundancy_ratios=action_cfg.get("redundancy_ratios", (0.0, 0.25, 0.5)),
             cache_values=action_cfg.get("cache_values", (0, 1)),
             xor_group_size=int(action_cfg.get("xor_group_size", 4)),
@@ -163,12 +163,12 @@ class ARCEC2MABComm:
         context_cfg = self.arce_cfg.get("context", {})
         self.context_builder = PDFContextBuilder(
             b_max_mbps=float(context_cfg.get("b_max_mbps", 27.0)),
-            stale_max_ms=float(context_cfg.get("stale_max_ms", context_cfg.get("deadline_ms", 400.0))),
+            deadline_ms=float(context_cfg.get("deadline_ms", self.arce_cfg.get("deadline_ms", 100.0))),
             confidence_threshold=float(context_cfg.get("confidence_threshold", 0.3)),
         )
 
         c2mab_cfg = self.arce_cfg.get("c2mab", {})
-        self.context_dim = int(c2mab_cfg.get("context_dim", 6))
+        self.context_dim = int(c2mab_cfg.get("context_dim", 5))
         self.lambda_reg = float(c2mab_cfg.get("lambda_reg", 1.0))
         self.discount = float(c2mab_cfg.get("discount", 0.97))
         self.beta = float(c2mab_cfg.get("beta", 1.0))
@@ -176,9 +176,6 @@ class ARCEC2MABComm:
         oracle_cfg = self.arce_cfg.get("ego_oracle", {})
         self.oracle = EgoGreedyKnapsackOracle(
             eps_cost=float(oracle_cfg.get("eps_cost", 1.0)),
-            lambda_comp=float(oracle_cfg.get("lambda_comp", 0.5)),
-            lambda_red=float(oracle_cfg.get("lambda_red", 0.5)),
-            diversity_aware=bool(oracle_cfg.get("diversity_aware", True)),
         )
         scheduler_cfg = self.arce_cfg.get("scheduler", {}) or {}
         self.fps = float(scheduler_cfg.get("fps", 10.0))
@@ -216,12 +213,8 @@ class ARCEC2MABComm:
         )
 
         reward_cfg = self.arce_cfg.get("reward", {})
-        self.reward_alpha_q = float(reward_cfg.get("alpha_q", 0.5))
-        self.reward_alpha_c = float(reward_cfg.get("alpha_c", 0.3))
-        self.reward_alpha_d = float(reward_cfg.get("alpha_d", 0.2))
-        self.reward_alpha_v = float(reward_cfg.get("alpha_v", 1.0))
-        self.reward_tau_stale_ms = float(reward_cfg.get("tau_stale_ms", 300.0))
-        self.reward_stale_max_ms = float(reward_cfg.get("stale_max_ms", 400.0))
+        self.reward_gamma = float(reward_cfg.get("gamma", reward_cfg.get("gamma_cost", 0.1)))
+        self.reward_eta = float(reward_cfg.get("eta", reward_cfg.get("eta_late", 0.2)))
 
         self.policy_bank: Dict[Tuple[str, str], DiscountedLinUCB] = {}
         self.pending_reward = RewardBuffer()
@@ -448,16 +441,11 @@ class ARCEC2MABComm:
             # not the same as the bandwidth budget window.
             latency_ms = float(profile.get("delay_ms", self.tx_window_ms))
             cache_q = self._cache_quality(ego_id, sender_idx)
-            # complementarity will be filled from Where2comm raw masks in the
-            # final wrapper. Until masks are available, use 0.0 while keeping
-            # the 6D interface stable.
-            comp_i_ego = 0.0
             context = self.context_builder.build(
                 channel_profile=profile,
                 latency_ms=latency_ms,
                 ego_confidence=ego_conf,
                 cache_quality=cache_q,
-                complementarity=comp_i_ego,
             )
             # Proposal stage should only propose real send actions.
             # no-send is handled after ego-side oracle selection as fallback.
@@ -523,7 +511,6 @@ class ARCEC2MABComm:
                     cost_bytes=float(best_cost),
                     record={
                         "channel_state": state_name,
-                        "complementarity": float(comp_i_ego),
                         "channel_profile": profile,
                         "link_budget_bytes": float(link_budget_bytes),
                         "total_budget_bytes": float(total_budget_bytes),
@@ -540,7 +527,6 @@ class ARCEC2MABComm:
                         "bandwidth_selection": best_selection.as_dict(),
                         "num_feasible_actions": int(len(feasible)),
                     },
-                    complementarity=float(comp_i_ego),
                 )
             )
 
@@ -609,27 +595,14 @@ class ARCEC2MABComm:
             self._update_cache_quality_from_record(ego_id, sender_idx, record)
             frame_records.append(record)
             self._append_record(record)
-            latency_info = record.get("latency", {}) if isinstance(record.get("latency", {}), dict) else {}
-            recovery_info = record.get("recovery", {}) if isinstance(record.get("recovery", {}), dict) else {}
-            q_recv = float(recovery_info.get("q_recv", recovery_info.get("quality", record.get("q_recv", 0.0))))
-            delay_ms = float(latency_info.get("total_delay_ms", latency_info.get("delay_ms", profile.get("delay_ms", 0.0))))
-            q_eff = effective_receive_quality(q_recv, delay_ms, tau_stale_ms=self.reward_tau_stale_ms)
-            link_budget = float(selected.record.get("link_budget_bytes", total_budget_bytes))
-            tx_bytes = float(record.get("actual_transmitted_bytes", record.get("transmitted_bytes", selected.cost_bytes)))
-            link_violation = bool(tx_bytes > link_budget + 1e-6)
             self.pending_reward.add(
                 {
                     "ego_id": ego_id,
                     "sender_id": sender_idx,
                     "action_id": selected.action_id,
                     "context_vector": selected.context.vector,
-                    "cost_bytes": float(tx_bytes),
-                    "link_budget_bytes": float(link_budget),
-                    "delay_ms": float(delay_ms),
-                    "q_recv": float(q_recv),
-                    "q_eff": float(q_eff),
-                    "budget_violation": bool(link_violation),
-                    "contribution_weight": float(selected.record.get("estimated_patch_ratio", 1.0)),
+                    "cost_bytes": float(selected.cost_bytes),
+                    "late": bool(record.get("latency", {}).get("late", False)),
                 }
             )
 
@@ -703,61 +676,30 @@ class ARCEC2MABComm:
         ego_confidence: Optional[float] = None,
         budget_bytes: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Update selected actions after detection confidence is available.
-
-        This final version uses link-level proxy rewards and does not require
-        ground-truth AP. AP is only used by the offline evaluator.
-        """
+        """Update selected actions after detection confidence is available."""
         if ego_confidence is None:
             ego_confidence = self.last_ego_confidence
+        if budget_bytes is None:
+            budget_bytes = budget_bytes_from_bandwidth(self.total_budget_mbps, self.tau_trans_ms)
         pending = self.pending_reward.pop_all()
-        delta_conf = float(collab_confidence) - float(ego_confidence)
-
-        # Normalize optional contribution weights so their sum is 1. If all are
-        # missing/zero, use uniform weights.
-        raw_ws = [max(float(x.get("contribution_weight", 0.0)), 0.0) for x in pending]
-        sw = sum(raw_ws)
-        if pending and sw <= 1e-12:
-            raw_ws = [1.0 for _ in pending]
-            sw = float(len(pending))
-
-        reward_infos = []
-        for item, raw_w in zip(pending, raw_ws):
-            w = float(raw_w) / max(sw, 1e-12)
-            reward, info = c2mab_link_proxy_reward(
-                delta_confidence=delta_conf,
-                contribution_weight=w,
-                q_eff=float(item.get("q_eff", 0.0)),
-                cost_bytes=float(item.get("cost_bytes", 0.0)),
-                link_budget_bytes=float(item.get("link_budget_bytes", budget_bytes or 1.0)),
-                delay_ms=float(item.get("delay_ms", 0.0)),
-                budget_violation=bool(item.get("budget_violation", False)),
-                alpha_q=self.reward_alpha_q,
-                alpha_c=self.reward_alpha_c,
-                alpha_d=self.reward_alpha_d,
-                alpha_v=self.reward_alpha_v,
-                stale_max_ms=self.reward_stale_max_ms,
-            )
+        total_cost = sum(float(x.get("cost_bytes", 0.0)) for x in pending)
+        late = any(bool(x.get("late", False)) for x in pending)
+        reward, info = pdf_proxy_reward(
+            collab_confidence=collab_confidence,
+            ego_confidence=ego_confidence,
+            communication_cost_bytes=total_cost,
+            budget_bytes=budget_bytes,
+            late=late,
+            gamma=self.reward_gamma,
+            eta=self.reward_eta,
+        )
+        for item in pending:
             policy = self.get_policy(item["ego_id"], item["sender_id"])
             policy.update(item["action_id"], item["context_vector"], reward)
-            info.update({
-                "ego_id": str(item["ego_id"]),
-                "sender_id": str(item["sender_id"]),
-                "action_id": str(item["action_id"]),
-            })
-            reward_infos.append(info)
-
         self.last_ego_confidence = float(ego_confidence)
-        summary = {
-            "collab_confidence": float(collab_confidence),
-            "ego_confidence": float(ego_confidence),
-            "delta_confidence": float(delta_conf),
-            "num_updated": len(pending),
-            "mean_reward": float(sum(x["reward"] for x in reward_infos) / max(len(reward_infos), 1)),
-            "link_rewards": reward_infos,
-        }
-        self._append_record({"reward_update": summary})
-        return summary
+        info["num_updated"] = len(pending)
+        self._append_record({"reward_update": info})
+        return info
 
     def get_records(self) -> List[Dict[str, Any]]:
         return copy.deepcopy(self.records)

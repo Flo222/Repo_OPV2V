@@ -1,11 +1,6 @@
-"""Final 6D context builder for C2MAB-ARCE.
+"""PDF-aligned 5D context builder for DC2MAB-ARCE.
 
-x_i^t = [B_norm, p_t, d_norm, C_ego, q_cache_i, comp_i_ego].
-
-Compared with the old PDF version, this builder explicitly supports
-Where2comm-mask complementarity as the sixth context dimension. When raw
-masks are not available yet, callers may pass complementarity=0.0, which
-keeps the old behavior while preserving the final 6D interface.
+c_t = [B_t_norm, p_t, d_t_norm, C_t_ego, q_t_cache] in R^5.
 """
 
 from __future__ import annotations
@@ -32,11 +27,11 @@ class PDFContextBuilder:
     def __init__(
         self,
         b_max_mbps: float = 27.0,
-        stale_max_ms: float = 400.0,
+        deadline_ms: float = 100.0,
         confidence_threshold: float = 0.3,
     ):
         self.b_max_mbps = float(b_max_mbps)
-        self.stale_max_ms = float(stale_max_ms)
+        self.deadline_ms = float(deadline_ms)
         self.confidence_threshold = float(confidence_threshold)
 
     @staticmethod
@@ -78,31 +73,26 @@ class PDFContextBuilder:
         latency_ms: float,
         ego_confidence: float,
         cache_quality: float,
-        complementarity: float = 0.0,
     ) -> PDFContext:
         bandwidth = float(channel_profile.get("bandwidth_mbps", self.b_max_mbps))
-        if "loss_rate" in channel_profile:
-            p_loss = float(channel_profile.get("loss_rate", 0.0))
-        else:
-            p_loss = self.expected_ge_loss(channel_profile.get("ge", {}))
+        ge = channel_profile.get("ge", {})
+        p_loss = self.expected_ge_loss(ge)
         vec = np.array(
             [
                 bandwidth / max(self.b_max_mbps, 1e-12),
                 p_loss,
-                float(latency_ms) / max(self.stale_max_ms, 1e-12),
+                float(latency_ms) / max(self.deadline_ms, 1e-12),
                 float(ego_confidence),
                 float(cache_quality),
-                float(complementarity),
             ],
             dtype=np.float64,
         )
         # Numerical safety: contexts should stay in a compact range for LinUCB.
         vec[0] = np.clip(vec[0], 0.0, 1.0)
         vec[1] = np.clip(vec[1], 0.0, 1.0)
-        vec[2] = np.clip(vec[2], 0.0, 1.0)
+        vec[2] = max(vec[2], 0.0)
         vec[3] = np.clip(vec[3], 0.0, 1.0)
         vec[4] = np.clip(vec[4], 0.0, 1.0)
-        vec[5] = np.clip(vec[5], 0.0, 1.0)
         return PDFContext(
             vector=vec,
             info={
@@ -111,7 +101,6 @@ class PDFContextBuilder:
                 "d_norm": float(vec[2]),
                 "ego_confidence": float(vec[3]),
                 "cache_quality": float(vec[4]),
-                "complementarity": float(vec[5]),
                 "bandwidth_mbps": bandwidth,
                 "latency_ms": float(latency_ms),
             },

@@ -1,10 +1,10 @@
 """
-Final-setting 36-dimensional ARCE action space.
+PDF-aligned 48-dimensional ARCE action space.
 
 This module implements the action definition in the Notion/PDF design:
     a = (a1, a2, a3, a4)
     a1: collaboration trigger / send flag {0, 1}
-    a2: compression / quantization {fp16, int8, int4}
+    a2: compression / quantization {fp32, fp16, int8, int4}
     a3: redundancy ratio {0.0, 0.25, 0.50}
     a4: temporal fusion/cache flag {0, 1}
 
@@ -34,11 +34,12 @@ except Exception:  # pragma: no cover
 
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 
-QUANT_MODES: Tuple[str, ...] = ("fp16", "int8", "int4")
+QUANT_MODES: Tuple[str, ...] = ("fp32", "fp16", "int8", "int4")
 RHO_VALUES: Tuple[float, ...] = (0.0, 0.25, 0.50)
 CACHE_VALUES: Tuple[int, ...] = (0, 1)
 SEND_VALUES: Tuple[int, ...] = (0, 1)
 QUANT_BITS: Dict[str, int] = {
+    "fp32": 32,
     "fp16": 16,
     "int8": 8,
     "int4": 4,
@@ -156,22 +157,21 @@ def build_pdf_action_space(
     xor_group_size: int = 4,
     decode_overhead: float = 0.0,
 ) -> List[PDFARCEAction]:
-    """Build the final 2x3x3x2 = 36 ARCE action space."""
+    """Build the full PDF 2x4x3x2 action space."""
     actions: List[PDFARCEAction] = []
     for send in send_values:
         for q in quant_modes:
             q = str(q).lower()
             if q not in QUANT_BITS:
-                raise ValueError(f"Unsupported quant_mode={q!r}; final action space uses fp16/int8/int4.")
+                raise ValueError(f"Unsupported quant_mode={q!r}")
             for rho in redundancy_ratios:
                 rho = float(rho)
                 for cache in cache_values:
                     send_i = int(send)
                     cache_i = int(cache)
                     fec_type = infer_fec_type(rho, fec_mode) if send_i else "none"
-                    # Keep all 36 action ids distinct, including send=0 variants.
-                    # Proposal/oracle enumerates only send=1 actions; unselected
-                    # CAVs are logged as no-send fallback.
+                    # Keep all 48 action ids distinct, including send=0 variants,
+                    # because the PDF action space is defined as 48 combinations.
                     action_id = (
                         f"send{send_i}_{q}_rho{_canonical_float_text(rho)}"
                         f"_cache{cache_i}_{fec_type}"
