@@ -397,7 +397,6 @@ class ARCEC2MABComm:
         batch_idx: int = 0,
         update_cache: bool = True,
         return_records: bool = True,
-        message_masks: Optional[torch.Tensor] = None,
     ):
         """Communicate one batch item's features [N, C, H, W]."""
         if features.dim() != 4:
@@ -467,10 +466,6 @@ class ARCEC2MABComm:
             # Cost must be estimated at patch/message level, not full feature-map
             # level. This aligns C2MAB proposal feasibility with the executor:
             #   feature -> packetize -> top-K patch selection -> estimated tx bytes
-            sender_message_mask = None
-            if message_masks is not None:
-                sender_message_mask = message_masks[sender_idx]
-
             packet_result = self.executor.packetizer.packetize(features[sender_idx])
 
             feasible = []
@@ -489,8 +484,6 @@ class ARCEC2MABComm:
                     packetization_result=packet_result,
                     action=arce_action,
                     budget_bytes=float(link_budget_bytes),
-                    message_mask=sender_message_mask,
-                    complementarity=float(comp_i_ego),
                 )
 
                 if not selection_result.feasible:
@@ -591,8 +584,6 @@ class ARCEC2MABComm:
                     channel_state=state_name,
                     action_override=arce_action,
                     budget_bytes=float(selected.record.get("link_budget_bytes", total_budget_bytes)),
-                    message_mask=(message_masks[sender_idx] if message_masks is not None else None),
-                    complementarity=float(getattr(selected, "complementarity", 0.0)),
                     update_cache=update_cache,
                     return_result=False,
                 )
@@ -679,7 +670,6 @@ class ARCEC2MABComm:
         ego_index: Optional[int] = 0,
         update_cache: bool = True,
         return_records: bool = True,
-        message_masks: Optional[torch.Tensor] = None,
     ):
         """Communicate OpenCOOD flattened features [sum(record_len), C, H, W]."""
         if features.dim() != 4:
@@ -690,9 +680,6 @@ class ARCEC2MABComm:
         offset = 0
         for b, n in enumerate(record_lens):
             group = features[offset: offset + n]
-            group_masks = None
-            if message_masks is not None:
-                group_masks = message_masks[offset: offset + n]
             out_group, records = self.communicate_agent_features(
                 group,
                 frame_id=frame_id,
@@ -701,7 +688,6 @@ class ARCEC2MABComm:
                 batch_idx=b,
                 update_cache=update_cache,
                 return_records=True,
-                message_masks=group_masks,
             )
             outputs.append(out_group)
             all_records.extend(records)

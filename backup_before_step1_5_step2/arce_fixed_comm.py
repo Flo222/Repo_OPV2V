@@ -731,8 +731,6 @@ class ARCEFixedComm:
         channel_state: Optional[str] = None,
         action_override: Optional[ARCEAction] = None,
         budget_bytes: Optional[float] = None,
-        message_mask: Optional[torch.Tensor] = None,
-        complementarity: float = 0.0,
         update_cache: bool = True,
         return_result: bool = False,
     ):
@@ -1050,8 +1048,6 @@ class ARCEFixedComm:
             packetization_result=packet_result,
             action=action,
             budget_bytes=frame_budget_bytes,
-            message_mask=message_mask,
-            complementarity=float(complementarity),
         )
 
         if not selection_result.feasible:
@@ -1075,18 +1071,6 @@ class ARCEFixedComm:
                     "received_bytes": 0,
                     "effective_received_bytes": 0,
                     "bandwidth_selection": selection_result.as_dict(),
-                    "patch_summary": {
-                        "num_total_patches": int(selection_result.num_total_patches),
-                        "num_valid_patches": int(selection_result.num_valid_patches),
-                        "num_selected_source_patches": 0,
-                        "num_encoded_patches": 0,
-                        "num_received_patches": 0,
-                        "num_fec_recovered_patches": 0,
-                        "num_missing_by_budget": int(selection_result.num_missing_by_budget),
-                        "num_missing_by_loss": 0,
-                        "selected_patch_ratio": 0.0,
-                        "effective_patch_ratio": 0.0,
-                    },
                     "packet": {
                         "num_source_packets": int(packet_result.num_packets),
                         "num_encoded_packets": 0,
@@ -1221,9 +1205,6 @@ class ARCEFixedComm:
             encode_result=encode_result,
             loss_mask=final_loss_mask,
         )
-        num_missing_by_loss = int(
-            decode_result.missing_source_mask.to(device=feature.device, dtype=torch.bool).sum().item()
-        )
 
         # 12. dequantize recovered selected source packets
         recovered_selected_float_packets = quantizer.dequantize(
@@ -1334,18 +1315,6 @@ class ARCEFixedComm:
                 "no_send": False,
                 "packetization": packet_result.to_meta_dict(),
                 "bandwidth_selection": selection_result.as_dict(),
-                "patch_summary": {
-                    "num_total_patches": int(selection_result.num_total_patches),
-                    "num_valid_patches": int(selection_result.num_valid_patches),
-                    "num_selected_source_patches": int(selection_result.num_selected_patches),
-                    "num_encoded_patches": int(num_encoded_actual),
-                    "num_received_patches": int(num_received_actual),
-                    "num_fec_recovered_patches": int(full_fec_recovered_mask.sum().item()),
-                    "num_missing_by_budget": int(selection_result.num_missing_by_budget),
-                    "num_missing_by_loss": int(num_missing_by_loss),
-                    "selected_patch_ratio": float(selection_result.selected_patch_ratio),
-                    "effective_patch_ratio": float(selection_result.effective_patch_ratio),
-                },
                 "quantization": quant_result.as_dict(),
                 "fec_encode": encode_result.as_dict(include_metas=False),
                 "fec_decode": decode_result.as_dict(),
@@ -1434,7 +1403,6 @@ class ARCEFixedComm:
         ego_index: Optional[int] = None,
         update_cache: bool = True,
         return_records: bool = True,
-        message_masks: Optional[torch.Tensor] = None,
     ):
         """
         Communicate OpenCOOD flattened CAV features.
@@ -1543,10 +1511,6 @@ class ARCEFixedComm:
                     cav_idx=cav_idx,
                 )
 
-                cav_message_mask = None
-                if message_masks is not None:
-                    cav_message_mask = message_masks[global_idx]
-
                 feature_hat, record = self.communicate_feature(
                     feature=features[global_idx],
                     link_id=link_id,
@@ -1554,7 +1518,6 @@ class ARCEFixedComm:
                     agent_index=cav_idx,
                     ego_index=ego_index,
                     channel_state=channel_state,
-                    message_mask=cav_message_mask,
                     update_cache=update_cache,
                     return_result=False,
                 )
