@@ -1273,6 +1273,7 @@ class ARCEFixedComm:
                 frame_id=frame_id,
                 update_cache=update_cache,
                 clone=True,
+                delay_ms=float(latency_info.get("total_delay_ms", latency_info.get("delay_ms", 0.0))),
             )
         finally:
             self.partial_reconstructor.priority = old_priority

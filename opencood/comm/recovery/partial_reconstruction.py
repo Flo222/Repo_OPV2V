@@ -63,6 +63,7 @@ Cache update policy:
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
@@ -453,6 +454,12 @@ class PartialReconstructor:
         self.temporal_fusion_beta = float(
             temporal_fusion_cfg.get("beta", 5.0)
         )
+        self.temporal_fusion_tau_stale_ms = float(
+            temporal_fusion_cfg.get("tau_stale_ms", 300.0)
+        )
+        self.temporal_fusion_use_delay_penalty = _as_bool(
+            temporal_fusion_cfg.get("use_delay_penalty", True)
+        )
         self.update_if_recv_ge_cache = (
             str(temporal_fusion_cfg.get("update_rule", "recv_ge_cache")).strip().lower()
             == "recv_ge_cache"
@@ -498,6 +505,7 @@ class PartialReconstructor:
         method_infos: Dict[str, Any],
         q_recv: Optional[float] = None,
         q_cache: Optional[float] = None,
+        q_eff: Optional[float] = None,
         temporal_alpha: Optional[float] = None,
     ) -> Optional[Any]:
         """
@@ -539,8 +547,13 @@ class PartialReconstructor:
             info={
                 "source": "partial_reconstruction",
                 "num_cache_update_packets": int(cache_update_mask.sum().item()),
-                "quality": None if q_recv is None else float(q_recv),
+                "quality": (
+                    None
+                    if (q_eff is None and q_recv is None)
+                    else float(q_eff if q_eff is not None else q_recv)
+                ),
                 "q_recv": None if q_recv is None else float(q_recv),
+                "q_eff": None if q_eff is None else float(q_eff),
                 "q_cache": None if q_cache is None else float(q_cache),
                 "temporal_alpha": None if temporal_alpha is None else float(temporal_alpha),
             },
@@ -565,6 +578,7 @@ class PartialReconstructor:
         frame_id: Optional[int] = None,
         update_cache: bool = True,
         clone: bool = True,
+        delay_ms: float = 0.0,
     ) -> PartialReconstructionResult:
         """
         Run partial reconstruction on source packets.
@@ -815,12 +829,25 @@ class PartialReconstructor:
                 except Exception:
                     q_cache = 0.0
 
+        delay_ms_f = max(float(delay_ms), 0.0)
+        tau_stale_ms = max(float(self.temporal_fusion_tau_stale_ms), 1e-6)
+        if bool(self.temporal_fusion_use_delay_penalty):
+            q_delay = math.exp(-delay_ms_f / tau_stale_ms)
+        else:
+            q_delay = 1.0
+        q_eff = float(q_recv) * float(q_delay)
+
         temporal_alpha = 1.0
         fusion_info = {
             "enabled": bool(self.temporal_fusion_enabled),
             "applied": False,
             "q_recv": float(q_recv),
+            "q_delay": float(q_delay),
+            "q_eff": float(q_eff),
             "q_cache": float(q_cache),
+            "delay_ms": float(delay_ms_f),
+            "tau_stale_ms": float(tau_stale_ms),
+            "use_delay_penalty": bool(self.temporal_fusion_use_delay_penalty),
             "alpha": float(temporal_alpha),
         }
 
@@ -836,7 +863,7 @@ class PartialReconstructor:
             )
             alpha_tensor = torch.sigmoid(
                 torch.tensor(
-                    float(self.temporal_fusion_beta) * (float(q_recv) - float(q_cache)),
+                    float(self.temporal_fusion_beta) * (float(q_eff) - float(q_cache)),
                     dtype=current_packets.dtype,
                     device=current_packets.device,
                 )
@@ -851,6 +878,10 @@ class PartialReconstructor:
                     "applied": True,
                     "alpha": float(temporal_alpha),
                     "beta": float(self.temporal_fusion_beta),
+                    "q_delay": float(q_delay),
+                    "q_eff": float(q_eff),
+                    "delay_ms": float(delay_ms_f),
+                    "tau_stale_ms": float(tau_stale_ms),
                     "cache_frame_id": getattr(cache_entry_for_fusion, "frame_id", None),
                 }
             )
@@ -876,14 +907,14 @@ class PartialReconstructor:
         if self.update_if_recv_ge_cache:
             update_cache_after_quality_gate = (
                 update_cache_after_quality_gate
-                and float(q_recv) >= float(q_cache)
+                and float(q_eff) >= float(q_cache)
             )
             method_infos["cache_update_quality_gate"] = {
                 "enabled": True,
-                "passed": bool(float(q_recv) >= float(q_cache)),
+                "passed": bool(float(q_eff) >= float(q_cache)),
                 "q_recv": float(q_recv),
                 "q_cache": float(q_cache),
-                "rule": "q_recv >= q_cache",
+                "rule": "q_eff >= q_cache",
             }
 
         self._maybe_update_cache(
@@ -895,6 +926,7 @@ class PartialReconstructor:
             method_infos=method_infos,
             q_recv=float(q_recv),
             q_cache=float(q_cache),
+            q_eff=float(q_eff),
             temporal_alpha=float(temporal_alpha),
         )
 
@@ -924,7 +956,11 @@ class PartialReconstructor:
             "num_cache_update_packets": int(cache_update_mask.sum().item()),
             "recovery_ratio": float(counts["recovery_ratio"]),
             "q_recv": float(q_recv),
+            "q_delay": float(q_delay),
+            "q_eff": float(q_eff),
             "q_cache": float(q_cache),
+            "delay_ms": float(delay_ms_f),
+            "tau_stale_ms": float(tau_stale_ms),
             "temporal_alpha": float(temporal_alpha),
             "temporal_fusion_applied": bool(method_infos.get("temporal_quality_fusion", {}).get("applied", False)),
             "counts": counts,
