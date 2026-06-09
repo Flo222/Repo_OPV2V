@@ -39,6 +39,7 @@ from opencood.comm.arce.policies.ego_greedy_oracle import (
 from opencood.comm.arce.policies.reward import RewardBuffer, c2mab_link_proxy_reward, effective_receive_quality
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 from opencood.comm.arce.policies.bandwidth_patch_selector import BandwidthAwarePatchSelector
+from opencood.comm.arce.policies.complementarity import ego_complementarity
 
 
 CHANNEL_STATE_ID_TO_NAME = {
@@ -509,10 +510,29 @@ class ARCEC2MABComm:
             # not the same as the bandwidth budget window.
             latency_ms = float(profile.get("delay_ms", self.tx_window_ms))
             cache_q = self._cache_quality(ego_id, sender_idx)
-            # complementarity will be filled from Where2comm raw masks in the
-            # final wrapper. Until masks are available, use 0.0 while keeping
-            # the 6D interface stable.
+            # Where2comm raw masks provide semantic spatial visibility.
+            # comp_i_ego = |M_i \ M_ego| / (|M_i| + eps)
+            # This is the 6th context dimension for final C2MAB.
             comp_i_ego = 0.0
+            comp_source = "none"
+            if message_masks is not None:
+                try:
+                    mask_threshold = float(
+                        self.arce_cfg.get("patch_selection", {}).get("mask_threshold", 0.05)
+                    )
+                    ego_mask = message_masks[int(ego_index)]
+                    sender_mask = message_masks[int(sender_idx)]
+                    comp_i_ego = float(
+                        ego_complementarity(
+                            sender_mask,
+                            ego_mask,
+                            threshold=mask_threshold,
+                        )
+                    )
+                    comp_source = "where2comm_raw_mask"
+                except Exception as exc:
+                    comp_i_ego = 0.0
+                    comp_source = f"fallback_zero:{type(exc).__name__}"
             context = self.context_builder.build(
                 channel_profile=profile,
                 latency_ms=latency_ms,
@@ -591,6 +611,7 @@ class ARCEC2MABComm:
                     record={
                         "channel_state": state_name,
                         "complementarity": float(comp_i_ego),
+                        "complementarity_source": str(comp_source),
                         "channel_profile": profile,
                         "link_budget_bytes": float(link_budget_bytes),
                         "total_budget_bytes": float(total_budget_bytes),
