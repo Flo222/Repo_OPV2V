@@ -253,7 +253,16 @@ class BandwidthAwarePatchSelector:
             group_size = int(group_size)
 
         budget_bytes = float(max(0.0, budget_bytes))
-        _, _, H, W = tuple(int(x) for x in packetization_result.original_shape)
+        original_shape = tuple(int(x) for x in packetization_result.original_shape)
+        if len(original_shape) == 4:
+            _, _, H, W = original_shape
+        elif len(original_shape) == 3:
+            _, H, W = original_shape
+        else:
+            raise ValueError(
+                "packetization_result.original_shape should be [C,H,W] or [B,C,H,W], "
+                f"got {original_shape}."
+            )
         message_mask_hw = self._normalize_message_mask(message_mask, (H, W), device, dtype)
 
         activation_scores = self.compute_activation_scores(packets, valid_mask)

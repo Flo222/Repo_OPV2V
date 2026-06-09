@@ -102,6 +102,56 @@ def _safe_get_nested(d: Any, keys: Sequence[str], default: Any = None) -> Any:
     return cur
 
 
+
+def _profile_scalar(value, default=0.0):
+    """
+    Convert scalar / range-style channel profile values to float.
+
+    The final YAML may use values such as:
+        delay_ms: [15, 25]
+        bandwidth_mbps: 27
+    C2MAB context needs a scalar, so list/tuple values are converted
+    to their numeric mean.
+    """
+    if value is None:
+        return float(default)
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, (list, tuple)):
+        nums = []
+        for v in value:
+            try:
+                nums.append(float(v))
+            except Exception:
+                pass
+        if nums:
+            return float(sum(nums) / len(nums))
+        return float(default)
+
+    if isinstance(value, dict):
+        for keys in (("mean",), ("value",), ("default",), ("min", "max"), ("low", "high")):
+            vals = []
+            ok = True
+            for k in keys:
+                if k not in value:
+                    ok = False
+                    break
+                try:
+                    vals.append(float(value[k]))
+                except Exception:
+                    ok = False
+                    break
+            if ok and vals:
+                return float(sum(vals) / len(vals))
+        return float(default)
+
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
 class ARCEC2MABComm:
     """DC2MAB-ARCE communication controller."""
 
@@ -354,7 +404,7 @@ class ARCEC2MABComm:
         if self.budget_source == "fixed_fallback":
             return float(budget_bytes_from_bandwidth(self.total_budget_mbps, self.tau_trans_ms))
 
-        bandwidth_mbps = float(profile.get("bandwidth_mbps", self.total_budget_mbps))
+        bandwidth_mbps = _profile_scalar(profile.get("bandwidth_mbps", self.total_budget_mbps), self.total_budget_mbps)
         return float(budget_bytes_from_bandwidth(bandwidth_mbps, self.tx_window_ms))
 
     def _prepare_link_channel_budget(
@@ -508,7 +558,7 @@ class ARCEC2MABComm:
 
             # Feature delay is a temporal-misalignment context variable,
             # not the same as the bandwidth budget window.
-            latency_ms = float(profile.get("delay_ms", self.tx_window_ms))
+            latency_ms = _profile_scalar(profile.get("delay_ms", self.tx_window_ms), self.tx_window_ms)
             cache_q = self._cache_quality(ego_id, sender_idx)
             # Where2comm raw masks provide semantic spatial visibility.
             # comp_i_ego = |M_i \ M_ego| / (|M_i| + eps)
