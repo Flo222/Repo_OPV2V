@@ -284,6 +284,8 @@ model:
           lambda_mask: 1.0
           lambda_activation: 0.2
           lambda_complementarity: 0.3
+        min_patch_ratio: 0.0
+        strict_min_patch: false
       latency:
         enabled: true
         deadline_ms: 100.0
@@ -451,6 +453,8 @@ arce:
       lambda_mask: 1.0
       lambda_activation: 0.2
       lambda_complementarity: 0.3
+    min_patch_ratio: 0.0
+    strict_min_patch: false
   latency:
     enabled: true
     deadline_ms: 100.0
