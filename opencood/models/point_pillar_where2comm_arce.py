@@ -10,6 +10,8 @@ plug-in communication layer applied between mask generation and fusion.
 
 from __future__ import annotations
 
+import copy
+
 import torch
 import torch.nn as nn
 
@@ -33,6 +35,102 @@ try:
 except Exception as e:  # pragma: no cover
     ARCEC2MABComm = None
     _ARCE_C2MAB_IMPORT_ERROR = e
+
+
+
+def _sanitize_fixed_random_arce_backend_args(args):
+    """
+    Sanitize Fixed/Random baselines before constructing ARCEFixedComm.
+
+    High-level final YAML may use:
+      - arce.mode=random
+      - arce.channel.mode=markov
+      - dict-style recovery configs in action profiles
+
+    ARCEFixedComm / FixedARCEPolicy expect:
+      - arce.mode=fixed
+      - channel.mode=fixed
+      - action.recovery as a string
+
+    This function only changes the low-level executor config and keeps
+    baseline identity via policy=fixed/random.
+    """
+    out = copy.deepcopy(args or {})
+
+    arce = copy.deepcopy(out.get("arce", {}) or {})
+    if not isinstance(arce, dict):
+        return out
+
+    mode = str(arce.get("mode", arce.get("policy", "fixed"))).strip().lower()
+    policy = str(arce.get("policy", mode)).strip().lower()
+
+    # Only sanitize Fixed / Random baselines. C2MAB is handled by ARCEC2MABComm.
+    if mode not in ("fixed", "random") and policy not in ("fixed", "random"):
+        return out
+
+    arce.setdefault("original_mode", mode)
+    arce.setdefault("original_policy", policy)
+
+    # ARCEFixedComm itself only accepts mode=fixed.
+    # Random baseline is preserved by policy=random.
+    arce["mode"] = "fixed"
+    arce["policy"] = policy if policy in ("fixed", "random") else mode
+
+    # ChannelManager backend only supports fixed mode.
+    channel = copy.deepcopy(arce.get("channel", {}) or {})
+    channel.setdefault("original_mode", channel.get("mode", None))
+    channel["mode"] = "fixed"
+    channel.setdefault("fixed_state", "medium")
+    arce["channel"] = channel
+
+    # FeatureSizeEstimator may read quantization.mode from the config.
+    # Make it explicit so top-level arce.mode=fixed is never interpreted
+    # as a quantization mode.
+    quantization = copy.deepcopy(arce.get("quantization", {}) or {})
+    quantization.setdefault("mode", "fp16")
+    arce["quantization"] = quantization
+
+    def _choose_recovery_method(recovery_cfg):
+        """
+        Convert dict-style recovery config to a FixedARCEPolicy-compatible string.
+        """
+        if not isinstance(recovery_cfg, dict):
+            return recovery_cfg
+
+        if bool(recovery_cfg.get("temporal_cache", False)):
+            return "temporal_cache"
+        if bool(recovery_cfg.get("spatial_interpolation", False)):
+            return "spatial_interpolation"
+        if bool(recovery_cfg.get("zero_fill", False)):
+            return "zero_fill"
+        return "none"
+
+    def _sanitize_recovery_fields(obj):
+        """
+        Recursively sanitize all nested action/profile dicts.
+        """
+        if isinstance(obj, dict):
+            rec = obj.get("recovery", None)
+            if isinstance(rec, dict):
+                obj.setdefault("recovery_config", copy.deepcopy(rec))
+                obj["recovery"] = _choose_recovery_method(rec)
+
+            for value in list(obj.values()):
+                _sanitize_recovery_fields(value)
+
+        elif isinstance(obj, list):
+            for value in obj:
+                _sanitize_recovery_fields(value)
+
+        elif isinstance(obj, tuple):
+            for value in obj:
+                _sanitize_recovery_fields(value)
+
+    # Recursively sanitize the whole ARCE subtree, not just fixed_policy/random_policy.
+    _sanitize_recovery_fields(arce)
+
+    out["arce"] = arce
+    return out
 
 
 class PointPillarWhere2commArce(nn.Module):
@@ -79,7 +177,7 @@ class PointPillarWhere2commArce(nn.Module):
             return ARCEC2MABComm(args)
         if ARCEFixedComm is None:
             raise ImportError(f"Failed to import ARCEFixedComm: {_ARCE_FIXED_IMPORT_ERROR}")
-        return ARCEFixedComm(args)
+        return ARCEFixedComm(_sanitize_fixed_random_arce_backend_args(args))
 
     def backbone_fix(self):
         for p in self.pillar_vfe.parameters():
