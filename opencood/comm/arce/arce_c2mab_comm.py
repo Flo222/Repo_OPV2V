@@ -752,7 +752,13 @@ class ARCEC2MABComm:
             latency_info = record.get("latency", {}) if isinstance(record.get("latency", {}), dict) else {}
             recovery_info = record.get("recovery", {}) if isinstance(record.get("recovery", {}), dict) else {}
             q_recv = float(recovery_info.get("q_recv", recovery_info.get("quality", record.get("q_recv", 0.0))))
-            delay_ms = float(latency_info.get("total_delay_ms", latency_info.get("delay_ms", profile.get("delay_ms", 0.0))))
+            delay_ms = _profile_scalar(
+            latency_info.get(
+                "total_delay_ms",
+                latency_info.get("delay_ms", profile.get("delay_ms", 0.0)),
+            ),
+            0.0,
+        )
             q_eff = effective_receive_quality(q_recv, delay_ms, tau_stale_ms=self.reward_tau_stale_ms)
             link_budget = float(selected.record.get("link_budget_bytes", total_budget_bytes))
             tx_bytes = float(record.get("actual_transmitted_bytes", record.get("transmitted_bytes", selected.cost_bytes)))
