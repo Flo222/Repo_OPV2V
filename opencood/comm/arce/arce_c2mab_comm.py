@@ -110,34 +110,94 @@ class ARCEC2MABComm:
         # ARCEC2MABComm is the policy layer, but ARCEFixedComm is reused as
         # the low-level executor. The executor itself only supports
         # mode in {fixed, bypass, disabled}, so do not pass mode=dc2mab into it.
+        # ARCEC2MABComm is the policy layer, but ARCEFixedComm is reused as
+        # the low-level executor. ARCEFixedComm only supports fixed/bypass/disabled.
+        #
+        # cfg may be either:
+        #   1) the arce cfg itself; or
+        #   2) the full model args containing cfg["arce"].
+        # normalize_arce_config() may read nested cfg["arce"], so rewrite BOTH
+        # nested and top-level compatibility keys.
         executor_cfg = copy.deepcopy(cfg)
-        if isinstance(executor_cfg, dict):
-            executor_cfg["mode"] = "fixed"
-            # The actual action is supplied through action_override.
-            # Keep the executor policy simple and deterministic.
-            executor_cfg["policy"] = "fixed"
 
-            # Some lower-level utilities also read a generic `mode` key from
-            # quantization config. If no explicit quantization mode is provided,
-            # they may accidentally see ARCE mode='fixed' as quantization mode.
-            # Use fp32 as the neutral base mode; the real per-link mode is still
-            # supplied by action_override.
-            quant_cfg = executor_cfg.get("quantization", None)
+        if isinstance(executor_cfg, dict):
+            if isinstance(executor_cfg.get("arce", None), dict):
+                executor_arce_cfg = copy.deepcopy(executor_cfg["arce"])
+            else:
+                executor_arce_cfg = copy.deepcopy(self.arce_cfg)
+
+            # ARCEFixedComm executor must run as a fixed executor. The real
+            # per-link action is supplied by C2MAB through action_override.
+            executor_arce_cfg["mode"] = "fixed"
+            executor_arce_cfg["policy"] = "fixed"
+
+            # Keep neutral base quantization config. The actual quant mode is
+            # selected by C2MAB action_override for each selected CAV-action.
+            quant_cfg = executor_arce_cfg.get("quantization", None)
             if not isinstance(quant_cfg, dict):
                 quant_cfg = {}
             quant_cfg.setdefault("mode", "fp32")
-            executor_cfg["quantization"] = quant_cfg
+            executor_arce_cfg["quantization"] = quant_cfg
 
-            # ChannelManager currently supports fixed mode only.
-            # Link-level dynamic states are still passed at runtime via
-            # communicate_feature(..., channel_state=state_name).
-            channel_cfg = executor_cfg.get("channel", None)
+            # Low-level ChannelManager uses fixed channel profiles. The actual
+            # Markov state is still passed at runtime through channel_state.
+            channel_cfg = executor_arce_cfg.get("channel", None)
             if not isinstance(channel_cfg, dict):
                 channel_cfg = {}
             channel_cfg["mode"] = "fixed"
             channel_cfg.setdefault("fixed_state", "medium")
             channel_cfg.setdefault("state_source", "dataset_link_markov_override")
-            executor_cfg["channel"] = channel_cfg
+            executor_arce_cfg["channel"] = channel_cfg
+
+            # Write back both nested and flat copies for compatibility with:
+            #   normalize_arce_config(cfg)
+            #   utilities that read flat cfg["mode"] / cfg["policy"].
+            executor_cfg["arce"] = executor_arce_cfg
+            executor_cfg["mode"] = "fixed"
+            executor_cfg["policy"] = "fixed"
+            executor_cfg["quantization"] = executor_arce_cfg["quantization"]
+            executor_cfg["channel"] = executor_arce_cfg["channel"]
+        else:
+            executor_cfg = {
+                "mode": "fixed",
+                "policy": "fixed",
+                "arce": {
+                    **copy.deepcopy(self.arce_cfg),
+                    "mode": "fixed",
+                    "policy": "fixed",
+                },
+            }
+
+        # FixedARCEPolicy expects recovery to be a string such as
+        # "temporal_cache", "spatial_interpolation", or "zero_fill".
+        # The final experiment YAML may store recovery as a detailed dict:
+        #   recovery:
+        #     temporal_cache: true
+        #     spatial_interpolation: true
+        #     zero_fill: true
+        #     temporal_fusion: {...}
+        # Keep the detailed dict under recovery_config, but expose a string
+        # recovery method to the low-level fixed executor.
+        def _sanitize_recovery_for_fixed_policy(obj):
+            if isinstance(obj, dict):
+                for k, v in list(obj.items()):
+                    if k == "recovery" and isinstance(v, dict):
+                        obj["recovery_config"] = copy.deepcopy(v)
+                        if bool(v.get("temporal_cache", False)):
+                            obj["recovery"] = "temporal_cache"
+                        elif bool(v.get("spatial_interpolation", False)):
+                            obj["recovery"] = "spatial_interpolation"
+                        elif bool(v.get("zero_fill", False)):
+                            obj["recovery"] = "zero_fill"
+                        else:
+                            obj["recovery"] = "zero_fill"
+                    else:
+                        _sanitize_recovery_for_fixed_policy(v)
+            elif isinstance(obj, list):
+                for x in obj:
+                    _sanitize_recovery_for_fixed_policy(x)
+
+        _sanitize_recovery_for_fixed_policy(executor_cfg)
 
         self.executor = ARCEFixedComm(executor_cfg)
         # Proposal stage must use the same bandwidth-aware patch cost model
