@@ -258,10 +258,52 @@ class PointPillarWhere2commArce(nn.Module):
         psm = self.cls_head(fused_feature)
         rm = self.reg_head(fused_feature)
 
+        arce_reward_update = None
+        if (
+            (not self.training)
+            and self.arce_enabled
+            and self.arce_comm is not None
+            and hasattr(self.arce_comm, "update_with_proxy_reward")
+        ):
+            try:
+                # Use the post-fusion classification confidence as the collaborative
+                # perception quality signal for proxy reward update.
+                # psm shape is usually [B, A, H, W]. We first map logits to
+                # probabilities, then take the strongest anchor confidence per cell
+                # and average over the BEV map.
+                with torch.no_grad():
+                    collab_confidence = float(
+                        torch.sigmoid(psm)
+                        .detach()
+                        .max(dim=1)[0]
+                        .mean()
+                        .cpu()
+                        .item()
+                    )
+                arce_reward_update = self.arce_comm.update_with_proxy_reward(
+                    collab_confidence=collab_confidence
+                )
+            except Exception as exc:
+                arce_reward_update = {
+                    "num_updated": 0,
+                    "error": "{}: {}".format(type(exc).__name__, exc),
+                }
+
+        # Keep reward update both as a top-level comm_info field and inside
+        # arce_info so existing recursive debug scripts can find it.
+        if arce_reward_update is not None:
+            if isinstance(arce_info, dict):
+                arce_info = dict(arce_info)
+                arce_info["reward_update"] = arce_reward_update
+            elif isinstance(arce_info, list):
+                arce_info = list(arce_info)
+                arce_info.append({"reward_update": arce_reward_update})
+
         output_dict = {"psm": psm, "rm": rm, "com": communication_rates}
         output_dict["comm_info"] = {
             "where2comm_rate": communication_rates,
             "arce": arce_info,
             "arce_enabled": bool(self.arce_enabled),
+            "arce_reward_update": arce_reward_update,
         }
         return output_dict
