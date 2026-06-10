@@ -146,6 +146,28 @@ def infer_fec_type(rho: float, fec_mode: str = "raptor_sim") -> str:
     raise ValueError(f"Unsupported fec_mode={fec_mode!r}; expected raptor_sim or xor.")
 
 
+def is_valid_pdf_action_combination(send: int, quant_mode: str, rho: float) -> bool:
+    """Return whether a PDF-level action is executable by the current ARCE backend.
+
+    The current FEC backend operates on integer packet symbols. Therefore
+    FP16 messages are treated as high-precision no-FEC transmission, while
+    redundancy ratios > 0 are only executable for INT8/INT4 packet streams.
+    This function defines the common legal action set used by Fixed/Random/C2MAB
+    style policies.
+    """
+    send_i = int(send)
+    if send_i == 0:
+        return True
+
+    q = str(quant_mode).strip().lower()
+    rho_f = float(rho)
+
+    if q == "fp16" and rho_f > 0.0:
+        return False
+
+    return True
+
+
 def build_pdf_action_space(
     fec_mode: str = "raptor_sim",
     send_values: Sequence[int] = SEND_VALUES,
@@ -168,10 +190,18 @@ def build_pdf_action_space(
                 for cache in cache_values:
                     send_i = int(send)
                     cache_i = int(cache)
+
+                    # Use one canonical no-send action. Other send=0 combinations
+                    # are semantically identical and would only create redundant arms.
+                    if send_i == 0 and not (q == "fp16" and abs(rho) < 1e-12 and cache_i == 0):
+                        continue
+
+                    # Keep the executable legal action set consistent with the
+                    # current ARCE backend and Random baseline.
+                    if not is_valid_pdf_action_combination(send_i, q, rho):
+                        continue
+
                     fec_type = infer_fec_type(rho, fec_mode) if send_i else "none"
-                    # Keep all 36 action ids distinct, including send=0 variants.
-                    # Proposal/oracle enumerates only send=1 actions; unselected
-                    # CAVs are logged as no-send fallback.
                     action_id = (
                         f"send{send_i}_{q}_rho{_canonical_float_text(rho)}"
                         f"_cache{cache_i}_{fec_type}"
@@ -249,4 +279,5 @@ __all__ = [
     "budget_bytes_from_bandwidth",
     "feasible_action_costs",
     "action_by_id",
+    "is_valid_pdf_action_combination",
 ]
