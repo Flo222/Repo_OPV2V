@@ -753,15 +753,33 @@ class ARCEC2MABComm:
             recovery_info = record.get("recovery", {}) if isinstance(record.get("recovery", {}), dict) else {}
             quality_info = record.get("quality", {}) if isinstance(record.get("quality", {}), dict) else {}
 
-            # ARCEFixedComm writes receive quality under record["quality"].
-            # Older/debug records may still expose q_recv at top level or under
-            # recovery, so keep fallback order explicit.
-            q_recv = float(
-                quality_info.get(
-                    "q_recv",
-                    recovery_info.get("q_recv", record.get("q_recv", 0.0)),
+            # ARCEFixedComm writes final post-recovery quality under
+            # record["quality"]["q_recv"]. That value can become 1.0 after
+            # temporal cache / spatial interpolation / zero-fill, which hides
+            # the transport-level contribution of FEC. For C2MAB reward, use
+            # a transport-level receive quality computed before high-level
+            # recovery dominates:
+            #
+            #   q_transport = (received_source + fec_recovered_source) / selected_source
+            #
+            # This keeps redundancy useful in the reward signal while preserving
+            # record["quality"]["q_recv"] for final reconstruction diagnostics.
+            patch_summary = record.get("patch_summary", {}) if isinstance(record.get("patch_summary", {}), dict) else {}
+            selected_src = float(patch_summary.get("num_selected_source_patches", 0.0) or 0.0)
+            missing_by_loss = float(patch_summary.get("num_missing_by_loss", 0.0) or 0.0)
+
+            if selected_src > 0.0:
+                # Transport-level quality for C2MAB reward:
+                # source-patch quality after channel/FEC, before temporal/spatial/zero-fill recovery.
+                q_recv = max(0.0, min(1.0, 1.0 - missing_by_loss / selected_src))
+            else:
+                q_recv = float(
+                    quality_info.get(
+                        "q_recv",
+                        recovery_info.get("q_recv", record.get("q_recv", 0.0)),
+                    )
                 )
-            )
+
             delay_ms = _profile_scalar(
                 latency_info.get(
                     "total_delay_ms",
@@ -910,6 +928,7 @@ class ARCEC2MABComm:
                 "sender_id": str(item["sender_id"]),
                 "action_id": str(item["action_id"]),
             })
+            info["q_recv"] = float(item.get("q_recv", 0.0))
             reward_infos.append(info)
 
         self.last_ego_confidence = float(ego_confidence)
