@@ -1,73 +1,35 @@
 """
-Fixed-policy ARCE communication pipeline for OPV2V / V2X-ViT.
+Fixed-policy ARCE communication pipeline.
 
-This module is the main execution controller of ARCE communication.
+Modified version for byte-stream packetization experiments:
 
-For one non-ego feature tensor [C, H, W], the pipeline is:
+1. Where2comm masked feature F is passed into ARCE.
+2. Temporal delay policy:
+   - good   -> current frame
+   - medium -> current frame
+   - bad    -> previous frame
+3. Quantize first:
+      Q(F)
+4. Then byte-stream packetization:
+      v = Flatten(Q(F))
+      Lp = 1024 Bytes
+      N = ceil(|v| / Lp)
+      p_i = v[(i-1)Lp : iLp]
+5. Packet loss is independent Bernoulli:
+      receive_i ~ Bernoulli(1 - PLR_t)
+      good   PLR = 0.05
+      medium PLR = 0.20
+      bad    PLR = 0.35
+6. Latency is fixed by state:
+      good   10 ms
+      medium 50 ms
+      bad    100 ms
+7. System bandwidth budget is split equally among collaborators:
+      per_link_budget = system_budget / num_collaborators
 
-    1. Get channel profile:
-        good / medium / bad, bandwidth, jitter, GE params
-
-    2. Select fixed ARCE action:
-        quant_mode, fec_type, redundancy, recovery chain
-
-    3. Packetize feature:
-        [C, H, W] -> [K, C, packet_h, packet_w]
-
-    4. Quantize packets:
-        FP32 / FP16 / INT8 / INT4
-
-    5. FEC encode:
-        K source packets -> N encoded packets
-
-    6. Estimate communication overhead and latency:
-        transmitted bytes, received bytes, total delay, late flag
-
-    7. GE packet loss:
-        loss_mask over N encoded packets
-
-    8. FEC decode:
-        N encoded packets + loss_mask -> K recovered source packets
-
-    9. Dequantize:
-        integer / FP16 representation -> float packets
-
-    10. Partial reconstruction:
-        temporal cache -> spatial interpolation -> zero-fill
-
-    11. Unpacketize:
-        [K, C, packet_h, packet_w] -> [C, H, W]
-
-The output feature can be fed back into the V2X-ViT fusion path.
-
-Important:
-    Ego feature should usually bypass ARCE because it is local.
-    Non-ego collaborative features should pass through ARCE.
-
-Recommended link scope:
-    arce:
-      link_scope: non_ego
-
-Main usage:
-
-    arce_comm = ARCEFixedComm(cfg)
-
-    recovered_feature, info = arce_comm.communicate_feature(
-        feature=feature,
-        link_id=(batch_idx, ego_idx, sender_idx),
-        frame_id=frame_id,
-        agent_index=sender_idx,
-        ego_index=ego_idx,
-    )
-
-For agent feature tensor:
-    features [N, C, H, W]
-
-    recovered_features, info = arce_comm.communicate_agent_features(
-        features,
-        frame_id=frame_id,
-        ego_index=0,
-    )
+This file intentionally disables the old spatial packetization + GE + FEC flow
+inside ARCEFixedComm. It keeps the public interface compatible with the current
+Where2comm-ARCE integration.
 """
 
 from __future__ import annotations
@@ -75,7 +37,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -88,35 +50,13 @@ from opencood.comm.arce import (
     extract_arce_cfg,
     should_apply_to_agent,
 )
-
 from opencood.comm.arce.fixed_policy import (
     ARCEAction,
     FixedARCEPolicy,
 )
-
 from opencood.comm.arce.random_policy import RandomARCEPolicy
 from opencood.comm.channel.channel_manager import ChannelManager
-from opencood.comm.packet.packetizer import FeaturePacketizer
-from opencood.comm.packet.size_estimator import FeatureSizeEstimator
 from opencood.compression.feature_quantizer import FeatureQuantizer
-
-from opencood.comm.fec import (
-    FEC_TYPE_NONE,
-    FEC_TYPE_XOR,
-    FEC_TYPE_RAPTOR_SIM,
-)
-
-from opencood.comm.fec.fec_none import NoFEC
-from opencood.comm.fec.fec_xor import XORFEC
-from opencood.comm.fec.fec_raptor_sim import RaptorSimFEC
-
-from opencood.comm.recovery.partial_reconstruction import (
-    PartialReconstructor,
-)
-
-from opencood.comm.arce.policies.bandwidth_patch_selector import (
-    BandwidthAwarePatchSelector,
-)
 from opencood.comm.arce.policies.action_adapter import (
     get_action_field,
     normalize_runtime_action,
@@ -143,102 +83,71 @@ VALID_LATE_POLICIES = (
 
 
 def _require_tensor(x: Any, name: str = "tensor") -> torch.Tensor:
-    """
-    Validate torch.Tensor input.
-    """
     if not torch.is_tensor(x):
         raise TypeError(f"{name} should be a torch.Tensor, got {type(x)}.")
-
     return x
 
 
 def _as_bool(value: Any) -> bool:
-    """
-    Convert common config values to bool.
-    """
     if isinstance(value, bool):
         return value
-
     if isinstance(value, str):
         text = value.strip().lower()
         if text in ("true", "1", "yes", "y", "on"):
             return True
         if text in ("false", "0", "no", "n", "off"):
             return False
-
     return bool(value)
 
 
 def _as_positive_int(value: Any, name: str) -> int:
-    """
-    Convert value to positive int.
-    """
     try:
         value = int(value)
     except (TypeError, ValueError):
         raise ValueError(f"{name} should be convertible to int, got {value}.")
-
     if value <= 0:
         raise ValueError(f"{name} should be positive, got {value}.")
-
     return value
 
 
 def _stable_int_seed(base_seed: int, *items: Any) -> int:
-    """
-    Build stable deterministic seed from base seed and arbitrary identifiers.
-
-    Python hash() is randomized across processes, so use md5(repr(...)).
-    """
     text = "|".join(repr(item) for item in items).encode("utf-8")
     digest = hashlib.md5(text).hexdigest()
     offset = int(digest[:8], 16)
-
     return int((int(base_seed) + offset) % (2**32 - 1))
 
 
 def _normalize_late_policy(policy: Optional[str]) -> str:
-    """
-    Normalize late-message policy.
-
-    allow:
-        Use the message even if it is late.
-
-    drop:
-        Treat the whole encoded message as lost when late.
-
-    cache_only:
-        Same packet behavior as drop for the current frame, but the name
-        makes the intended recovery behavior explicit: later partial
-        reconstruction may use temporal cache.
-    """
     if policy is None:
         return LATE_POLICY_CACHE_ONLY
-
     policy = str(policy).strip().lower()
-
     if policy not in VALID_LATE_POLICIES:
         raise ValueError(
             f"Unsupported late_policy: {policy}. "
             f"Expected one of {VALID_LATE_POLICIES}."
         )
-
     return policy
 
 
-def _merge_dict(base: Optional[Dict[str, Any]], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Shallow merge two dictionaries.
-    """
+def _merge_dict(
+    base: Optional[Dict[str, Any]],
+    override: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
     result = copy.deepcopy(base or {})
     result.update(copy.deepcopy(override or {}))
     return result
 
 
+def _safe_get_action_field(action: Any, name: str, default: Any = None) -> Any:
+    try:
+        return get_action_field(action, name, default)
+    except Exception:
+        if isinstance(action, dict):
+            return action.get(name, default)
+        return getattr(action, name, default)
+
+
 def _mask_summary(mask: torch.Tensor, true_name: str = "true") -> Dict[str, Any]:
-    """
-    Return JSON-friendly mask summary.
-    """
     mask = mask.to(dtype=torch.bool).flatten()
     n = int(mask.numel())
     num_true = int(mask.sum().item())
@@ -250,37 +159,147 @@ def _mask_summary(mask: torch.Tensor, true_name: str = "true") -> Dict[str, Any]
 
 
 @dataclass
+class BytePacketizationResult:
+    packets: torch.Tensor
+    valid_bytes: torch.Tensor
+    original_num_bytes: int
+    original_shape: Tuple[int, ...]
+    original_dtype: torch.dtype
+    packet_size_bytes: int
+    source_tensor_kind: str = "q_tensor"
+
+    @property
+    def num_packets(self) -> int:
+        return int(self.packets.shape[0])
+
+    def to_meta_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": "byte_stream",
+            "source_tensor_kind": self.source_tensor_kind,
+            "packet_size_bytes": int(self.packet_size_bytes),
+            "num_packets": int(self.num_packets),
+            "original_num_bytes": int(self.original_num_bytes),
+            "original_shape": tuple(int(x) for x in self.original_shape),
+            "original_dtype": str(self.original_dtype),
+            "valid_bytes_sum": int(self.valid_bytes.sum().item())
+            if self.valid_bytes.numel() > 0
+            else 0,
+        }
+
+
+class ByteStreamPacketizer:
+    """
+    Q(F) -> byte stream v -> fixed-size packets.
+
+    Lp = 1024 Bytes by default.
+    """
+
+    def __init__(self, cfg: Optional[Dict[str, Any]] = None):
+        cfg = cfg or {}
+        packet_cfg = cfg.get("packetizer", cfg)
+        self.packet_size_bytes = int(
+            packet_cfg.get("packet_size_bytes", packet_cfg.get("Lp", 1024))
+        )
+        if self.packet_size_bytes <= 0:
+            raise ValueError(
+                f"packet_size_bytes should be positive, got {self.packet_size_bytes}."
+            )
+
+    def tensor_to_bytes(self, tensor: torch.Tensor) -> torch.Tensor:
+        tensor = tensor.detach().contiguous()
+        return tensor.view(torch.uint8).flatten()
+
+    def bytes_to_tensor(
+        self,
+        byte_stream: torch.Tensor,
+        shape: Sequence[int],
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        return byte_stream.contiguous().view(dtype).view(*shape)
+
+    def packetize(
+        self,
+        tensor: torch.Tensor,
+        source_tensor_kind: str = "q_tensor",
+    ) -> BytePacketizationResult:
+        tensor = _require_tensor(tensor, "tensor")
+        byte_stream = self.tensor_to_bytes(tensor)
+        num_bytes = int(byte_stream.numel())
+        Lp = int(self.packet_size_bytes)
+
+        num_packets = int(math.ceil(num_bytes / Lp)) if num_bytes > 0 else 0
+
+        if num_packets == 0:
+            packets = torch.empty(
+                (0, Lp),
+                dtype=torch.uint8,
+                device=tensor.device,
+            )
+            valid_bytes = torch.empty(
+                (0,),
+                dtype=torch.long,
+                device=tensor.device,
+            )
+        else:
+            padded_num_bytes = num_packets * Lp
+            padded = torch.zeros(
+                (padded_num_bytes,),
+                dtype=torch.uint8,
+                device=tensor.device,
+            )
+            padded[:num_bytes] = byte_stream
+            packets = padded.view(num_packets, Lp)
+
+            valid_bytes = torch.full(
+                (num_packets,),
+                Lp,
+                dtype=torch.long,
+                device=tensor.device,
+            )
+            last_valid = num_bytes - (num_packets - 1) * Lp
+            valid_bytes[-1] = int(last_valid)
+
+        return BytePacketizationResult(
+            packets=packets,
+            valid_bytes=valid_bytes,
+            original_num_bytes=num_bytes,
+            original_shape=tuple(int(x) for x in tensor.shape),
+            original_dtype=tensor.dtype,
+            packet_size_bytes=Lp,
+            source_tensor_kind=source_tensor_kind,
+        )
+
+    def unpacketize(
+        self,
+        packets: torch.Tensor,
+        meta: BytePacketizationResult,
+    ) -> torch.Tensor:
+        packets = _require_tensor(packets, "packets")
+        if meta.original_num_bytes == 0:
+            return torch.empty(
+                meta.original_shape,
+                dtype=meta.original_dtype,
+                device=packets.device,
+            )
+
+        byte_stream = packets.reshape(-1)[: meta.original_num_bytes]
+        return self.bytes_to_tensor(
+            byte_stream=byte_stream,
+            shape=meta.original_shape,
+            dtype=meta.original_dtype,
+        )
+
+    def get_config(self) -> Dict[str, Any]:
+        return {
+            "mode": "byte_stream",
+            "packet_size_bytes": int(self.packet_size_bytes),
+        }
+
+
+@dataclass
 class ARCECommResult:
-    """
-    Result of one feature communication.
-
-    Attributes
-    ----------
-    recovered_feature : torch.Tensor
-        Final recovered feature [C, H, W].
-
-    record : dict
-        JSON-friendly communication record.
-
-    packetization_result : object
-        PacketizationResult from FeaturePacketizer.
-
-    quantization_result : object
-        FeatureQuantizationResult from FeatureQuantizer.
-
-    encode_result : object
-        FECEncodeResult.
-
-    decode_result : object
-        FECDecodeResult.
-
-    partial_result : object
-        PartialReconstructionResult.
-    """
-
     recovered_feature: torch.Tensor
     record: Dict[str, Any]
-
     packetization_result: Optional[Any] = None
     quantization_result: Optional[Any] = None
     encode_result: Optional[Any] = None
@@ -288,77 +307,22 @@ class ARCECommResult:
     partial_result: Optional[Any] = None
 
     def as_dict(self) -> Dict[str, Any]:
-        """
-        Return JSON-friendly communication record.
-        """
         return copy.deepcopy(self.record)
 
 
 class ARCEFixedComm:
     """
-    Fixed-policy ARCE communication executor.
+    Fixed / random ARCE communication executor.
 
-    This class has no learnable parameters. It is intentionally implemented as
-    a plain Python object rather than nn.Module.
-
-    It can be safely instantiated inside OpenCOOD model code and called during
-    forward/inference.
+    This version uses:
+    - quantize first;
+    - byte-stream packetization;
+    - Bernoulli packet loss;
+    - fixed state delay;
+    - bad-state previous-frame feature.
     """
 
     def __init__(self, cfg: Optional[Dict[str, Any]] = None):
-        """
-        Parameters
-        ----------
-        cfg : dict
-            Full YAML config or direct ARCE config.
-
-        Expected YAML style:
-
-            arce:
-              enabled: true
-              mode: fixed
-              policy: fixed
-              seed: 2026
-              link_scope: non_ego
-              record_per_frame: true
-              record_per_link: true
-              max_records: 100000
-              late_policy: cache_only
-
-              channel:
-                mode: fixed
-                fixed_state: medium
-
-              packetizer:
-                mode: grid
-                grid_size: [10, 10]
-
-              quantization:
-                granularity: per_tensor
-                compute_error: true
-
-              fec:
-                enabled: true
-
-              recovery:
-                temporal_cache: true
-                spatial_interpolation: true
-                zero_fill: true
-
-              fixed_policy:
-                profiles:
-                  good:
-                    quant_mode: fp16
-                    fec_type: none
-                  medium:
-                    quant_mode: int8
-                    fec_type: xor
-                    xor_group_size: 4
-                  bad:
-                    quant_mode: int4
-                    fec_type: raptor_sim
-                    redundancy_ratio: 0.5
-        """
         self.full_cfg = cfg or {}
         self.arce_cfg_raw = extract_arce_cfg(cfg or {})
         self.arce_cfg = normalize_arce_config(cfg or {})
@@ -366,7 +330,6 @@ class ARCEFixedComm:
         self.enabled = bool(self.arce_cfg["enabled"])
         self.mode = self.arce_cfg["mode"]
         self.seed = int(self.arce_cfg["seed"])
-
         self.link_scope = self.arce_cfg["link_scope"]
         self.record_per_frame = bool(self.arce_cfg["record_per_frame"])
         self.record_per_link = bool(self.arce_cfg["record_per_link"])
@@ -378,7 +341,6 @@ class ARCEFixedComm:
             self.arce_cfg_raw.get("max_records", 100000),
             "arce.max_records",
         )
-
         self.keep_tensor_results = _as_bool(
             self.arce_cfg_raw.get("keep_tensor_results", False)
         )
@@ -386,25 +348,31 @@ class ARCEFixedComm:
         self.late_policy = _normalize_late_policy(
             self.arce_cfg_raw.get("late_policy", None)
         )
-        
         self.enable_deadline_drop = _as_bool(
             self.arce_cfg_raw.get("enable_deadline_drop", False)
         )
 
         self.default_ego_index = int(self.arce_cfg_raw.get("ego_index", 0))
 
-        self.channel_manager = ChannelManager(self.arce_cfg_raw)
+        # The old ChannelManager only supports fixed mode in this branch.
+        # To avoid failure when YAML uses channel.mode=markov, we sanitize it here.
+        channel_manager_cfg = copy.deepcopy(self.arce_cfg_raw)
+        channel_manager_cfg.setdefault("channel", {})
+        if isinstance(channel_manager_cfg["channel"], dict):
+            channel_manager_cfg["channel"]["mode"] = "fixed"
+
+        self.channel_manager = ChannelManager(channel_manager_cfg)
+
         self.policy_name = str(self.arce_cfg.get("policy", "fixed")).strip().lower()
         if self.policy_name == ARCE_POLICY_RANDOM:
             self.action_policy = RandomARCEPolicy(self.arce_cfg_raw)
         else:
             self.action_policy = FixedARCEPolicy(self.arce_cfg_raw)
-        # Compatibility: existing code / logs may still refer to fixed_policy.
+
+        # Compatibility with existing logs / calls.
         self.fixed_policy = self.action_policy
-        self.packetizer = FeaturePacketizer(self.arce_cfg_raw)
-        self.size_estimator = FeatureSizeEstimator(self.arce_cfg_raw)
-        self.partial_reconstructor = PartialReconstructor(self.arce_cfg_raw)
-        self.patch_selector = BandwidthAwarePatchSelector(self.arce_cfg_raw)
+
+        self.byte_packetizer = ByteStreamPacketizer(self.arce_cfg_raw)
 
         scheduler_cfg = self.arce_cfg_raw.get("scheduler", {}) or {}
         self.tx_window_ms = float(
@@ -413,9 +381,70 @@ class ARCEFixedComm:
                 self.arce_cfg_raw.get("deadline_ms", 100.0),
             )
         )
-        self.bandwidth_budget_source = str(
-            scheduler_cfg.get("budget_source", "channel_profiles")
+        self.budget_scope = str(
+            scheduler_cfg.get("budget_scope", "system_equal_split")
         ).strip().lower()
+        self.system_budget_mbps = float(
+            scheduler_cfg.get(
+                "system_budget_mbps",
+                scheduler_cfg.get("total_budget_mbps", 5.0),
+            )
+        )
+
+        # Bernoulli packet loss.
+        channel_cfg = self.arce_cfg_raw.get("channel", {}) or {}
+        self.loss_model = str(channel_cfg.get("loss_model", "bernoulli")).strip().lower()
+        self.bernoulli_loss_rates = {
+            "good": 0.05,
+            "medium": 0.20,
+            "bad": 0.35,
+        }
+        self.bernoulli_loss_rates.update(
+            channel_cfg.get("bernoulli_loss_rates", {}) or {}
+        )
+
+        # Fixed delay.
+        self.latency_model_type = str(
+            channel_cfg.get("latency_model", "fixed_state_delay")
+        ).strip().lower()
+        self.fixed_delay_ms = {
+            "good": 10.0,
+            "medium": 50.0,
+            "bad": 100.0,
+        }
+        self.fixed_delay_ms.update(channel_cfg.get("fixed_delay_ms", {}) or {})
+
+        # Bad-state temporal policy.
+        delay_cfg = self.arce_cfg_raw.get("delay", {}) or {}
+        self.delay_policy_by_state = delay_cfg.get(
+            "policy_by_state",
+            {
+                "good": "current",
+                "medium": "current",
+                "bad": "previous_frame",
+            },
+        )
+
+        # Markov fallback when data_dict does not provide channel_state_ids.
+        self.markov_cfg = self._extract_markov_cfg()
+        self.markov_enabled = _as_bool(self.markov_cfg.get("enabled", False))
+        self.markov_states = [
+            str(s).lower() for s in self.markov_cfg.get("states", ["good", "medium", "bad"])
+        ]
+        self.markov_init_state = str(
+            self.markov_cfg.get("init_state", "medium")
+        ).lower()
+        self.markov_transition_matrix = self.markov_cfg.get(
+            "transition_matrix",
+            [
+                [0.85, 0.13, 0.02],
+                [0.10, 0.80, 0.10],
+                [0.03, 0.17, 0.80],
+            ],
+        )
+        self._markov_state_by_link: Dict[Any, str] = {}
+
+        self.prev_feature_cache: Dict[Any, torch.Tensor] = {}
 
         self.records: List[Dict[str, Any]] = []
         self.frame_records: Dict[Any, List[Dict[str, Any]]] = {}
@@ -424,123 +453,84 @@ class ARCEFixedComm:
         self.num_bypassed_links = 0
         self.num_late_links = 0
         self.num_dropped_by_late = 0
+        self._loss_call_index = 0
+        self._markov_call_index = 0
 
     # ------------------------------------------------------------------
-    # config helpers
+    # Config helpers
     # ------------------------------------------------------------------
+
+    def _extract_markov_cfg(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {}
+
+        if isinstance(self.full_cfg, dict):
+            top = self.full_cfg.get("channel_state_markov", None)
+            if isinstance(top, dict):
+                result.update(copy.deepcopy(top))
+
+        raw = self.arce_cfg_raw
+        top_raw = raw.get("channel_state_markov", None)
+        if isinstance(top_raw, dict):
+            result.update(copy.deepcopy(top_raw))
+
+        channel_cfg = raw.get("channel", {}) or {}
+        if str(channel_cfg.get("mode", "")).strip().lower() == "markov":
+            result["enabled"] = True
+
+        if "states" in channel_cfg:
+            result["states"] = copy.deepcopy(channel_cfg["states"])
+        if "init_state" in channel_cfg:
+            result["init_state"] = channel_cfg["init_state"]
+        if "transition_matrix" in channel_cfg:
+            result["transition_matrix"] = copy.deepcopy(channel_cfg["transition_matrix"])
+
+        return result
 
     def _get_base_quant_cfg(self) -> Dict[str, Any]:
-        """
-        Return base quantization config from ARCE config.
-        """
         return copy.deepcopy(self.arce_cfg_raw.get("quantization", {}))
 
-    def _get_base_fec_cfg(self) -> Dict[str, Any]:
-        """
-        Return base FEC config from ARCE config.
-        """
-        return copy.deepcopy(self.arce_cfg_raw.get("fec", {}))
-
     def _build_quantizer(self, action: ARCEAction) -> FeatureQuantizer:
-        """
-        Build action-specific FeatureQuantizer.
-
-        The action overrides mode/enabled, while YAML can still provide
-        granularity, output_dtype, compute_error, etc.
-        """
         quant_cfg = _merge_dict(
             self._get_base_quant_cfg(),
-            action.to_quant_config(),
+            action.to_quant_config() if hasattr(action, "to_quant_config") else {},
         )
-
         return FeatureQuantizer({"quantization": quant_cfg})
 
-    def _build_fec(self, action: ARCEAction, link_id: Any = None, frame_id: Optional[int] = None):
-        """
-        Build action-specific FEC module.
-        """
-        fec_cfg = _merge_dict(
-            self._get_base_fec_cfg(),
-            action.to_fec_config(),
-        )
-
-        # For stochastic fountain repair generation, offset seed by link/frame
-        # so different links/frames do not always produce identical repair graphs.
-        if action.fec_type == FEC_TYPE_RAPTOR_SIM:
-            base_seed = int(fec_cfg.get("seed", self.seed))
-            fec_cfg["seed"] = _stable_int_seed(
-                base_seed,
-                "raptor_sim",
-                link_id,
-                frame_id,
-            )
-
-        if action.fec_type == FEC_TYPE_NONE:
-            return NoFEC({"fec": fec_cfg})
-
-        if action.fec_type == FEC_TYPE_XOR:
-            return XORFEC({"fec": fec_cfg})
-
-        if action.fec_type == FEC_TYPE_RAPTOR_SIM:
-            return RaptorSimFEC({"fec": fec_cfg})
-
-        raise ValueError(f"Unsupported action.fec_type: {action.fec_type}")
-
-    def _temporarily_set_recovery_priority(self, action: ARCEAction):
-        """
-        Apply action recovery priority to the persistent PartialReconstructor.
-
-        Returns the previous priority so the caller can restore it.
-        """
-        old_priority = self.partial_reconstructor.priority
-        self.partial_reconstructor.priority = tuple(action.recovery_priority)
-        return old_priority
+    def _get_action_quant_mode(self, action: Any) -> str:
+        quant_mode = _safe_get_action_field(action, "quant_mode", None)
+        if quant_mode is None:
+            quant_mode = _safe_get_action_field(action, "quant", None)
+        if quant_mode is None:
+            quant_mode = self._get_base_quant_cfg().get("mode", "fp16")
+        return str(quant_mode).strip().lower()
 
     # ------------------------------------------------------------------
-    # record helpers
+    # Records
     # ------------------------------------------------------------------
 
     def _append_record(self, record: Dict[str, Any]) -> None:
-        """
-        Append one communication record.
-        """
         if not self.record_per_link:
             return
 
         self.records.append(copy.deepcopy(record))
-
         if len(self.records) > self.max_records:
             overflow = len(self.records) - self.max_records
             self.records = self.records[overflow:]
 
         frame_id = record.get("frame_id", None)
-
         if self.record_per_frame:
             self.frame_records.setdefault(frame_id, []).append(copy.deepcopy(record))
 
     def clear_records(self) -> None:
-        """
-        Clear communication records.
-        """
         self.records.clear()
         self.frame_records.clear()
 
     def reset(self, clear_cache: bool = True, clear_records: bool = True) -> None:
-        """
-        Reset random states, cache, and records.
-
-        Parameters
-        ----------
-        clear_cache : bool
-            Whether to clear temporal cache.
-
-        clear_records : bool
-            Whether to clear communication logs.
-        """
         self.channel_manager.reset()
 
         if clear_cache:
-            self.partial_reconstructor.clear_cache()
+            self.prev_feature_cache.clear()
+            self._markov_state_by_link.clear()
 
         if clear_records:
             self.clear_records()
@@ -549,176 +539,266 @@ class ARCEFixedComm:
         self.num_bypassed_links = 0
         self.num_late_links = 0
         self.num_dropped_by_late = 0
+        self._loss_call_index = 0
+        self._markov_call_index = 0
 
     def set_channel_state(self, state: str) -> None:
-        """
-        Change fixed channel state at runtime.
-        """
         self.channel_manager.set_fixed_state(state)
 
     # ------------------------------------------------------------------
-    # size / latency helpers
+    # Channel / loss / delay
     # ------------------------------------------------------------------
 
-    def _estimate_actual_size(
+    def _normalize_state_name(self, state: Optional[str]) -> str:
+        if state is None:
+            return "medium"
+
+        state = str(state).strip().lower()
+        if state == "mid":
+            state = "medium"
+        if state == "medium":
+            return "medium"
+        if state == "good":
+            return "good"
+        if state == "bad":
+            return "bad"
+
+        raise ValueError(
+            f"Unsupported channel state: {state}. "
+            f"Expected one of {VALID_CHANNEL_STATE_NAMES}."
+        )
+
+    def _sample_markov_state(self, link_id: Any, frame_id: Optional[int]) -> str:
+        if not self.markov_enabled:
+            return self.channel_manager.get_current_state()
+
+        key = repr(link_id)
+        prev_state = self._markov_state_by_link.get(key, None)
+
+        if prev_state is None:
+            current_state = self._normalize_state_name(self.markov_init_state)
+            self._markov_state_by_link[key] = current_state
+            return current_state
+
+        prev_state = self._normalize_state_name(prev_state)
+        try:
+            row_idx = self.markov_states.index(prev_state)
+        except ValueError:
+            row_idx = self.markov_states.index("medium")
+
+        probs = torch.tensor(
+            self.markov_transition_matrix[row_idx],
+            dtype=torch.float32,
+        )
+        probs = probs / probs.sum().clamp_min(1e-12)
+
+        self._markov_call_index += 1
+        seed = _stable_int_seed(
+            self.seed,
+            "markov",
+            key,
+            frame_id,
+            self._markov_call_index,
+        )
+        g = torch.Generator(device="cpu")
+        g.manual_seed(seed)
+
+        next_idx = int(torch.multinomial(probs, 1, generator=g).item())
+        current_state = self._normalize_state_name(self.markov_states[next_idx])
+        self._markov_state_by_link[key] = current_state
+        return current_state
+
+    def _resolve_active_channel_state(
+        self,
+        requested_channel_state: Optional[str],
+        link_id: Any,
+        frame_id: Optional[int],
+    ) -> Tuple[str, str]:
+        if requested_channel_state is not None:
+            state = self._normalize_state_name(requested_channel_state)
+            self._markov_state_by_link[repr(link_id)] = state
+            return state, "dataset_link_markov"
+
+        if self.markov_enabled:
+            return self._sample_markov_state(link_id=link_id, frame_id=frame_id), "internal_markov"
+
+        return self._normalize_state_name(self.channel_manager.get_current_state()), "channel_manager"
+
+    def _sample_bernoulli_loss(
+        self,
+        num_packets: int,
+        state_name: str,
+        link_id: Any = None,
+        frame_id: Optional[int] = None,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        device = device or torch.device("cpu")
+        state_name = self._normalize_state_name(state_name)
+        plr = float(self.bernoulli_loss_rates[state_name])
+
+        self._loss_call_index += 1
+        seed = _stable_int_seed(
+            self.seed,
+            "bernoulli",
+            repr(link_id),
+            frame_id,
+            self._loss_call_index,
+            state_name,
+        )
+        g = torch.Generator(device="cpu")
+        g.manual_seed(seed)
+
+        # Formula:
+        # receive_i ~ Bernoulli(1 - PLR_t)
+        receive_mask_cpu = torch.rand((int(num_packets),), generator=g) < (1.0 - plr)
+        receive_mask = receive_mask_cpu.to(device=device)
+        loss_mask = ~receive_mask
+
+        info = {
+            "model": "bernoulli",
+            "formula": "receive_i ~ Bernoulli(1 - PLR_t)",
+            "frame_id": frame_id,
+            "link_id": repr(link_id),
+            "channel_state": state_name,
+            "plr": float(plr),
+            "receive_prob": float(1.0 - plr),
+            "num_packets": int(num_packets),
+            "num_received": int(receive_mask.sum().item()),
+            "num_lost": int(loss_mask.sum().item()),
+            "empirical_loss": float(loss_mask.float().mean().item())
+            if int(num_packets) > 0
+            else 0.0,
+        }
+        return loss_mask, info
+
+    def _estimate_fixed_latency(
+        self,
+        transmitted_bytes: float,
+        state_name: str,
+        link_id: Any = None,
+        frame_id: Optional[int] = None,
+        bandwidth_mbps: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        state_name = self._normalize_state_name(state_name)
+        delay_ms = float(self.fixed_delay_ms[state_name])
+
+        return {
+            "model": "fixed_state_delay",
+            "frame_id": frame_id,
+            "link_id": repr(link_id),
+            "channel_state": state_name,
+            "bandwidth_mbps": float(bandwidth_mbps)
+            if bandwidth_mbps is not None
+            else None,
+            "transmitted_bytes": float(transmitted_bytes),
+            "transmission_delay_ms": 0.0,
+            "processing_delay_ms": 0.0,
+            "jitter_ms": 0.0,
+            "total_delay_ms": float(delay_ms),
+            "late": False,
+            "deadline_ms": None,
+        }
+
+    def _get_temporal_tx_feature(
         self,
         feature: torch.Tensor,
-        packetization_result: Any,
-        encode_result: Any,
-        action: ARCEAction,
-        loss_mask: Optional[torch.Tensor] = None,
-    ) -> Dict[str, Any]:
-        """
-        Estimate communication overhead using actual encoded packet count.
+        state_name: str,
+        link_id: Any,
+        agent_index: Optional[int],
+        ego_index: Optional[int],
+    ) -> Tuple[torch.Tensor, str]:
+        state_name = self._normalize_state_name(state_name)
+        policy = str(
+            self.delay_policy_by_state.get(state_name, "current")
+        ).strip().lower()
 
-        The FeatureSizeEstimator estimates source bytes from packet metas.
-        Then this function corrects parity / encoded counts using the actual
-        FECEncodeResult.
-        """
-        size_estimate = self.size_estimator.estimate_from_packetization_result(
-            packetization_result=packetization_result,
-            quant_mode=action.quant_mode,
-            fec_type=action.fec_type,
-            redundancy_ratio=action.redundancy_ratio,
-            group_size=action.xor_group_size,
-            loss_mask=loss_mask,
+        cache_key = (
+            repr(link_id),
+            int(agent_index if agent_index is not None else -1),
+            int(ego_index if ego_index is not None else self.default_ego_index),
         )
 
-        size_info = size_estimate.as_dict()
+        if policy in ("previous_frame", "prev", "t-1", "previous"):
+            prev = self.prev_feature_cache.get(cache_key, None)
+            if prev is not None:
+                return prev.to(device=feature.device, dtype=feature.dtype), "previous_frame"
+            return feature, "current_no_history"
 
-        k = int(encode_result.num_source_packets)
-        n = int(encode_result.num_encoded_packets)
-        p = int(encode_result.num_parity_packets)
+        return feature, "current"
 
-        compressed_source_bytes = float(size_info["compressed_bytes"])
+    def _update_prev_feature_cache(
+        self,
+        feature: torch.Tensor,
+        link_id: Any,
+        agent_index: Optional[int],
+        ego_index: Optional[int],
+    ) -> None:
+        cache_key = (
+            repr(link_id),
+            int(agent_index if agent_index is not None else -1),
+            int(ego_index if ego_index is not None else self.default_ego_index),
+        )
+        self.prev_feature_cache[cache_key] = feature.detach().clone()
 
-        if k > 0:
-            avg_source_packet_bytes = compressed_source_bytes / float(k)
-        else:
-            avg_source_packet_bytes = 0.0
+    # ------------------------------------------------------------------
+    # Budget
+    # ------------------------------------------------------------------
 
-        parity_bytes_actual = float(avg_source_packet_bytes * p)
-        transmitted_bytes_actual = float(compressed_source_bytes + parity_bytes_actual)
-
-        if loss_mask is None:
-            num_lost_encoded = 0
-            num_received_encoded = n
-        else:
-            loss_mask = loss_mask.to(dtype=torch.bool).flatten()
-            num_lost_encoded = int(loss_mask.sum().item())
-            num_received_encoded = int(n - num_lost_encoded)
-
-        received_bytes_actual = (
-            transmitted_bytes_actual * float(num_received_encoded) / float(n)
-            if n > 0
-            else 0.0
+    def _system_budget_bytes(self) -> float:
+        return float(
+            self.system_budget_mbps
+            * 1_000_000.0
+            * (self.tx_window_ms / 1000.0)
+            / 8.0
         )
 
-        raw_numel = int(feature.numel())
-        raw_bytes_actual = float(raw_numel * 32 / 8)
-
-        size_info.update(
-            {
-                "actual_num_source_packets": int(k),
-                "actual_num_parity_packets": int(p),
-                "actual_num_encoded_packets": int(n),
-                "actual_effective_redundancy_ratio": (
-                    float(p / k) if k > 0 else 0.0
-                ),
-                "actual_avg_source_packet_bytes": float(avg_source_packet_bytes),
-                "actual_parity_bytes": float(parity_bytes_actual),
-                "actual_transmitted_bytes": float(transmitted_bytes_actual),
-                "actual_received_bytes": float(received_bytes_actual),
-                "actual_transmitted_mb": float(transmitted_bytes_actual / 1_000_000.0),
-                "actual_received_mb": float(received_bytes_actual / 1_000_000.0),
-                "actual_num_received_encoded_packets": int(num_received_encoded),
-                "actual_num_lost_encoded_packets": int(num_lost_encoded),
-                "raw_numel": int(raw_numel),
-                "raw_bytes_fp32_reference": float(raw_bytes_actual),
-            }
-        )
-
-        return size_info
+    def _per_link_budget_bytes(self, num_collaborators: int) -> float:
+        if num_collaborators <= 0:
+            return 0.0
+        return float(self._system_budget_bytes() / float(num_collaborators))
 
     def _frame_budget_bytes_from_channel_profile(
         self,
         channel_profile: Dict[str, Any],
         budget_bytes: Optional[float] = None,
     ) -> float:
-        """
-        Resolve per-link frame budget.
-
-        If budget_bytes is provided by a higher-level controller such as
-        DC2MAB, use it directly. Otherwise derive the budget from the current
-        channel profile:
-            budget = bandwidth_mbps * tx_window_ms / 8
-        """
         if budget_bytes is not None:
             return float(max(0.0, budget_bytes))
+
+        if self.budget_scope == "system_equal_split":
+            return float(self._system_budget_bytes())
 
         bandwidth_mbps = float(channel_profile.get("bandwidth_mbps", 0.0))
         if bandwidth_mbps <= 0:
             return float("inf")
 
         return float(
-            bandwidth_mbps * 1_000_000.0 * (self.tx_window_ms / 1000.0) / 8.0
+            bandwidth_mbps
+            * 1_000_000.0
+            * (self.tx_window_ms / 1000.0)
+            / 8.0
         )
 
-    def _apply_late_policy(
+    def _select_packets_by_budget(
         self,
-        loss_mask: torch.Tensor,
-        latency_info: Dict[str, Any],
-        device: Union[str, torch.device],
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
-        """
-        Apply late-message policy.
+        valid_bytes: torch.Tensor,
+        budget_bytes: float,
+    ) -> torch.Tensor:
+        valid_bytes = valid_bytes.to(dtype=torch.float32).flatten()
+        num_packets = int(valid_bytes.numel())
 
-        If message is late and late_policy is drop/cache_only, all encoded
-        packets are treated as lost in the current frame.
-        """
-        loss_mask = loss_mask.to(dtype=torch.bool, device=device).flatten()
-        if not self.enable_deadline_drop:
-            return loss_mask, {
-                "late": bool(latency_info.get("late", False)),
-                "late_policy": "disabled",
-                "overridden": False,
-                "reason": "ARCE deadline/late drop disabled; delay is handled by dataset historical-frame sampling."
-            }
+        if num_packets == 0:
+            return torch.zeros((0,), dtype=torch.bool, device=valid_bytes.device)
 
-        late = bool(latency_info.get("late", False))
-        policy = self.late_policy
+        if math.isinf(float(budget_bytes)):
+            return torch.ones((num_packets,), dtype=torch.bool, device=valid_bytes.device)
 
-        info = {
-            "late": late,
-            "late_policy": policy,
-            "overridden": False,
-            "reason": "",
-        }
-
-        if not late:
-            info["reason"] = "message is not late"
-            return loss_mask, info
-
-        self.num_late_links += 1
-
-        if policy == LATE_POLICY_ALLOW:
-            info["reason"] = "late message is allowed"
-            return loss_mask, info
-
-        if policy in (LATE_POLICY_DROP, LATE_POLICY_CACHE_ONLY):
-            self.num_dropped_by_late += 1
-            overridden = torch.ones_like(loss_mask, dtype=torch.bool, device=device)
-            info["overridden"] = True
-            info["reason"] = (
-                "message is late; all encoded packets are treated as lost "
-                f"under late_policy={policy}"
-            )
-            return overridden, info
-
-        raise ValueError(f"Unexpected late_policy: {policy}")
+        budget_bytes = float(max(0.0, budget_bytes))
+        cumulative = torch.cumsum(valid_bytes, dim=0)
+        return cumulative <= budget_bytes
 
     # ------------------------------------------------------------------
-    # main one-link communication
+    # Main one-link communication
     # ------------------------------------------------------------------
 
     def communicate_feature(
@@ -736,108 +816,32 @@ class ARCEFixedComm:
         update_cache: bool = True,
         return_result: bool = False,
     ):
-        """
-        Communicate one feature tensor [C, H, W] through ARCE.
-
-        Parameters
-        ----------
-        feature : torch.Tensor
-            One intermediate feature tensor [C, H, W].
-
-        link_id : any
-            Communication link id for GE state, latency RNG, and temporal cache.
-
-        frame_id : int, optional
-            Current frame id.
-
-        agent_index : int, optional
-            Sender agent index.
-
-        ego_index : int, optional
-            Ego index. Default uses self.default_ego_index.
-
-        channel_state : str, optional
-            Override channel state for this call.
-
-        update_cache : bool
-            Whether to update temporal cache.
-
-        return_result : bool
-            If True, return ARCECommResult.
-            If False, return (recovered_feature, record).
-
-        Returns
-        -------
-        ARCECommResult or tuple
-        """
         feature = _require_tensor(feature, "feature")
-
         if feature.dim() != 3:
             raise ValueError(
                 "communicate_feature expects one feature with shape [C, H, W], "
                 f"got {tuple(feature.shape)}."
             )
 
-        # if ego_index is None:
-        #     ego_index = self.default_ego_index
-
-        # if agent_index is None:
-        #     agent_index = -1
-
-        # apply_to_this_agent = should_apply_to_agent(
-        #     agent_index=agent_index,
-        #     ego_index=ego_index,
-        #     link_scope=self.link_scope,
-        # )
-
-        # base_record = {
-        #     "frame_id": frame_id,
-        #     "link_id": repr(link_id),
-        #     "agent_index": int(agent_index),
-        #     "ego_index": int(ego_index),
-        #     "input_shape": tuple(int(x) for x in feature.shape),
-        #     "input_dtype": str(feature.dtype),
-        #     "device": str(feature.device),
-        #     "arce_enabled": bool(self.enabled),
-        #     "arce_mode": self.mode,
-        #     "applied": bool(apply_to_this_agent),
-        #     "channel_state": active_channel_state,
-        #     "channel_state_source": channel_state_source,  
-        # }
-
         if ego_index is None:
             ego_index = self.default_ego_index
         if agent_index is None:
             agent_index = -1
 
+        requested_channel_state = (
+            None if channel_state is None else self._normalize_state_name(channel_state)
+        )
+
+        active_channel_state, channel_state_source = self._resolve_active_channel_state(
+            requested_channel_state=requested_channel_state,
+            link_id=link_id,
+            frame_id=frame_id,
+        )
+
         apply_to_this_agent = should_apply_to_agent(
             agent_index=agent_index,
             ego_index=ego_index,
             link_scope=self.link_scope,
-        )
-
-        # -------------------------------------------------------------
-        # Normalize externally provided link-level Markov channel state.
-        #
-        # Important:
-        #   base_record is created before ChannelManager.step().
-        #   Therefore active_channel_state cannot be used here yet.
-        # -------------------------------------------------------------
-        if channel_state is None:
-            requested_channel_state = None
-            channel_state_source = "channel_manager"
-        else:
-            requested_channel_state = str(channel_state).lower()
-            channel_state = requested_channel_state
-            channel_state_source = "dataset_link_markov"
-
-        # This is only an initial value for bypass / disabled records.
-        # For non-bypassed records, we overwrite channel_state after
-        # channel_profile is returned by ChannelManager.
-        initial_channel_state = (
-            requested_channel_state
-            if requested_channel_state is not None
-            else ("ego" if int(agent_index) == int(ego_index) else "channel_manager")
         )
 
         base_record = {
@@ -851,9 +855,7 @@ class ARCEFixedComm:
             "arce_enabled": bool(self.enabled),
             "arce_mode": self.mode,
             "applied": bool(apply_to_this_agent),
-
-            # Safe fields available before channel_manager.step().
-            "channel_state": initial_channel_state,
+            "channel_state": active_channel_state,
             "requested_channel_state": requested_channel_state,
             "channel_state_source": channel_state_source,
         }
@@ -869,16 +871,15 @@ class ARCEFixedComm:
             )
             self.num_bypassed_links += 1
             self._append_record(record)
-
-            result = ARCECommResult(
-                recovered_feature=feature,
-                record=record,
-            )
+            result = ARCECommResult(recovered_feature=feature, record=record)
             return result if return_result else (feature, record)
 
         if self.mode == ARCE_MODE_BYPASS or not apply_to_this_agent:
-            reason = "ARCE bypass mode" if self.mode == ARCE_MODE_BYPASS else "agent not in ARCE link scope"
-
+            reason = (
+                "ARCE bypass mode"
+                if self.mode == ARCE_MODE_BYPASS
+                else "agent not in ARCE link scope"
+            )
             record = copy.deepcopy(base_record)
             record.update(
                 {
@@ -889,131 +890,78 @@ class ARCEFixedComm:
             )
             self.num_bypassed_links += 1
             self._append_record(record)
-
-            result = ARCECommResult(
-                recovered_feature=feature,
-                record=record,
-            )
+            result = ARCECommResult(recovered_feature=feature, record=record)
             return result if return_result else (feature, record)
 
         self.num_processed_links += 1
 
-        if channel_state is None:
-            channel_state_source = "channel_manager"
-        else:
-            channel_state = str(channel_state).lower()
-            channel_state_source = "dataset_link_markov"
-
-        # 1. channel profile
-        # channel_profile = self.channel_manager.step(
-        #     frame_id=frame_id,
-        #     link_id=link_id,
-        #     state=channel_state,
-        # )
-
-        # # Determine the actually used channel state for logging and summary.
-        # # If channel_state is passed from dataset link-level Markov, use it first.
-        # # Otherwise fall back to fields returned by ChannelManager.
-        # active_channel_state = channel_state
-
-        # if active_channel_state is None and isinstance(channel_profile, dict):
-        #     active_channel_state = (
-        #         channel_profile.get("state_name", None)
-        #         or channel_profile.get("state", None)
-        #         or channel_profile.get("channel_state", None)
-        #         or channel_profile.get("name", None)
-        #     )
-
-        # if active_channel_state is None:
-        #     active_channel_state = "unknown"
-
-        # active_channel_state = str(active_channel_state).lower()
-
         channel_profile = self.channel_manager.step(
             frame_id=frame_id,
             link_id=link_id,
-            state=channel_state,
+            state=active_channel_state,
         )
+        bandwidth_mbps = float(channel_profile.get("bandwidth_mbps", 0.0))
 
-        # Determine the actually used channel state for logging and summary.
-        active_channel_state = requested_channel_state
-
-        if active_channel_state is None and isinstance(channel_profile, dict):
-            active_channel_state = (
-                channel_profile.get("state_name", None)
-                or channel_profile.get("state", None)
-                or channel_profile.get("channel_state", None)
-                or channel_profile.get("name", None)
-            )
-
-        if active_channel_state is None:
-            active_channel_state = "unknown"
-
-        active_channel_state = str(active_channel_state).lower()
-
-        # 2. policy action
         if action_override is not None:
             action = action_override
+            action_source = "override"
         else:
-            action = self.action_policy.select(
-                channel_profile=channel_profile,
-            )
+            action = self.action_policy.select(channel_profile=channel_profile)
+            action_source = str(self.policy_name)
 
-        action_source = "override" if action_override is not None else str(self.policy_name)
         action = normalize_runtime_action(action)
+        action_dict = runtime_action_as_dict(action)
 
-        # PDF action space includes a send/no-send switch.
-        # send=0 means this sender does not transmit current-frame feature.
-        if int(get_action_field(action, "send", 1)) == 0:
+        send_flag = int(_safe_get_action_field(action, "send", 1))
+        if send_flag == 0:
+            recovered_feature = torch.zeros_like(feature)
+
+            if update_cache:
+                self._update_prev_feature_cache(
+                    feature=feature,
+                    link_id=link_id,
+                    agent_index=agent_index,
+                    ego_index=ego_index,
+                )
+
             record = copy.deepcopy(base_record)
             record.update(
                 {
                     "bypassed": False,
                     "bypass_reason": None,
                     "action_source": action_source,
-                    "action": runtime_action_as_dict(action),
-                    "channel_state": active_channel_state,
-                    "channel_state_source": channel_state_source,
-                    "requested_channel_state": requested_channel_state,
-                    "output_shape": tuple(int(x) for x in feature.shape),
-                    "output_dtype": str(feature.dtype),
-                    "tx_bytes": 0,
-                    "rx_bytes": 0,
+                    "action": action_dict,
+                    "no_send": True,
+                    "output_shape": tuple(int(x) for x in recovered_feature.shape),
+                    "output_dtype": str(recovered_feature.dtype),
+                    "tx_bytes": 0.0,
+                    "rx_bytes": 0.0,
                     "raw_bytes": int(feature.numel() * feature.element_size()),
-                    "compressed_bytes": 0,
-                    "encoded_bytes": 0,
-                    "received_bytes": 0,
-                    "effective_received_bytes": 0,
+                    "compressed_bytes": 0.0,
+                    "encoded_bytes": 0.0,
+                    "received_bytes": 0.0,
+                    "effective_received_bytes": 0.0,
+                    "packetization": {
+                        "mode": "byte_stream",
+                        "num_packets": 0,
+                    },
+                    "packet": {
+                        "num_source_packets": 0,
+                        "num_encoded_packets": 0,
+                        "num_received_packets": 0,
+                    },
                     "size": {
                         "raw_numel": int(feature.numel()),
                         "raw_bytes_fp32_reference": float(feature.numel() * 4),
                         "compressed_bytes": 0.0,
-                        "actual_num_source_packets": 0,
-                        "actual_num_parity_packets": 0,
-                        "actual_num_encoded_packets": 0,
-                        "actual_effective_redundancy_ratio": 0.0,
-                        "actual_avg_source_packet_bytes": 0.0,
-                        "actual_parity_bytes": 0.0,
-                        "actual_metadata_bytes": 0.0,
                         "actual_transmitted_bytes": 0.0,
                         "actual_received_bytes": 0.0,
-                        "actual_transmitted_mb": 0.0,
-                        "actual_received_mb": 0.0,
-                        "actual_num_received_encoded_packets": 0,
+                        "actual_num_source_packets": 0,
+                        "actual_num_encoded_packets": 0,
                         "actual_num_lost_encoded_packets": 0,
-                        "bandwidth_budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
-                    },
-                    "packet": {
-                        "num_source_packets": 0,
-                        "num_encoded_packets": 0,
-                        "num_received_packets": 0,
-                    },
-                    "recovery": {
-                        "num_fec_recovered": 0,
-                        "num_temporal_filled": 0,
-                        "num_spatial_filled": 0,
-                        "num_zero_filled": 0,
-                        "num_still_missing": 0,
+                        "bandwidth_budget_bytes": float(budget_bytes)
+                        if budget_bytes is not None
+                        else None,
                     },
                     "quality": {
                         "q_recv": 0.0,
@@ -1023,358 +971,287 @@ class ARCEFixedComm:
                     },
                     "late": False,
                     "dropped_by_late": False,
-                    "no_send": True,
                 }
             )
-            recovered_feature = torch.zeros_like(feature)
+
             self._append_record(record)
-            result = ARCECommResult(
-                recovered_feature=recovered_feature,
-                record=record,
-            )
+            result = ARCECommResult(recovered_feature=recovered_feature, record=record)
             return result if return_result else (recovered_feature, record)
 
-        # 3. packetization
-        packet_result = self.packetizer.packetize(feature)
+        # 1. Good / Medium use current frame; Bad uses previous frame.
+        feature_tx, temporal_source = self._get_temporal_tx_feature(
+            feature=feature,
+            state_name=active_channel_state,
+            link_id=link_id,
+            agent_index=agent_index,
+            ego_index=ego_index,
+        )
 
-        # 3.5 bandwidth-aware source-packet selection.
-        #
-        # Only selected source packets enter quantization/FEC/transmission.
-        # Unselected packets are treated as missing and recovered by
-        # temporal cache / spatial interpolation / zero fill.
+        # 2. Quantize full feature first.
+        quantizer = self._build_quantizer(action)
+        quant_mode = self._get_action_quant_mode(action)
+        quant_result = quantizer.quantize_feature(
+            feature_tx,
+            mode=quant_mode,
+        )
+
+        # For int4, if pack_int4=True, use packed uint8 stream for strict byte count.
+        if quant_result.packed_tensor is not None:
+            stream_tensor = quant_result.packed_tensor
+            source_tensor_kind = "packed_int4"
+        else:
+            stream_tensor = quant_result.q_tensor
+            source_tensor_kind = "q_tensor"
+
+        # 3. Byte-stream packetization after quantization.
+        packet_result = self.byte_packetizer.packetize(
+            stream_tensor,
+            source_tensor_kind=source_tensor_kind,
+        )
+
         frame_budget_bytes = self._frame_budget_bytes_from_channel_profile(
             channel_profile=channel_profile,
             budget_bytes=budget_bytes,
         )
-        selection_result = self.patch_selector.select(
-            packetization_result=packet_result,
-            action=action,
+
+        tx_mask = self._select_packets_by_budget(
+            valid_bytes=packet_result.valid_bytes,
             budget_bytes=frame_budget_bytes,
-            message_mask=message_mask,
-            complementarity=float(complementarity),
-        )
+        ).to(device=feature.device, dtype=torch.bool)
 
-        if not selection_result.feasible:
-            record = copy.deepcopy(base_record)
-            record.update(
-                {
-                    "bypassed": False,
-                    "bypass_reason": None,
-                    "action_source": action_source,
-                    "action": runtime_action_as_dict(action),
-                    "channel_state": active_channel_state,
-                    "channel_state_source": channel_state_source,
-                    "requested_channel_state": requested_channel_state,
-                    "output_shape": tuple(int(x) for x in feature.shape),
-                    "output_dtype": str(feature.dtype),
-                    "tx_bytes": 0,
-                    "rx_bytes": 0,
-                    "raw_bytes": int(feature.numel() * feature.element_size()),
-                    "compressed_bytes": 0,
-                    "encoded_bytes": 0,
-                    "received_bytes": 0,
-                    "effective_received_bytes": 0,
-                    "bandwidth_selection": selection_result.as_dict(),
-                    "patch_summary": {
-                        "num_total_patches": int(selection_result.num_total_patches),
-                        "num_valid_patches": int(selection_result.num_valid_patches),
-                        "num_selected_source_patches": 0,
-                        "num_encoded_patches": 0,
-                        "num_received_patches": 0,
-                        "num_fec_recovered_patches": 0,
-                        "num_missing_by_budget": int(selection_result.num_missing_by_budget),
-                        "num_missing_by_loss": 0,
-                        "selected_patch_ratio": 0.0,
-                        "effective_patch_ratio": 0.0,
-                    },
-                    "packet": {
-                        "num_source_packets": int(packet_result.num_packets),
-                        "num_encoded_packets": 0,
-                        "num_received_packets": 0,
-                    },
-                    "recovery": {
-                        "num_fec_recovered": 0,
-                        "num_temporal_filled": 0,
-                        "num_spatial_filled": 0,
-                        "num_zero_filled": int(packet_result.num_packets),
-                        "num_still_missing": int(packet_result.num_packets),
-                    },
-                    "quality": {
-                        "q_recv": 0.0,
-                        "q_cache": 0.0,
-                        "num_source_packets": int(packet_result.num_packets),
-                        "num_still_missing": int(packet_result.num_packets),
-                    },
-                    "late": False,
-                    "dropped_by_late": False,
-                    "no_send": True,
-                    "no_send_reason": selection_result.reason,
-                }
+        num_packets = int(packet_result.num_packets)
+        num_tx_packets = int(tx_mask.sum().item())
+        num_missing_by_budget = int(num_packets - num_tx_packets)
+
+        rx_packets = torch.zeros_like(packet_result.packets)
+
+        if num_tx_packets > 0:
+            tx_packets = packet_result.packets[tx_mask]
+
+            raw_loss_mask_tx, channel_loss_info = self._sample_bernoulli_loss(
+                num_packets=num_tx_packets,
+                state_name=active_channel_state,
+                link_id=link_id,
+                frame_id=frame_id,
+                device=feature.device,
             )
-            recovered_feature = torch.zeros_like(feature)
-            self._append_record(record)
-            result = ARCECommResult(
-                recovered_feature=recovered_feature,
-                record=record,
+
+            received_tx_packets = tx_packets.clone()
+            received_tx_packets[raw_loss_mask_tx] = 0
+            rx_packets[tx_mask] = received_tx_packets
+
+            full_loss_mask = torch.ones(
+                (num_packets,),
+                dtype=torch.bool,
+                device=feature.device,
             )
-            return result if return_result else (recovered_feature, record)
+            full_loss_mask[tx_mask] = raw_loss_mask_tx
+        else:
+            raw_loss_mask_tx = torch.empty(
+                (0,),
+                dtype=torch.bool,
+                device=feature.device,
+            )
+            full_loss_mask = torch.ones(
+                (num_packets,),
+                dtype=torch.bool,
+                device=feature.device,
+            )
+            channel_loss_info = {
+                "model": "bernoulli",
+                "formula": "receive_i ~ Bernoulli(1 - PLR_t)",
+                "frame_id": frame_id,
+                "link_id": repr(link_id),
+                "channel_state": active_channel_state,
+                "plr": float(self.bernoulli_loss_rates[active_channel_state]),
+                "receive_prob": float(1.0 - self.bernoulli_loss_rates[active_channel_state]),
+                "num_packets": 0,
+                "num_received": 0,
+                "num_lost": 0,
+                "empirical_loss": 0.0,
+                "reason": "zero_budget",
+            }
 
-        selected_mask = selection_result.selected_mask.to(
-            device=feature.device,
-            dtype=torch.bool,
-        )
-        selected_indices = torch.nonzero(
-            selected_mask,
-            as_tuple=False,
-        ).flatten()
+        transmitted_bytes = float(
+            packet_result.valid_bytes[tx_mask].sum().item()
+        ) if num_tx_packets > 0 else 0.0
 
-        selected_packets = packet_result.packets.index_select(
-            0,
-            selected_indices,
-        )
+        received_packet_mask = tx_mask & (~full_loss_mask)
+        received_bytes = float(
+            packet_result.valid_bytes[received_packet_mask].sum().item()
+        ) if num_packets > 0 else 0.0
 
-        # 4. quantization
-        quantizer = self._build_quantizer(action)
-        quant_result = quantizer.quantize_packets(
-            selected_packets,
-            mode=action.quant_mode,
-        )
-
-        # 5. FEC encode
-        fec = self._build_fec(
-            action=action,
-            link_id=link_id,
-            frame_id=frame_id,
-        )
-        encode_result = fec.encode(quant_result.q_tensor)
-
-        # 6. size before channel loss, used for latency.
-        # Use selected-patch message size rather than full feature-map size.
-        transmitted_bytes = float(selection_result.estimated_transmitted_bytes)
-
-        # 7. latency
-        latency_info = self.channel_manager.estimate_latency(
+        # 4. Fixed latency by state.
+        latency_info = self._estimate_fixed_latency(
             transmitted_bytes=transmitted_bytes,
+            state_name=active_channel_state,
             link_id=link_id,
             frame_id=frame_id,
-            state=channel_profile["state_name"],
-            channel_profile=channel_profile,
+            bandwidth_mbps=bandwidth_mbps,
         )
 
-        # 8. GE loss over encoded packets
-        raw_loss_mask, channel_loss_info = self.channel_manager.sample_packet_loss(
-            num_packets=encode_result.num_encoded_packets,
-            link_id=link_id,
-            device=feature.device,
-            frame_id=frame_id,
-            state=channel_profile["state_name"],
-            return_info=True,
+        # 5. Rebuild quantized byte stream and dequantize.
+        recovered_stream_tensor = self.byte_packetizer.unpacketize(
+            packets=rx_packets,
+            meta=packet_result,
         )
 
-        # 9. late policy may override packet loss
-        final_loss_mask, late_policy_info = self._apply_late_policy(
-            loss_mask=raw_loss_mask,
-            latency_info=latency_info,
-            device=feature.device,
-        )
+        if source_tensor_kind == "packed_int4":
+            recovered_feature = quantizer.unpack_and_dequantize_int4(
+                packed_tensor=recovered_stream_tensor,
+                meta=quant_result.meta,
+                original_numel=int(quant_result.q_tensor.numel()),
+                shape=tuple(int(x) for x in quant_result.q_tensor.shape),
+                output_dtype=feature.dtype,
+            )
+        else:
+            recovered_feature = quantizer.dequantize(
+                q_tensor=recovered_stream_tensor,
+                meta=quant_result.meta,
+                output_dtype=feature.dtype,
+            )
 
-        # 10. final size after loss.
-        final_loss_mask_bool = final_loss_mask.to(dtype=torch.bool).flatten()
-        num_encoded_actual = int(encode_result.num_encoded_packets)
-        num_lost_actual = int(final_loss_mask_bool.sum().item())
-        num_received_actual = int(num_encoded_actual - num_lost_actual)
+        if update_cache:
+            self._update_prev_feature_cache(
+                feature=feature,
+                link_id=link_id,
+                agent_index=agent_index,
+                ego_index=ego_index,
+            )
 
-        received_bytes_actual = (
-            transmitted_bytes * float(num_received_actual) / float(num_encoded_actual)
-            if num_encoded_actual > 0
+        num_lost_by_bernoulli = int(raw_loss_mask_tx.sum().item())
+        num_received_packets = int(received_packet_mask.sum().item())
+
+        q_recv = (
+            float(num_received_packets / max(1, num_packets))
+            if num_packets > 0
             else 0.0
         )
 
-        raw_bytes_actual = float(feature.numel() * 32 / 8)
-
         size_info = {
             "raw_numel": int(feature.numel()),
-            "raw_bytes_fp32_reference": float(raw_bytes_actual),
-            "compressed_bytes": float(selection_result.source_bytes),
-            "actual_num_source_packets": int(selection_result.num_selected_patches),
-            "actual_num_parity_packets": int(selection_result.num_parity_packets),
-            "actual_num_encoded_packets": int(num_encoded_actual),
-            "actual_effective_redundancy_ratio": (
-                float(selection_result.num_parity_packets / max(1, selection_result.num_selected_patches))
+            "raw_bytes_fp32_reference": float(feature.numel() * 4),
+            "quantized_num_bytes": float(packet_result.original_num_bytes),
+            "compressed_bytes": float(packet_result.original_num_bytes),
+            "actual_num_source_packets": int(num_packets),
+            "actual_num_parity_packets": 0,
+            "actual_num_encoded_packets": int(num_packets),
+            "actual_effective_redundancy_ratio": 0.0,
+            "actual_avg_source_packet_bytes": float(
+                packet_result.original_num_bytes / max(1, num_packets)
             ),
-            "actual_avg_source_packet_bytes": (
-                float(selection_result.source_bytes / max(1, selection_result.num_selected_patches))
-            ),
-            "actual_parity_bytes": float(selection_result.parity_bytes),
-            "actual_metadata_bytes": float(selection_result.metadata_bytes),
+            "actual_parity_bytes": 0.0,
+            "actual_metadata_bytes": 0.0,
             "actual_transmitted_bytes": float(transmitted_bytes),
-            "actual_received_bytes": float(received_bytes_actual),
+            "actual_received_bytes": float(received_bytes),
             "actual_transmitted_mb": float(transmitted_bytes / 1_000_000.0),
-            "actual_received_mb": float(received_bytes_actual / 1_000_000.0),
-            "actual_num_received_encoded_packets": int(num_received_actual),
-            "actual_num_lost_encoded_packets": int(num_lost_actual),
+            "actual_received_mb": float(received_bytes / 1_000_000.0),
+            "actual_num_received_encoded_packets": int(num_received_packets),
+            "actual_num_lost_encoded_packets": int(num_packets - num_received_packets),
+            "num_missing_by_budget": int(num_missing_by_budget),
+            "num_lost_by_bernoulli": int(num_lost_by_bernoulli),
             "bandwidth_budget_bytes": float(frame_budget_bytes),
+            "system_budget_mbps": float(self.system_budget_mbps),
+            "tx_window_ms": float(self.tx_window_ms),
         }
 
-        # 11. FEC decode in quantized domain
-        decode_result = fec.decode(
-            encode_result=encode_result,
-            loss_mask=final_loss_mask,
-        )
-        num_missing_by_loss = int(
-            decode_result.missing_source_mask.to(device=feature.device, dtype=torch.bool).sum().item()
-        )
-
-        # 12. dequantize recovered selected source packets
-        recovered_selected_float_packets = quantizer.dequantize(
-            q_tensor=decode_result.recovered_packets,
-            meta=quant_result.meta,
-            output_dtype=feature.dtype,
-        )
-
-        # Expand selected-packet decode results back to the full source-packet
-        # space. Unselected packets are missing by construction.
-        full_packets = packet_result.packets.new_zeros(packet_result.packets.shape)
-
-        full_missing_mask = torch.ones(
-            int(packet_result.num_packets),
-            dtype=torch.bool,
-            device=feature.device,
-        )
-        full_direct_received_mask = torch.zeros_like(full_missing_mask)
-        full_fec_recovered_mask = torch.zeros_like(full_missing_mask)
-
-        full_packets[selected_indices] = recovered_selected_float_packets
-
-        full_missing_mask[selected_indices] = decode_result.missing_source_mask.to(
-            device=feature.device,
-            dtype=torch.bool,
-        )
-        full_direct_received_mask[selected_indices] = decode_result.direct_received_source_mask.to(
-            device=feature.device,
-            dtype=torch.bool,
-        )
-        full_fec_recovered_mask[selected_indices] = decode_result.fec_recovered_source_mask.to(
-            device=feature.device,
-            dtype=torch.bool,
-        )
-
-        # 13. partial reconstruction in float domain
-        old_priority = self._temporarily_set_recovery_priority(action)
-
-        try:
-            partial_result = self.partial_reconstructor.recover_packets(
-                packets=full_packets,
-                packet_metas=packet_result.metas,
-                missing_mask=full_missing_mask,
-                direct_received_mask=full_direct_received_mask,
-                fec_recovered_mask=full_fec_recovered_mask,
-                link_id=link_id,
-                frame_id=frame_id,
-                update_cache=update_cache,
-                clone=True,
-                delay_ms=float(latency_info.get("total_delay_ms", latency_info.get("delay_ms", 0.0))),
-            )
-        finally:
-            self.partial_reconstructor.priority = old_priority
-
-        # 14. unpacketize
-        recovered_feature = self.packetizer.unpacketize(
-            packets=partial_result.recovered_packets,
-            metas=packet_result.metas,
-            original_shape=packet_result.original_shape,
-        )
-
-        # 15. logging record
-        # record = copy.deepcopy(base_record)
-        # record.update(
-        #     {
-        #         "bypassed": False,
-        #         "output_shape": tuple(int(x) for x in recovered_feature.shape),
-        #         "channel": {
-        #             "profile": copy.deepcopy(channel_profile),
-        #             "loss": copy.deepcopy(channel_loss_info),
-        #             "latency": copy.deepcopy(latency_info),
-        #             "late_policy": copy.deepcopy(late_policy_info),
-        #         },
-        #         "action": runtime_action_as_dict(action),
-        #         "packetization": packet_result.to_meta_dict(),
-        #         "quantization": quant_result.as_dict(),
-        #         "fec_encode": encode_result.as_dict(include_metas=False),
-        #         "fec_decode": decode_result.as_dict(),
-        #         "partial_reconstruction": partial_result.as_dict(),
-        #         "size": size_info,
-        #         "raw_loss_mask_summary": _mask_summary(raw_loss_mask, true_name="lost"),
-        #         "final_loss_mask_summary": _mask_summary(final_loss_mask, true_name="lost"),
-        #         "notes": {
-        #             "source_packets": "K original spatial packets.",
-        #             "encoded_packets": "K source packets plus FEC parity / repair packets.",
-        #             "recovered_packets": "Recovered back to K source packets before unpacketize.",
-        #         },
-        #     }
-        # )
         record = copy.deepcopy(base_record)
         record.update(
             {
                 "bypassed": False,
+                "bypass_reason": None,
                 "output_shape": tuple(int(x) for x in recovered_feature.shape),
-
-                # Actual state used by ARCE for this link.
-                "channel_state": active_channel_state,
-                "requested_channel_state": requested_channel_state,
-                "channel_state_source": channel_state_source,
-
+                "output_dtype": str(recovered_feature.dtype),
+                "action": action_dict,
+                "action_source": action_source,
+                "no_send": False,
+                "temporal_source": temporal_source,
+                "delay_policy": self.delay_policy_by_state.get(active_channel_state, "current"),
                 "channel": {
                     "profile": copy.deepcopy(channel_profile),
                     "loss": copy.deepcopy(channel_loss_info),
                     "latency": copy.deepcopy(latency_info),
-                    "late_policy": copy.deepcopy(late_policy_info),
+                    "late_policy": {
+                        "late": False,
+                        "late_policy": "disabled",
+                        "overridden": False,
+                        "reason": "Fixed state delay is used; bad state directly uses previous frame.",
+                    },
                 },
-                "action": runtime_action_as_dict(action),
-                "action_source": action_source,
-                "no_send": False,
                 "packetization": packet_result.to_meta_dict(),
-                "bandwidth_selection": selection_result.as_dict(),
-                "patch_summary": {
-                    "num_total_patches": int(selection_result.num_total_patches),
-                    "num_valid_patches": int(selection_result.num_valid_patches),
-                    "num_selected_source_patches": int(selection_result.num_selected_patches),
-                    "num_encoded_patches": int(num_encoded_actual),
-                    "num_received_patches": int(num_received_actual),
-                    "num_fec_recovered_patches": int(full_fec_recovered_mask.sum().item()),
-                    "num_missing_by_budget": int(selection_result.num_missing_by_budget),
-                    "num_missing_by_loss": int(num_missing_by_loss),
-                    "selected_patch_ratio": float(selection_result.selected_patch_ratio),
-                    "effective_patch_ratio": float(selection_result.effective_patch_ratio),
-                },
+                "byte_stream_packetization": packet_result.to_meta_dict(),
                 "quantization": quant_result.as_dict(),
-                "fec_encode": encode_result.as_dict(include_metas=False),
-                "fec_decode": decode_result.as_dict(),
-                "partial_reconstruction": partial_result.as_dict(),
+                "fec_encode": {
+                    "enabled": False,
+                    "type": "none",
+                    "reason": "FEC disabled for byte-stream Bernoulli packetization.",
+                },
+                "fec_decode": {
+                    "enabled": False,
+                    "type": "none",
+                },
+                "partial_reconstruction": {
+                    "enabled": False,
+                    "reason": "Missing byte packets are zero-filled before dequantization.",
+                    "num_fec_recovered_packets": 0,
+                    "num_temporal_filled_packets": 0,
+                    "num_spatial_filled_packets": 0,
+                    "num_zero_filled_packets": int(num_packets - num_received_packets),
+                    "num_still_missing": int(num_packets - num_received_packets),
+                },
+                "bandwidth_selection": {
+                    "mode": "system_equal_split"
+                    if budget_bytes is not None
+                    else self.budget_scope,
+                    "budget_bytes": float(frame_budget_bytes),
+                    "num_total_packets": int(num_packets),
+                    "num_tx_packets": int(num_tx_packets),
+                    "num_missing_by_budget": int(num_missing_by_budget),
+                    "selected_packet_ratio": float(num_tx_packets / max(1, num_packets)),
+                },
+                "patch_summary": {
+                    "packetization": "byte_stream_not_spatial_patch",
+                    "num_total_patches": int(num_packets),
+                    "num_valid_patches": int(num_packets),
+                    "num_selected_source_patches": int(num_tx_packets),
+                    "num_encoded_patches": int(num_packets),
+                    "num_received_patches": int(num_received_packets),
+                    "num_fec_recovered_patches": 0,
+                    "num_missing_by_budget": int(num_missing_by_budget),
+                    "num_missing_by_loss": int(num_lost_by_bernoulli),
+                    "selected_patch_ratio": float(num_tx_packets / max(1, num_packets)),
+                    "effective_patch_ratio": float(q_recv),
+                },
+                "packet": {
+                    "num_source_packets": int(num_packets),
+                    "num_encoded_packets": int(num_packets),
+                    "num_transmitted_packets": int(num_tx_packets),
+                    "num_received_packets": int(num_received_packets),
+                    "packet_size_bytes": int(packet_result.packet_size_bytes),
+                },
                 "size": size_info,
                 "quality": {
-                    "q_recv": float(
-                        max(
-                            0.0,
-                            min(
-                                1.0,
-                                1.0 - (
-                                    float(getattr(partial_result, "counts", {}).get("still_missing", 0))
-                                    / float(max(1, int(getattr(encode_result, "num_source_packets", 0) or getattr(packet_result, "num_packets", 0) or len(packet_result.packets))))
-                                ),
-                            ),
-                        )
-                    ),
-                    "q_cache": float(getattr(partial_result, "q_cache", 0.0) or 0.0),
-                    "num_source_packets": int(getattr(encode_result, "num_source_packets", 0) or getattr(packet_result, "num_packets", 0) or len(packet_result.packets)),
-                    "num_still_missing": int(getattr(partial_result, "counts", {}).get("still_missing", 0)),
+                    "q_recv": float(q_recv),
+                    "q_cache": 0.0,
+                    "num_source_packets": int(num_packets),
+                    "num_still_missing": int(num_packets - num_received_packets),
                 },
-                "raw_loss_mask_summary": _mask_summary(raw_loss_mask, true_name="lost"),
-                "final_loss_mask_summary": _mask_summary(final_loss_mask, true_name="lost"),
+                "raw_loss_mask_summary": _mask_summary(raw_loss_mask_tx, true_name="lost"),
+                "final_loss_mask_summary": _mask_summary(full_loss_mask, true_name="lost"),
+                "tx_bytes": float(transmitted_bytes),
+                "rx_bytes": float(received_bytes),
+                "raw_bytes": int(feature.numel() * feature.element_size()),
+                "compressed_bytes": float(packet_result.original_num_bytes),
+                "encoded_bytes": float(packet_result.original_num_bytes),
+                "received_bytes": float(received_bytes),
+                "effective_received_bytes": float(received_bytes),
+                "late": False,
+                "dropped_by_late": False,
                 "notes": {
-                    "source_packets": "K original spatial packets.",
-                    "encoded_packets": "K source packets plus FEC parity / repair packets.",
-                    "recovered_packets": "Recovered back to K source packets before unpacketize.",
+                    "packetization": "Quantize first, then flatten Q(F) into a byte stream and split by fixed packet length.",
+                    "loss": "Each transmitted packet independently follows receive_i ~ Bernoulli(1 - PLR_t).",
+                    "delay": "Good/Medium use current frame; Bad uses previous frame.",
+                    "fec": "FEC/redundancy is disabled in this byte-stream version.",
                 },
             }
         )
@@ -1387,9 +1264,6 @@ class ARCEFixedComm:
                 record=record,
                 packetization_result=packet_result,
                 quantization_result=quant_result,
-                encode_result=encode_result,
-                decode_result=decode_result,
-                partial_result=partial_result,
             )
         else:
             result = ARCECommResult(
@@ -1400,15 +1274,14 @@ class ARCEFixedComm:
         return result if return_result else (recovered_feature, record)
 
     # ------------------------------------------------------------------
-    # batch / agent helpers
+    # Batch / agent helpers
     # ------------------------------------------------------------------
 
-    def _infer_frame_id_from_data_dict(self, data_dict: Any = None, fallback: Any = None):
-        """
-        Try to infer frame id from OpenCOOD data_dict.
-
-        If unavailable, return fallback.
-        """
+    def _infer_frame_id_from_data_dict(
+        self,
+        data_dict: Any = None,
+        fallback: Any = None,
+    ):
         if fallback is not None:
             return fallback
 
@@ -1426,6 +1299,49 @@ class ARCEFixedComm:
 
         return None
 
+    def _get_external_channel_state(self, data_dict, batch_idx, cav_idx):
+        """
+        Read per-link channel state from data_dict['channel_state_ids'].
+
+        Expected:
+            channel_state_ids: [B, max_cav]
+
+        Mapping:
+            0 -> good
+            1 -> medium
+            2 -> bad
+            -1 -> ego / padding
+        """
+        if not isinstance(data_dict, dict):
+            return None, "no_data_dict"
+
+        if "channel_state_ids" not in data_dict:
+            return None, "no_channel_state_ids"
+
+        state_ids = data_dict["channel_state_ids"]
+
+        try:
+            if torch.is_tensor(state_ids):
+                state_id = int(
+                    state_ids[int(batch_idx), int(cav_idx)]
+                    .detach()
+                    .cpu()
+                    .item()
+                )
+            else:
+                state_id = int(state_ids[int(batch_idx)][int(cav_idx)])
+        except Exception as e:
+            return None, "failed_to_read_channel_state_ids:{}".format(repr(e))
+
+        if state_id < 0:
+            return None, "ego_or_padding"
+
+        state_name = CHANNEL_STATE_ID_TO_NAME.get(state_id, None)
+        if state_name not in VALID_CHANNEL_STATE_NAMES:
+            return None, "invalid_channel_state_id:{}".format(state_id)
+
+        return state_name, "dataset_link_markov"
+
     def communicate_flattened_features(
         self,
         features: torch.Tensor,
@@ -1440,36 +1356,8 @@ class ARCEFixedComm:
         """
         Communicate OpenCOOD flattened CAV features.
 
-        Parameters
-        ----------
-        features : torch.Tensor
-            Flattened CAV features with shape [sum(record_len), C, H, W].
-
-        record_len : torch.Tensor / list
-            Number of CAVs in each batch item. Shape [B].
-
-        data_dict : dict, optional
-            OpenCOOD batch dict. Used only to infer frame_id if available.
-
-        frame_id : int, optional
-            Current frame id for logging / temporal cache age.
-
-        ego_index : int, optional
-            Ego index inside each batch group. Usually 0.
-
-        update_cache : bool
-            Whether to update temporal cache.
-
-        return_records : bool
-            Whether to return communication records in comm_info.
-
-        Returns
-        -------
-        recovered_features : torch.Tensor
-            Same shape as input features.
-
-        comm_info : dict
-            Communication records and summary.
+        features: [sum(record_len), C, H, W]
+        record_len: [B]
         """
         features = _require_tensor(features, "features")
 
@@ -1495,7 +1383,6 @@ class ARCEFixedComm:
             raise ValueError("record_len should not be empty.")
 
         total_cav = int(sum(record_len_list))
-
         if total_cav != int(features.shape[0]):
             raise ValueError(
                 "record_len does not match flattened feature count: "
@@ -1514,31 +1401,24 @@ class ARCEFixedComm:
         records: List[Dict[str, Any]] = []
 
         offset = 0
-
         for batch_idx, num_cav in enumerate(record_len_list):
+            collaborator_indices = [
+                cav_idx for cav_idx in range(num_cav)
+                if int(cav_idx) != int(ego_index)
+            ]
+            num_collaborators = len(collaborator_indices)
+            per_link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+
             for cav_idx in range(num_cav):
                 global_idx = offset + cav_idx
 
-                # Do NOT include frame_id in link_id.
-                # Temporal cache and GE state should persist across frames
-                # for the same logical link.
                 link_id = (
                     int(batch_idx),
                     int(ego_index),
                     int(cav_idx),
                 )
 
-                # feature_hat, record = self.communicate_feature(
-                #     feature=features[global_idx],
-                #     link_id=link_id,
-                #     frame_id=frame_id,
-                #     agent_index=cav_idx,
-                #     ego_index=ego_index,
-                #     update_cache=update_cache,
-                #     return_result=False,
-                # )
-
-                channel_state, channel_state_source = self._get_external_channel_state(
+                channel_state, external_state_source = self._get_external_channel_state(
                     data_dict=data_dict,
                     batch_idx=batch_idx,
                     cav_idx=cav_idx,
@@ -1548,6 +1428,12 @@ class ARCEFixedComm:
                 if message_masks is not None:
                     cav_message_mask = message_masks[global_idx]
 
+                budget_for_link = (
+                    per_link_budget_bytes
+                    if int(cav_idx) != int(ego_index)
+                    else 0.0
+                )
+
                 feature_hat, record = self.communicate_feature(
                     feature=features[global_idx],
                     link_id=link_id,
@@ -1555,14 +1441,21 @@ class ARCEFixedComm:
                     agent_index=cav_idx,
                     ego_index=ego_index,
                     channel_state=channel_state,
+                    budget_bytes=budget_for_link,
                     message_mask=cav_message_mask,
                     update_cache=update_cache,
                     return_result=False,
                 )
 
-                record["channel_state_source"] = channel_state_source
-                if channel_state is not None:
-                    record["requested_channel_state"] = channel_state
+                record["external_channel_state_source"] = external_state_source
+                record["system_budget"] = {
+                    "budget_scope": "system_equal_split",
+                    "system_budget_mbps": float(self.system_budget_mbps),
+                    "tx_window_ms": float(self.tx_window_ms),
+                    "system_budget_bytes": float(self._system_budget_bytes()),
+                    "num_collaborators": int(num_collaborators),
+                    "per_link_budget_bytes": float(per_link_budget_bytes),
+                }
 
                 recovered[global_idx] = feature_hat
                 records.append(record)
@@ -1595,21 +1488,6 @@ class ARCEFixedComm:
         update_cache: bool = True,
         return_records: bool = True,
     ):
-        """
-        Communicate agent features.
-
-        Supports:
-            features [N, C, H, W]
-            features [B, N, C, H, W]
-
-        Returns
-        -------
-        recovered_features : torch.Tensor
-            Same shape as input.
-
-        records : list or dict
-            Communication records.
-        """
         features = _require_tensor(features, "features")
 
         if ego_index is None:
@@ -1620,11 +1498,25 @@ class ARCEFixedComm:
             recovered = features.clone()
             records = []
 
+            collaborator_indices = [
+                agent_idx for agent_idx in range(num_agents)
+                if int(agent_idx) != int(ego_index)
+            ]
+            per_link_budget_bytes = self._per_link_budget_bytes(
+                len(collaborator_indices)
+            )
+
             for agent_idx in range(num_agents):
                 link_id = (
                     batch_index,
                     int(ego_index),
                     int(agent_idx),
+                )
+
+                budget_for_link = (
+                    per_link_budget_bytes
+                    if int(agent_idx) != int(ego_index)
+                    else 0.0
                 )
 
                 feature_hat, record = self.communicate_feature(
@@ -1633,9 +1525,19 @@ class ARCEFixedComm:
                     frame_id=frame_id,
                     agent_index=agent_idx,
                     ego_index=ego_index,
+                    budget_bytes=budget_for_link,
                     update_cache=update_cache,
                     return_result=False,
                 )
+
+                record["system_budget"] = {
+                    "budget_scope": "system_equal_split",
+                    "system_budget_mbps": float(self.system_budget_mbps),
+                    "tx_window_ms": float(self.tx_window_ms),
+                    "system_budget_bytes": float(self._system_budget_bytes()),
+                    "num_collaborators": int(len(collaborator_indices)),
+                    "per_link_budget_bytes": float(per_link_budget_bytes),
+                }
 
                 recovered[agent_idx] = feature_hat
                 records.append(record)
@@ -1648,6 +1550,14 @@ class ARCEFixedComm:
             recovered = features.clone()
             batch_records: Dict[int, List[Dict[str, Any]]] = {}
 
+            collaborator_indices = [
+                agent_idx for agent_idx in range(num_agents)
+                if int(agent_idx) != int(ego_index)
+            ]
+            per_link_budget_bytes = self._per_link_budget_bytes(
+                len(collaborator_indices)
+            )
+
             for b in range(batch_size):
                 batch_records[b] = []
 
@@ -1658,15 +1568,31 @@ class ARCEFixedComm:
                         int(agent_idx),
                     )
 
+                    budget_for_link = (
+                        per_link_budget_bytes
+                        if int(agent_idx) != int(ego_index)
+                        else 0.0
+                    )
+
                     feature_hat, record = self.communicate_feature(
                         feature=features[b, agent_idx],
                         link_id=link_id,
                         frame_id=frame_id,
                         agent_index=agent_idx,
                         ego_index=ego_index,
+                        budget_bytes=budget_for_link,
                         update_cache=update_cache,
                         return_result=False,
                     )
+
+                    record["system_budget"] = {
+                        "budget_scope": "system_equal_split",
+                        "system_budget_mbps": float(self.system_budget_mbps),
+                        "tx_window_ms": float(self.tx_window_ms),
+                        "system_budget_bytes": float(self._system_budget_bytes()),
+                        "num_collaborators": int(len(collaborator_indices)),
+                        "per_link_budget_bytes": float(per_link_budget_bytes),
+                    }
 
                     recovered[b, agent_idx] = feature_hat
                     batch_records[b].append(record)
@@ -1679,30 +1605,10 @@ class ARCEFixedComm:
         )
 
     def __call__(self, features: torch.Tensor, *args, **kwargs):
-        """
-        Dispatch ARCE communication call.
-
-        Supported calling styles:
-
-        1. OpenCOOD flattened style:
-            self.arce_comm(features, record_len, data_dict=data_dict)
-
-            where:
-                features: [sum(record_len), C, H, W]
-                record_len: [B]
-
-        2. Direct grouped style:
-            self.arce_comm(features, frame_id=..., ego_index=...)
-
-            where:
-                features: [N, C, H, W] or [B, N, C, H, W]
-        """
         if len(args) >= 1:
             maybe_record_len = args[0]
-
-            if (
-                torch.is_tensor(maybe_record_len)
-                or isinstance(maybe_record_len, (list, tuple))
+            if torch.is_tensor(maybe_record_len) or isinstance(
+                maybe_record_len, (list, tuple)
             ):
                 return self.communicate_flattened_features(
                     features,
@@ -1711,32 +1617,19 @@ class ARCEFixedComm:
                     **kwargs,
                 )
 
-        return self.communicate_agent_features(
-            features,
-            *args,
-            **kwargs,
-        )
+        return self.communicate_agent_features(features, *args, **kwargs)
 
     # ------------------------------------------------------------------
-    # summaries
+    # Summaries
     # ------------------------------------------------------------------
 
     def get_records(self) -> List[Dict[str, Any]]:
-        """
-        Return all communication records.
-        """
         return copy.deepcopy(self.records)
 
     def get_frame_records(self, frame_id: Any) -> List[Dict[str, Any]]:
-        """
-        Return records for one frame.
-        """
         return copy.deepcopy(self.frame_records.get(frame_id, []))
 
     def get_summary(self) -> Dict[str, Any]:
-        """
-        Return aggregate communication summary.
-        """
         num_records = len(self.records)
 
         total_tx = 0.0
@@ -1744,10 +1637,9 @@ class ARCEFixedComm:
         total_lost = 0
         total_encoded = 0
         total_source = 0
-        total_fec_recovered = 0
-        total_temporal = 0
-        total_spatial = 0
-        total_zero = 0
+
+        total_missing_by_budget = 0
+        total_lost_by_bernoulli = 0
 
         for record in self.records:
             if record.get("bypassed", False):
@@ -1759,12 +1651,8 @@ class ARCEFixedComm:
             total_lost += int(size.get("actual_num_lost_encoded_packets", 0))
             total_encoded += int(size.get("actual_num_encoded_packets", 0))
             total_source += int(size.get("actual_num_source_packets", 0))
-
-            pr = record.get("partial_reconstruction", {})
-            total_fec_recovered += int(pr.get("num_fec_recovered_packets", 0))
-            total_temporal += int(pr.get("num_temporal_filled_packets", 0))
-            total_spatial += int(pr.get("num_spatial_filled_packets", 0))
-            total_zero += int(pr.get("num_zero_filled_packets", 0))
+            total_missing_by_budget += int(size.get("num_missing_by_budget", 0))
+            total_lost_by_bernoulli += int(size.get("num_lost_by_bernoulli", 0))
 
         return {
             "enabled": bool(self.enabled),
@@ -1774,6 +1662,9 @@ class ARCEFixedComm:
             "num_bypassed_links": int(self.num_bypassed_links),
             "num_late_links": int(self.num_late_links),
             "num_dropped_by_late": int(self.num_dropped_by_late),
+            "packetization_mode": "byte_stream",
+            "loss_model": "bernoulli",
+            "latency_model": "fixed_state_delay",
             "total_transmitted_bytes": float(total_tx),
             "total_received_bytes": float(total_rx),
             "total_transmitted_mb": float(total_tx / 1_000_000.0),
@@ -1781,33 +1672,49 @@ class ARCEFixedComm:
             "total_encoded_packets": int(total_encoded),
             "total_source_packets": int(total_source),
             "total_lost_encoded_packets": int(total_lost),
+            "total_missing_by_budget": int(total_missing_by_budget),
+            "total_lost_by_bernoulli": int(total_lost_by_bernoulli),
             "encoded_packet_loss_ratio": (
-                float(total_lost / total_encoded)
-                if total_encoded > 0
-                else 0.0
+                float(total_lost / total_encoded) if total_encoded > 0 else 0.0
             ),
-            "total_fec_recovered_packets": int(total_fec_recovered),
-            "total_temporal_filled_packets": int(total_temporal),
-            "total_spatial_filled_packets": int(total_spatial),
-            "total_zero_filled_packets": int(total_zero),
-            "cache": self.partial_reconstructor.get_cache_summary(),
+            "system_budget": {
+                "budget_scope": "system_equal_split",
+                "system_budget_mbps": float(self.system_budget_mbps),
+                "tx_window_ms": float(self.tx_window_ms),
+                "system_budget_bytes": float(self._system_budget_bytes()),
+            },
+            "bernoulli_loss_rates": copy.deepcopy(self.bernoulli_loss_rates),
+            "fixed_delay_ms": copy.deepcopy(self.fixed_delay_ms),
+            "delay_policy_by_state": copy.deepcopy(self.delay_policy_by_state),
         }
 
     def get_config(self) -> Dict[str, Any]:
-        """
-        Return JSON-friendly config summary.
-        """
         return {
             "arce": copy.deepcopy(self.arce_cfg),
             "late_policy": self.late_policy,
             "max_records": int(self.max_records),
             "keep_tensor_results": bool(self.keep_tensor_results),
+            "byte_packetizer": self.byte_packetizer.get_config(),
             "channel_manager": self.channel_manager.get_config(),
             "action_policy": self.action_policy.get_config(),
             "fixed_policy": self.fixed_policy.get_config(),
-            "packetizer": self.packetizer.get_config(),
-            "size_estimator": self.size_estimator.get_config(),
-            "partial_reconstructor": self.partial_reconstructor.get_config(),
+            "loss_model": "bernoulli",
+            "bernoulli_loss_rates": copy.deepcopy(self.bernoulli_loss_rates),
+            "latency_model": "fixed_state_delay",
+            "fixed_delay_ms": copy.deepcopy(self.fixed_delay_ms),
+            "delay_policy_by_state": copy.deepcopy(self.delay_policy_by_state),
+            "markov": {
+                "enabled": bool(self.markov_enabled),
+                "states": copy.deepcopy(self.markov_states),
+                "init_state": self.markov_init_state,
+                "transition_matrix": copy.deepcopy(self.markov_transition_matrix),
+            },
+            "system_budget": {
+                "budget_scope": self.budget_scope,
+                "system_budget_mbps": float(self.system_budget_mbps),
+                "tx_window_ms": float(self.tx_window_ms),
+                "system_budget_bytes": float(self._system_budget_bytes()),
+            },
         }
 
     def __repr__(self) -> str:
@@ -1816,56 +1723,16 @@ class ARCEFixedComm:
             f"enabled={self.enabled}, "
             f"mode={self.mode}, "
             f"link_scope={self.link_scope}, "
-            f"late_policy={self.late_policy}, "
+            f"packetization=byte_stream, "
+            f"loss=bernoulli, "
+            f"latency=fixed_state_delay, "
             f"num_records={len(self.records)})"
         )
-
-    def _get_external_channel_state(self, data_dict, batch_idx, cav_idx):
-        """
-        Read per-link channel state from data_dict['channel_state_ids'].
-
-        Expected:
-            channel_state_ids: [B, max_cav]
-
-        Mapping:
-            0 -> good
-            1 -> medium
-            2 -> bad
-        -1 -> ego / padding
-        """
-        if not isinstance(data_dict, dict):
-            return None, "no_data_dict"
-
-        if "channel_state_ids" not in data_dict:
-            return None, "no_channel_state_ids"
-
-        state_ids = data_dict["channel_state_ids"]
-
-        try:
-            if torch.is_tensor(state_ids):
-                state_id = int(
-                    state_ids[int(batch_idx), int(cav_idx)].detach().cpu().item()
-                )
-            else:
-                state_id = int(state_ids[int(batch_idx)][int(cav_idx)])
-        except Exception as e:
-            return None, "failed_to_read_channel_state_ids:{}".format(repr(e))
-
-        if state_id < 0:
-            return None, "ego_or_padding"
-
-        state_name = CHANNEL_STATE_ID_TO_NAME.get(state_id, None)
-
-        if state_name not in VALID_CHANNEL_STATE_NAMES:
-            return None, "invalid_channel_state_id:{}".format(state_id)
-
-        return state_name, "dataset_link_markov"
 
 
 # Compatibility aliases.
 FixedARCEComm = ARCEFixedComm
 ARCEComm = ARCEFixedComm
-
 
 __all__ = [
     "LATE_POLICY_ALLOW",

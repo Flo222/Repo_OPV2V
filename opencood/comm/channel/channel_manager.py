@@ -28,6 +28,11 @@ import copy
 from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
+import hashlib
+
+def _stable_seed(*items):
+    s = "|".join(map(str, items))
+    return int(hashlib.md5(s.encode("utf-8")).hexdigest()[:8], 16)
 
 from opencood.comm.channel import (
     CHANNEL_STATE_GOOD,
@@ -151,6 +156,27 @@ class ChannelManager:
 
         self._ge_models: Dict[str, GilbertElliott] = {}
         self._build_ge_models()
+
+        self.loss_model = self.channel_cfg.get("loss_model", "ge")
+
+        self.bernoulli_loss_rates = {
+            "good": 0.05,
+            "medium": 0.20,
+            "bad": 0.35,
+        }
+        self.bernoulli_loss_rates.update(
+            self.channel_cfg.get("bernoulli_loss_rates", {})
+        )
+        self.latency_model_type = self.channel_cfg.get("latency_model", "size_bandwidth_jitter")
+
+        self.fixed_delay_ms = {
+            "good": 10.0,
+            "medium": 50.0,
+            "bad": 100.0,
+        }
+        self.fixed_delay_ms.update(
+            self.channel_cfg.get("fixed_delay_ms", {})
+        )
 
     def _build_ge_models(self) -> None:
         """
@@ -327,6 +353,33 @@ class ChannelManager:
         info : dict, optional
             Channel + GE sampling metadata.
         """
+
+        device = device or torch.device("cpu")
+
+        if state_name is None:
+            profile = self.step(link_id=link_id)
+            state_name = profile.state_name
+
+        state_name = str(state_name).lower()
+
+        if self.loss_model == "bernoulli":
+            p = float(self.bernoulli_loss_rates[state_name])
+
+            g = torch.Generator(device="cpu")
+            g.manual_seed(_stable_seed(self.seed, "bernoulli", link_id, frame_id, state_name))
+
+            loss_mask_cpu = torch.rand((num_packets,), generator=g) < p
+            loss_mask = loss_mask_cpu.to(device=device)
+
+            info = {
+                "model": "bernoulli",
+                "state": state_name,
+                "loss_rate": p,
+                "num_packets": int(num_packets),
+                "num_lost": int(loss_mask.sum().item()),
+            }
+            return loss_mask, info
+
         profile = self.step(frame_id=frame_id, link_id=link_id, state=state)
         state_name = profile["state_name"]
 
@@ -457,6 +510,26 @@ class ChannelManager:
         dict
             Latency metadata.
         """
+        if state_name is None:
+            profile = self.step(link_id=link_id)
+            state_name = profile.state_name
+
+        state_name = str(state_name).lower()
+
+        if self.latency_model_type == "fixed_state_delay":
+            delay_ms = float(self.fixed_delay_ms[state_name])
+            return {
+                "model": "fixed_state_delay",
+                "state": state_name,
+                "num_bytes": int(num_bytes),
+                "bandwidth_mbps": bandwidth_mbps,
+                "transmission_delay_ms": 0.0,
+                "processing_delay_ms": 0.0,
+                "jitter_ms": 0.0,
+                "total_delay_ms": delay_ms,
+                "late": False,
+            }
+            
         if channel_profile is None:
             channel_profile = self.step(
                 frame_id=frame_id,
