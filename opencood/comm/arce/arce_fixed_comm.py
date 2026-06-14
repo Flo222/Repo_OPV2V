@@ -1,35 +1,26 @@
 """
 Fixed-policy ARCE communication pipeline.
 
-Modified version for byte-stream packetization experiments:
+Final byte-stream version with real FEC / redundancy.
 
-1. Where2comm masked feature F is passed into ARCE.
-2. Temporal delay policy:
-   - good   -> current frame
-   - medium -> current frame
-   - bad    -> previous frame
-3. Quantize first:
-      Q(F)
-4. Then byte-stream packetization:
-      v = Flatten(Q(F))
-      Lp = 1024 Bytes
-      N = ceil(|v| / Lp)
-      p_i = v[(i-1)Lp : iLp]
-5. Packet loss is independent Bernoulli:
-      receive_i ~ Bernoulli(1 - PLR_t)
-      good   PLR = 0.05
-      medium PLR = 0.20
-      bad    PLR = 0.35
-6. Latency is fixed by state:
-      good   10 ms
-      medium 50 ms
-      bad    100 ms
-7. System bandwidth budget is split equally among collaborators:
-      per_link_budget = system_budget / num_collaborators
-
-This file intentionally disables the old spatial packetization + GE + FEC flow
-inside ARCEFixedComm. It keeps the public interface compatible with the current
-Where2comm-ARCE integration.
+Pipeline:
+    Where2comm masked feature F
+        -> temporal policy:
+             good / medium: current frame
+             bad: previous frame
+        -> quantize_feature(F)
+        -> reinterpret Q(F) as byte stream
+        -> split into fixed 1024-Byte source packets
+        -> FEC encode:
+             encoded_packets = source_packets + parity / repair packets
+        -> system / link budget selects encoded packets to transmit
+        -> Bernoulli packet loss:
+             receive_i ~ Bernoulli(1 - PLR_t)
+        -> FEC decode to recover source packets
+        -> still-missing source packets are zero-filled
+        -> rebuild byte stream
+        -> dequantize back to feature
+        -> return to Where2comm attention fusion
 """
 
 from __future__ import annotations
@@ -50,18 +41,30 @@ from opencood.comm.arce import (
     extract_arce_cfg,
     should_apply_to_agent,
 )
-from opencood.comm.arce.fixed_policy import (
-    ARCEAction,
-    FixedARCEPolicy,
-)
+from opencood.comm.arce.fixed_policy import ARCEAction, FixedARCEPolicy
 from opencood.comm.arce.random_policy import RandomARCEPolicy
-from opencood.comm.channel.channel_manager import ChannelManager
-from opencood.compression.feature_quantizer import FeatureQuantizer
 from opencood.comm.arce.policies.action_adapter import (
     get_action_field,
     normalize_runtime_action,
     runtime_action_as_dict,
 )
+from opencood.compression.feature_quantizer import FeatureQuantizer
+
+from opencood.comm.fec import (
+    FEC_TYPE_NONE,
+    FEC_TYPE_XOR,
+    FEC_TYPE_RAPTOR_SIM,
+    FEC_TYPE_RAPTOR,
+    normalize_fec_type,
+)
+from opencood.comm.fec.fec_base import (
+    FECEncodeResult,
+    FECDecodeResult,
+    EncodedPacketMeta,
+)
+from opencood.comm.fec.fec_xor import XORFEC
+from opencood.comm.fec.fec_raptor_sim import RaptorSimFEC
+
 
 CHANNEL_STATE_ID_TO_NAME = {
     0: "good",
@@ -158,6 +161,39 @@ def _mask_summary(mask: torch.Tensor, true_name: str = "true") -> Dict[str, Any]
     }
 
 
+def _state_profile_defaults(state_name: str) -> Dict[str, Any]:
+    state_name = str(state_name).lower()
+    if state_name == "good":
+        return {
+            "state_name": "good",
+            "bandwidth_mbps": 27.0,
+            "plr": 0.05,
+            "loss_rate": 0.05,
+            "delay_ms": 10.0,
+            "fixed_delay_ms": 10.0,
+            "temporal_source": "current",
+        }
+    if state_name == "bad":
+        return {
+            "state_name": "bad",
+            "bandwidth_mbps": 1.0,
+            "plr": 0.35,
+            "loss_rate": 0.35,
+            "delay_ms": 100.0,
+            "fixed_delay_ms": 100.0,
+            "temporal_source": "previous_frame",
+        }
+    return {
+        "state_name": "medium",
+        "bandwidth_mbps": 5.0,
+        "plr": 0.20,
+        "loss_rate": 0.20,
+        "delay_ms": 50.0,
+        "fixed_delay_ms": 50.0,
+        "temporal_source": "current",
+    }
+
+
 @dataclass
 class BytePacketizationResult:
     packets: torch.Tensor
@@ -178,6 +214,7 @@ class BytePacketizationResult:
             "source_tensor_kind": self.source_tensor_kind,
             "packet_size_bytes": int(self.packet_size_bytes),
             "num_packets": int(self.num_packets),
+            "num_source_packets": int(self.num_packets),
             "original_num_bytes": int(self.original_num_bytes),
             "original_shape": tuple(int(x) for x in self.original_shape),
             "original_dtype": str(self.original_dtype),
@@ -314,12 +351,7 @@ class ARCEFixedComm:
     """
     Fixed / random ARCE communication executor.
 
-    This version uses:
-    - quantize first;
-    - byte-stream packetization;
-    - Bernoulli packet loss;
-    - fixed state delay;
-    - bad-state previous-frame feature.
+    This version implements actual byte-stream FEC / redundancy.
     """
 
     def __init__(self, cfg: Optional[Dict[str, Any]] = None):
@@ -354,24 +386,13 @@ class ARCEFixedComm:
 
         self.default_ego_index = int(self.arce_cfg_raw.get("ego_index", 0))
 
-        # The old ChannelManager only supports fixed mode in this branch.
-        # To avoid failure when YAML uses channel.mode=markov, we sanitize it here.
-        channel_manager_cfg = copy.deepcopy(self.arce_cfg_raw)
-        channel_manager_cfg.setdefault("channel", {})
-        if isinstance(channel_manager_cfg["channel"], dict):
-            channel_manager_cfg["channel"]["mode"] = "fixed"
-
-        self.channel_manager = ChannelManager(channel_manager_cfg)
-
         self.policy_name = str(self.arce_cfg.get("policy", "fixed")).strip().lower()
         if self.policy_name == ARCE_POLICY_RANDOM:
             self.action_policy = RandomARCEPolicy(self.arce_cfg_raw)
         else:
             self.action_policy = FixedARCEPolicy(self.arce_cfg_raw)
 
-        # Compatibility with existing logs / calls.
         self.fixed_policy = self.action_policy
-
         self.byte_packetizer = ByteStreamPacketizer(self.arce_cfg_raw)
 
         scheduler_cfg = self.arce_cfg_raw.get("scheduler", {}) or {}
@@ -391,8 +412,8 @@ class ARCEFixedComm:
             )
         )
 
-        # Bernoulli packet loss.
         channel_cfg = self.arce_cfg_raw.get("channel", {}) or {}
+
         self.loss_model = str(channel_cfg.get("loss_model", "bernoulli")).strip().lower()
         self.bernoulli_loss_rates = {
             "good": 0.05,
@@ -403,7 +424,6 @@ class ARCEFixedComm:
             channel_cfg.get("bernoulli_loss_rates", {}) or {}
         )
 
-        # Fixed delay.
         self.latency_model_type = str(
             channel_cfg.get("latency_model", "fixed_state_delay")
         ).strip().lower()
@@ -414,7 +434,13 @@ class ARCEFixedComm:
         }
         self.fixed_delay_ms.update(channel_cfg.get("fixed_delay_ms", {}) or {})
 
-        # Bad-state temporal policy.
+        profiles_cfg = channel_cfg.get("profiles", {}) or {}
+        self.channel_profiles = {
+            "good": _merge_dict(_state_profile_defaults("good"), profiles_cfg.get("good", {})),
+            "medium": _merge_dict(_state_profile_defaults("medium"), profiles_cfg.get("medium", {})),
+            "bad": _merge_dict(_state_profile_defaults("bad"), profiles_cfg.get("bad", {})),
+        }
+
         delay_cfg = self.arce_cfg_raw.get("delay", {}) or {}
         self.delay_policy_by_state = delay_cfg.get(
             "policy_by_state",
@@ -425,14 +451,16 @@ class ARCEFixedComm:
             },
         )
 
-        # Markov fallback when data_dict does not provide channel_state_ids.
+        self.fec_cfg = self.arce_cfg_raw.get("fec", {}) or {}
+        self.redundancy_cfg = self.arce_cfg_raw.get("redundancy", {}) or {}
+
         self.markov_cfg = self._extract_markov_cfg()
         self.markov_enabled = _as_bool(self.markov_cfg.get("enabled", False))
         self.markov_states = [
             str(s).lower() for s in self.markov_cfg.get("states", ["good", "medium", "bad"])
         ]
         self.markov_init_state = str(
-            self.markov_cfg.get("init_state", "medium")
+            self.markov_cfg.get("init_state", self.markov_cfg.get("initial_state", "medium"))
         ).lower()
         self.markov_transition_matrix = self.markov_cfg.get(
             "transition_matrix",
@@ -442,6 +470,24 @@ class ARCEFixedComm:
                 [0.03, 0.17, 0.80],
             ],
         )
+        if isinstance(self.markov_transition_matrix, dict):
+            self.markov_transition_matrix = [
+                [
+                    self.markov_transition_matrix["good"]["good"],
+                    self.markov_transition_matrix["good"]["medium"],
+                    self.markov_transition_matrix["good"]["bad"],
+                ],
+                [
+                    self.markov_transition_matrix["medium"]["good"],
+                    self.markov_transition_matrix["medium"]["medium"],
+                    self.markov_transition_matrix["medium"]["bad"],
+                ],
+                [
+                    self.markov_transition_matrix["bad"]["good"],
+                    self.markov_transition_matrix["bad"]["medium"],
+                    self.markov_transition_matrix["bad"]["bad"],
+                ],
+            ]
         self._markov_state_by_link: Dict[Any, str] = {}
 
         self.prev_feature_cache: Dict[Any, torch.Tensor] = {}
@@ -481,6 +527,8 @@ class ARCEFixedComm:
             result["states"] = copy.deepcopy(channel_cfg["states"])
         if "init_state" in channel_cfg:
             result["init_state"] = channel_cfg["init_state"]
+        if "initial_state" in channel_cfg:
+            result["initial_state"] = channel_cfg["initial_state"]
         if "transition_matrix" in channel_cfg:
             result["transition_matrix"] = copy.deepcopy(channel_cfg["transition_matrix"])
 
@@ -489,7 +537,7 @@ class ARCEFixedComm:
     def _get_base_quant_cfg(self) -> Dict[str, Any]:
         return copy.deepcopy(self.arce_cfg_raw.get("quantization", {}))
 
-    def _build_quantizer(self, action: ARCEAction) -> FeatureQuantizer:
+    def _build_quantizer(self, action: Any) -> FeatureQuantizer:
         quant_cfg = _merge_dict(
             self._get_base_quant_cfg(),
             action.to_quant_config() if hasattr(action, "to_quant_config") else {},
@@ -503,6 +551,39 @@ class ARCEFixedComm:
         if quant_mode is None:
             quant_mode = self._get_base_quant_cfg().get("mode", "fp16")
         return str(quant_mode).strip().lower()
+
+    def _get_action_fec_type(self, action: Any) -> str:
+        fec_type = _safe_get_action_field(action, "fec_type", None)
+        if fec_type is None:
+            fec_type = self.fec_cfg.get("type", self.fec_cfg.get("default_type", "none"))
+        if str(fec_type).lower() == "action":
+            fec_type = self.fec_cfg.get("default_type", "raptor_sim")
+        return normalize_fec_type(fec_type)
+
+    def _get_action_redundancy_ratio(self, action: Any) -> float:
+        rho = _safe_get_action_field(action, "redundancy_ratio", None)
+        if rho is None:
+            rho = _safe_get_action_field(action, "rho", None)
+        if rho is None:
+            rho = self.fec_cfg.get(
+                "redundancy_ratio",
+                self.redundancy_cfg.get("default_ratio", 0.0),
+            )
+        return float(max(0.0, float(rho)))
+
+    def _get_action_xor_group_size(self, action: Any) -> int:
+        group_size = _safe_get_action_field(action, "xor_group_size", None)
+        if group_size is None:
+            group_size = _safe_get_action_field(action, "group_size", None)
+        if group_size is None:
+            group_size = self.fec_cfg.get("xor_group_size", self.fec_cfg.get("group_size", 4))
+        return int(max(1, int(group_size)))
+
+    def _get_action_decode_overhead(self, action: Any) -> float:
+        value = _safe_get_action_field(action, "decode_overhead", None)
+        if value is None:
+            value = self.fec_cfg.get("decode_overhead", 0.0)
+        return float(max(0.0, float(value)))
 
     # ------------------------------------------------------------------
     # Records
@@ -526,8 +607,6 @@ class ARCEFixedComm:
         self.frame_records.clear()
 
     def reset(self, clear_cache: bool = True, clear_records: bool = True) -> None:
-        self.channel_manager.reset()
-
         if clear_cache:
             self.prev_feature_cache.clear()
             self._markov_state_by_link.clear()
@@ -543,7 +622,7 @@ class ARCEFixedComm:
         self._markov_call_index = 0
 
     def set_channel_state(self, state: str) -> None:
-        self.channel_manager.set_fixed_state(state)
+        self._markov_state_by_link["__global__"] = self._normalize_state_name(state)
 
     # ------------------------------------------------------------------
     # Channel / loss / delay
@@ -556,21 +635,28 @@ class ARCEFixedComm:
         state = str(state).strip().lower()
         if state == "mid":
             state = "medium"
-        if state == "medium":
-            return "medium"
-        if state == "good":
-            return "good"
-        if state == "bad":
-            return "bad"
+        if state in VALID_CHANNEL_STATE_NAMES:
+            return state
 
         raise ValueError(
             f"Unsupported channel state: {state}. "
             f"Expected one of {VALID_CHANNEL_STATE_NAMES}."
         )
 
+    def _profile_for_state(self, state_name: str) -> Dict[str, Any]:
+        state_name = self._normalize_state_name(state_name)
+        profile = copy.deepcopy(self.channel_profiles.get(state_name, _state_profile_defaults(state_name)))
+        profile["state_name"] = state_name
+        profile["plr"] = float(self.bernoulli_loss_rates.get(state_name, profile.get("plr", 0.2)))
+        profile["loss_rate"] = float(profile["plr"])
+        profile["delay_ms"] = float(self.fixed_delay_ms.get(state_name, profile.get("delay_ms", 50.0)))
+        profile["fixed_delay_ms"] = float(profile["delay_ms"])
+        return profile
+
     def _sample_markov_state(self, link_id: Any, frame_id: Optional[int]) -> str:
         if not self.markov_enabled:
-            return self.channel_manager.get_current_state()
+            global_state = self._markov_state_by_link.get("__global__", None)
+            return global_state or "medium"
 
         key = repr(link_id)
         prev_state = self._markov_state_by_link.get(key, None)
@@ -622,7 +708,11 @@ class ARCEFixedComm:
         if self.markov_enabled:
             return self._sample_markov_state(link_id=link_id, frame_id=frame_id), "internal_markov"
 
-        return self._normalize_state_name(self.channel_manager.get_current_state()), "channel_manager"
+        global_state = self._markov_state_by_link.get("__global__", None)
+        if global_state is not None:
+            return self._normalize_state_name(global_state), "fixed_runtime"
+
+        return "medium", "default_medium"
 
     def _sample_bernoulli_loss(
         self,
@@ -648,8 +738,6 @@ class ARCEFixedComm:
         g = torch.Generator(device="cpu")
         g.manual_seed(seed)
 
-        # Formula:
-        # receive_i ~ Bernoulli(1 - PLR_t)
         receive_mask_cpu = torch.rand((int(num_packets),), generator=g) < (1.0 - plr)
         receive_mask = receive_mask_cpu.to(device=device)
         loss_mask = ~receive_mask
@@ -779,23 +867,166 @@ class ARCEFixedComm:
             / 8.0
         )
 
-    def _select_packets_by_budget(
+    def _select_encoded_packets_by_budget(
         self,
-        valid_bytes: torch.Tensor,
+        encoded_packets: torch.Tensor,
         budget_bytes: float,
+        packet_size_bytes: int,
     ) -> torch.Tensor:
-        valid_bytes = valid_bytes.to(dtype=torch.float32).flatten()
-        num_packets = int(valid_bytes.numel())
-
+        num_packets = int(encoded_packets.shape[0])
         if num_packets == 0:
-            return torch.zeros((0,), dtype=torch.bool, device=valid_bytes.device)
+            return torch.zeros((0,), dtype=torch.bool, device=encoded_packets.device)
 
         if math.isinf(float(budget_bytes)):
-            return torch.ones((num_packets,), dtype=torch.bool, device=valid_bytes.device)
+            return torch.ones((num_packets,), dtype=torch.bool, device=encoded_packets.device)
 
         budget_bytes = float(max(0.0, budget_bytes))
-        cumulative = torch.cumsum(valid_bytes, dim=0)
-        return cumulative <= budget_bytes
+        max_packets = int(math.floor(budget_bytes / float(packet_size_bytes)))
+        max_packets = max(0, min(num_packets, max_packets))
+
+        mask = torch.zeros((num_packets,), dtype=torch.bool, device=encoded_packets.device)
+        if max_packets > 0:
+            mask[:max_packets] = True
+        return mask
+
+    # ------------------------------------------------------------------
+    # FEC helpers
+    # ------------------------------------------------------------------
+
+    def _build_fec_codec(self, action: Any):
+        fec_type = self._get_action_fec_type(action)
+        rho = self._get_action_redundancy_ratio(action)
+        group_size = self._get_action_xor_group_size(action)
+        decode_overhead = self._get_action_decode_overhead(action)
+
+        if fec_type == FEC_TYPE_NONE or rho <= 0.0:
+            return None, {
+                "enabled": False,
+                "type": "none",
+                "fec_type": "none",
+                "redundancy_ratio": 0.0,
+                "group_size": group_size,
+                "decode_overhead": decode_overhead,
+            }
+
+        fec_cfg = {
+            "enabled": True,
+            "type": fec_type,
+            "redundancy_ratio": float(rho),
+            "group_size": int(group_size),
+            "xor_group_size": int(group_size),
+            "decode_overhead": float(decode_overhead),
+            "seed": int(self.seed),
+        }
+
+        extra = getattr(action, "extra", None)
+        if isinstance(extra, dict):
+            for key in (
+                "degree_distribution",
+                "robust_soliton_c",
+                "robust_soliton_delta",
+                "fixed_degree",
+                "max_degree",
+                "num_repair_packets",
+                "repair_packets",
+                "max_decode_iters",
+                "seed",
+            ):
+                if key in extra:
+                    fec_cfg[key] = extra[key]
+
+        if fec_type == FEC_TYPE_XOR:
+            return XORFEC({"fec": fec_cfg}), fec_cfg
+
+        if fec_type in (FEC_TYPE_RAPTOR_SIM, FEC_TYPE_RAPTOR):
+            fec_cfg["type"] = FEC_TYPE_RAPTOR_SIM
+            return RaptorSimFEC({"fec": fec_cfg}), fec_cfg
+
+        raise ValueError(f"Unsupported FEC type for byte-stream ARCE: {fec_type}")
+
+    def _make_no_fec_encode_result(
+        self,
+        source_packets: torch.Tensor,
+    ) -> FECEncodeResult:
+        metas = [
+            EncodedPacketMeta(
+                encoded_id=i,
+                kind="source",
+                source_id=i,
+                group_id=None,
+                source_ids=(i,),
+                note="direct source packet without FEC",
+            )
+            for i in range(int(source_packets.shape[0]))
+        ]
+
+        result = FECEncodeResult(
+            source_packets=source_packets,
+            encoded_packets=source_packets.clone(),
+            encoded_metas=metas,
+            fec_type=FEC_TYPE_NONE,
+            redundancy_ratio_config=0.0,
+            group_size=None,
+            decode_overhead=0.0,
+            info={
+                "fec_type": FEC_TYPE_NONE,
+                "enabled": False,
+                "num_source_packets": int(source_packets.shape[0]),
+                "num_parity_packets": 0,
+                "num_encoded_packets": int(source_packets.shape[0]),
+            },
+        )
+        result.validate()
+        return result
+
+    def _decode_no_fec(
+        self,
+        encode_result: FECEncodeResult,
+        receive_mask: torch.Tensor,
+    ) -> FECDecodeResult:
+        source_packets = encode_result.source_packets
+        k = int(source_packets.shape[0])
+        receive_mask = receive_mask.to(dtype=torch.bool, device=source_packets.device).flatten()
+
+        recovered_packets = torch.zeros_like(source_packets)
+        direct_received_source_mask = torch.zeros(k, dtype=torch.bool, device=source_packets.device)
+
+        if k > 0:
+            source_receive = receive_mask[:k]
+            recovered_packets[source_receive] = source_packets[source_receive]
+            direct_received_source_mask = source_receive.clone()
+
+        fec_recovered_source_mask = torch.zeros(k, dtype=torch.bool, device=source_packets.device)
+        recovered_source_mask = direct_received_source_mask | fec_recovered_source_mask
+        missing_source_mask = ~recovered_source_mask
+        loss_mask = ~receive_mask
+
+        num_recovered = int(recovered_source_mask.sum().item())
+        recovery_ratio = float(num_recovered / k) if k > 0 else 1.0
+
+        result = FECDecodeResult(
+            recovered_packets=recovered_packets,
+            recovered_source_mask=recovered_source_mask,
+            direct_received_source_mask=direct_received_source_mask,
+            fec_recovered_source_mask=fec_recovered_source_mask,
+            missing_source_mask=missing_source_mask,
+            receive_mask=receive_mask,
+            loss_mask=loss_mask,
+            fec_type=FEC_TYPE_NONE,
+            full_recovery=bool(num_recovered == k),
+            recovery_ratio=float(recovery_ratio),
+            info={
+                "fec_type": FEC_TYPE_NONE,
+                "enabled": False,
+                "num_source_packets": int(k),
+                "num_encoded_packets": int(receive_mask.numel()),
+                "num_direct_received_source_packets": int(direct_received_source_mask.sum().item()),
+                "num_fec_recovered_source_packets": 0,
+                "num_missing_source_packets_after_no_fec": int(missing_source_mask.sum().item()),
+            },
+        )
+        result.validate()
+        return result
 
     # ------------------------------------------------------------------
     # Main one-link communication
@@ -895,11 +1126,7 @@ class ARCEFixedComm:
 
         self.num_processed_links += 1
 
-        channel_profile = self.channel_manager.step(
-            frame_id=frame_id,
-            link_id=link_id,
-            state=active_channel_state,
-        )
+        channel_profile = self._profile_for_state(active_channel_state)
         bandwidth_mbps = float(channel_profile.get("bandwidth_mbps", 0.0))
 
         if action_override is not None:
@@ -945,8 +1172,21 @@ class ARCEFixedComm:
                         "mode": "byte_stream",
                         "num_packets": 0,
                     },
+                    "fec_encode": {
+                        "enabled": False,
+                        "fec_type": "none",
+                        "num_source_packets": 0,
+                        "num_parity_packets": 0,
+                        "num_encoded_packets": 0,
+                    },
+                    "fec_decode": {
+                        "enabled": False,
+                        "fec_type": "none",
+                        "num_fec_recovered_source_packets": 0,
+                    },
                     "packet": {
                         "num_source_packets": 0,
+                        "num_parity_packets": 0,
                         "num_encoded_packets": 0,
                         "num_received_packets": 0,
                     },
@@ -957,6 +1197,7 @@ class ARCEFixedComm:
                         "actual_transmitted_bytes": 0.0,
                         "actual_received_bytes": 0.0,
                         "actual_num_source_packets": 0,
+                        "actual_num_parity_packets": 0,
                         "actual_num_encoded_packets": 0,
                         "actual_num_lost_encoded_packets": 0,
                         "bandwidth_budget_bytes": float(budget_bytes)
@@ -978,7 +1219,7 @@ class ARCEFixedComm:
             result = ARCECommResult(recovered_feature=recovered_feature, record=record)
             return result if return_result else (recovered_feature, record)
 
-        # 1. Good / Medium use current frame; Bad uses previous frame.
+        # 1. State-aware temporal source.
         feature_tx, temporal_source = self._get_temporal_tx_feature(
             feature=feature,
             state_name=active_channel_state,
@@ -987,7 +1228,7 @@ class ARCEFixedComm:
             ego_index=ego_index,
         )
 
-        # 2. Quantize full feature first.
+        # 2. Quantize first.
         quantizer = self._build_quantizer(action)
         quant_mode = self._get_action_quant_mode(action)
         quant_result = quantizer.quantize_feature(
@@ -995,7 +1236,6 @@ class ARCEFixedComm:
             mode=quant_mode,
         )
 
-        # For int4, if pack_int4=True, use packed uint8 stream for strict byte count.
         if quant_result.packed_tensor is not None:
             stream_tensor = quant_result.packed_tensor
             source_tensor_kind = "packed_int4"
@@ -1008,52 +1248,60 @@ class ARCEFixedComm:
             stream_tensor,
             source_tensor_kind=source_tensor_kind,
         )
+        source_packets = packet_result.packets
+        num_source_packets = int(packet_result.num_packets)
+        packet_size_bytes = int(packet_result.packet_size_bytes)
 
+        # 4. FEC encode source byte packets.
+        fec_codec, fec_runtime_cfg = self._build_fec_codec(action)
+        if fec_codec is None:
+            encode_result = self._make_no_fec_encode_result(source_packets)
+            fec_encode_dict = encode_result.as_dict(include_metas=False)
+            fec_encode_dict["enabled"] = False
+        else:
+            encode_result = fec_codec.encode(source_packets)
+            fec_encode_dict = encode_result.as_dict(include_metas=False)
+            fec_encode_dict["enabled"] = True
+
+        encoded_packets = encode_result.encoded_packets
+        num_encoded_packets = int(encode_result.num_encoded_packets)
+        num_parity_packets = int(encode_result.num_parity_packets)
+
+        # 5. Select encoded packets under budget.
         frame_budget_bytes = self._frame_budget_bytes_from_channel_profile(
             channel_profile=channel_profile,
             budget_bytes=budget_bytes,
         )
 
-        tx_mask = self._select_packets_by_budget(
-            valid_bytes=packet_result.valid_bytes,
+        tx_mask = self._select_encoded_packets_by_budget(
+            encoded_packets=encoded_packets,
             budget_bytes=frame_budget_bytes,
-        ).to(device=feature.device, dtype=torch.bool)
+            packet_size_bytes=packet_size_bytes,
+        )
 
-        num_packets = int(packet_result.num_packets)
         num_tx_packets = int(tx_mask.sum().item())
-        num_missing_by_budget = int(num_packets - num_tx_packets)
+        num_missing_by_budget = int(num_encoded_packets - num_tx_packets)
 
-        rx_packets = torch.zeros_like(packet_result.packets)
+        # 6. Bernoulli loss only on actually transmitted encoded packets.
+        full_loss_mask = torch.ones(
+            (num_encoded_packets,),
+            dtype=torch.bool,
+            device=feature.device,
+        )
 
         if num_tx_packets > 0:
-            tx_packets = packet_result.packets[tx_mask]
-
+            tx_packets = encoded_packets[tx_mask]
             raw_loss_mask_tx, channel_loss_info = self._sample_bernoulli_loss(
-                num_packets=num_tx_packets,
+                num_packets=int(tx_packets.shape[0]),
                 state_name=active_channel_state,
                 link_id=link_id,
                 frame_id=frame_id,
-                device=feature.device,
-            )
-
-            received_tx_packets = tx_packets.clone()
-            received_tx_packets[raw_loss_mask_tx] = 0
-            rx_packets[tx_mask] = received_tx_packets
-
-            full_loss_mask = torch.ones(
-                (num_packets,),
-                dtype=torch.bool,
                 device=feature.device,
             )
             full_loss_mask[tx_mask] = raw_loss_mask_tx
         else:
             raw_loss_mask_tx = torch.empty(
                 (0,),
-                dtype=torch.bool,
-                device=feature.device,
-            )
-            full_loss_mask = torch.ones(
-                (num_packets,),
                 dtype=torch.bool,
                 device=feature.device,
             )
@@ -1072,16 +1320,28 @@ class ARCEFixedComm:
                 "reason": "zero_budget",
             }
 
-        transmitted_bytes = float(
-            packet_result.valid_bytes[tx_mask].sum().item()
-        ) if num_tx_packets > 0 else 0.0
+        receive_mask = ~full_loss_mask
+        received_packet_mask = receive_mask
 
-        received_packet_mask = tx_mask & (~full_loss_mask)
-        received_bytes = float(
-            packet_result.valid_bytes[received_packet_mask].sum().item()
-        ) if num_packets > 0 else 0.0
+        transmitted_bytes = float(num_tx_packets * packet_size_bytes)
+        received_bytes = float(int(received_packet_mask.sum().item()) * packet_size_bytes)
 
-        # 4. Fixed latency by state.
+        # 7. FEC decode.
+        if fec_codec is None:
+            decode_result = self._decode_no_fec(
+                encode_result=encode_result,
+                receive_mask=receive_mask,
+            )
+        else:
+            decode_result = fec_codec.decode(
+                encode_result=encode_result,
+                receive_mask=receive_mask,
+                fill_value=0,
+            )
+
+        decoded_source_packets = decode_result.recovered_packets
+
+        # 8. Fixed delay by state.
         latency_info = self._estimate_fixed_latency(
             transmitted_bytes=transmitted_bytes,
             state_name=active_channel_state,
@@ -1090,9 +1350,9 @@ class ARCEFixedComm:
             bandwidth_mbps=bandwidth_mbps,
         )
 
-        # 5. Rebuild quantized byte stream and dequantize.
+        # 9. Rebuild quantized byte stream and dequantize.
         recovered_stream_tensor = self.byte_packetizer.unpacketize(
-            packets=rx_packets,
+            packets=decoded_source_packets,
             meta=packet_result,
         )
 
@@ -1119,37 +1379,50 @@ class ARCEFixedComm:
                 ego_index=ego_index,
             )
 
-        num_lost_by_bernoulli = int(raw_loss_mask_tx.sum().item())
-        num_received_packets = int(received_packet_mask.sum().item())
-
-        q_recv = (
-            float(num_received_packets / max(1, num_packets))
-            if num_packets > 0
-            else 0.0
+        fec_decode_dict = decode_result.as_dict()
+        num_direct_received_source_packets = int(
+            decode_result.num_direct_received_source_packets
         )
+        num_fec_recovered_source_packets = int(
+            decode_result.num_fec_recovered_source_packets
+        )
+        num_missing_source_packets = int(decode_result.num_missing_source_packets)
+        num_recovered_source_packets = int(decode_result.num_recovered_source_packets)
+        recovery_ratio = float(decode_result.recovery_ratio)
+
+        num_lost_by_bernoulli = int(raw_loss_mask_tx.sum().item())
+        num_received_encoded_packets = int(received_packet_mask.sum().item())
+
+        q_recv = float(recovery_ratio)
 
         size_info = {
             "raw_numel": int(feature.numel()),
             "raw_bytes_fp32_reference": float(feature.numel() * 4),
             "quantized_num_bytes": float(packet_result.original_num_bytes),
             "compressed_bytes": float(packet_result.original_num_bytes),
-            "actual_num_source_packets": int(num_packets),
-            "actual_num_parity_packets": 0,
-            "actual_num_encoded_packets": int(num_packets),
-            "actual_effective_redundancy_ratio": 0.0,
-            "actual_avg_source_packet_bytes": float(
-                packet_result.original_num_bytes / max(1, num_packets)
+            "actual_num_source_packets": int(num_source_packets),
+            "actual_num_parity_packets": int(num_parity_packets),
+            "actual_num_encoded_packets": int(num_encoded_packets),
+            "actual_effective_redundancy_ratio": float(
+                num_parity_packets / max(1, num_source_packets)
             ),
-            "actual_parity_bytes": 0.0,
+            "actual_avg_source_packet_bytes": float(
+                packet_result.original_num_bytes / max(1, num_source_packets)
+            ),
+            "actual_parity_bytes": float(num_parity_packets * packet_size_bytes),
             "actual_metadata_bytes": 0.0,
             "actual_transmitted_bytes": float(transmitted_bytes),
             "actual_received_bytes": float(received_bytes),
             "actual_transmitted_mb": float(transmitted_bytes / 1_000_000.0),
             "actual_received_mb": float(received_bytes / 1_000_000.0),
-            "actual_num_received_encoded_packets": int(num_received_packets),
-            "actual_num_lost_encoded_packets": int(num_packets - num_received_packets),
+            "actual_num_received_encoded_packets": int(num_received_encoded_packets),
+            "actual_num_lost_encoded_packets": int(num_encoded_packets - num_received_encoded_packets),
             "num_missing_by_budget": int(num_missing_by_budget),
             "num_lost_by_bernoulli": int(num_lost_by_bernoulli),
+            "num_direct_received_source_packets": int(num_direct_received_source_packets),
+            "num_fec_recovered_source_packets": int(num_fec_recovered_source_packets),
+            "num_missing_source_packets": int(num_missing_source_packets),
+            "num_recovered_source_packets": int(num_recovered_source_packets),
             "bandwidth_budget_bytes": float(frame_budget_bytes),
             "system_budget_mbps": float(self.system_budget_mbps),
             "tx_window_ms": float(self.tx_window_ms),
@@ -1181,77 +1454,84 @@ class ARCEFixedComm:
                 "packetization": packet_result.to_meta_dict(),
                 "byte_stream_packetization": packet_result.to_meta_dict(),
                 "quantization": quant_result.as_dict(),
-                "fec_encode": {
-                    "enabled": False,
-                    "type": "none",
-                    "reason": "FEC disabled for byte-stream Bernoulli packetization.",
-                },
-                "fec_decode": {
-                    "enabled": False,
-                    "type": "none",
-                },
+                "fec_encode": fec_encode_dict,
+                "fec_decode": fec_decode_dict,
                 "partial_reconstruction": {
-                    "enabled": False,
-                    "reason": "Missing byte packets are zero-filled before dequantization.",
-                    "num_fec_recovered_packets": 0,
+                    "enabled": True,
+                    "method": "fec_then_zero_fill_missing_source_packets",
+                    "num_direct_received_packets": int(num_direct_received_source_packets),
+                    "num_fec_recovered_packets": int(num_fec_recovered_source_packets),
                     "num_temporal_filled_packets": 0,
                     "num_spatial_filled_packets": 0,
-                    "num_zero_filled_packets": int(num_packets - num_received_packets),
-                    "num_still_missing": int(num_packets - num_received_packets),
+                    "num_zero_filled_packets": int(num_missing_source_packets),
+                    "num_still_missing": int(num_missing_source_packets),
+                    "recovery_ratio": float(recovery_ratio),
                 },
                 "bandwidth_selection": {
                     "mode": "system_equal_split"
                     if budget_bytes is not None
                     else self.budget_scope,
                     "budget_bytes": float(frame_budget_bytes),
-                    "num_total_packets": int(num_packets),
+                    "num_source_packets": int(num_source_packets),
+                    "num_parity_packets": int(num_parity_packets),
+                    "num_encoded_packets": int(num_encoded_packets),
                     "num_tx_packets": int(num_tx_packets),
                     "num_missing_by_budget": int(num_missing_by_budget),
-                    "selected_packet_ratio": float(num_tx_packets / max(1, num_packets)),
+                    "selected_encoded_packet_ratio": float(
+                        num_tx_packets / max(1, num_encoded_packets)
+                    ),
                 },
                 "patch_summary": {
                     "packetization": "byte_stream_not_spatial_patch",
-                    "num_total_patches": int(num_packets),
-                    "num_valid_patches": int(num_packets),
-                    "num_selected_source_patches": int(num_tx_packets),
-                    "num_encoded_patches": int(num_packets),
-                    "num_received_patches": int(num_received_packets),
-                    "num_fec_recovered_patches": 0,
+                    "num_total_patches": int(num_source_packets),
+                    "num_valid_patches": int(num_source_packets),
+                    "num_selected_source_patches": int(num_source_packets),
+                    "num_encoded_patches": int(num_encoded_packets),
+                    "num_received_patches": int(num_received_encoded_packets),
+                    "num_fec_recovered_patches": int(num_fec_recovered_source_packets),
                     "num_missing_by_budget": int(num_missing_by_budget),
                     "num_missing_by_loss": int(num_lost_by_bernoulli),
-                    "selected_patch_ratio": float(num_tx_packets / max(1, num_packets)),
+                    "selected_patch_ratio": float(
+                        num_tx_packets / max(1, num_encoded_packets)
+                    ),
                     "effective_patch_ratio": float(q_recv),
                 },
                 "packet": {
-                    "num_source_packets": int(num_packets),
-                    "num_encoded_packets": int(num_packets),
+                    "num_source_packets": int(num_source_packets),
+                    "num_parity_packets": int(num_parity_packets),
+                    "num_encoded_packets": int(num_encoded_packets),
                     "num_transmitted_packets": int(num_tx_packets),
-                    "num_received_packets": int(num_received_packets),
-                    "packet_size_bytes": int(packet_result.packet_size_bytes),
+                    "num_received_packets": int(num_received_encoded_packets),
+                    "num_direct_received_source_packets": int(num_direct_received_source_packets),
+                    "num_fec_recovered_source_packets": int(num_fec_recovered_source_packets),
+                    "num_missing_source_packets": int(num_missing_source_packets),
+                    "packet_size_bytes": int(packet_size_bytes),
                 },
                 "size": size_info,
                 "quality": {
                     "q_recv": float(q_recv),
                     "q_cache": 0.0,
-                    "num_source_packets": int(num_packets),
-                    "num_still_missing": int(num_packets - num_received_packets),
+                    "num_source_packets": int(num_source_packets),
+                    "num_still_missing": int(num_missing_source_packets),
+                    "num_fec_recovered_packets": int(num_fec_recovered_source_packets),
                 },
                 "raw_loss_mask_summary": _mask_summary(raw_loss_mask_tx, true_name="lost"),
                 "final_loss_mask_summary": _mask_summary(full_loss_mask, true_name="lost"),
+                "receive_mask_summary": _mask_summary(receive_mask, true_name="received"),
                 "tx_bytes": float(transmitted_bytes),
                 "rx_bytes": float(received_bytes),
                 "raw_bytes": int(feature.numel() * feature.element_size()),
                 "compressed_bytes": float(packet_result.original_num_bytes),
-                "encoded_bytes": float(packet_result.original_num_bytes),
+                "encoded_bytes": float(num_encoded_packets * packet_size_bytes),
                 "received_bytes": float(received_bytes),
                 "effective_received_bytes": float(received_bytes),
                 "late": False,
                 "dropped_by_late": False,
                 "notes": {
                     "packetization": "Quantize first, then flatten Q(F) into a byte stream and split by fixed packet length.",
-                    "loss": "Each transmitted packet independently follows receive_i ~ Bernoulli(1 - PLR_t).",
+                    "fec": "FEC is applied to byte-stream source packets before Bernoulli packet loss.",
+                    "loss": "Each transmitted encoded packet independently follows receive_i ~ Bernoulli(1 - PLR_t).",
                     "delay": "Good/Medium use current frame; Bad uses previous frame.",
-                    "fec": "FEC/redundancy is disabled in this byte-stream version.",
                 },
             }
         )
@@ -1264,6 +1544,8 @@ class ARCEFixedComm:
                 record=record,
                 packetization_result=packet_result,
                 quantization_result=quant_result,
+                encode_result=encode_result,
+                decode_result=decode_result,
             )
         else:
             result = ARCECommResult(
@@ -1637,6 +1919,8 @@ class ARCEFixedComm:
         total_lost = 0
         total_encoded = 0
         total_source = 0
+        total_parity = 0
+        total_fec_recovered = 0
 
         total_missing_by_budget = 0
         total_lost_by_bernoulli = 0
@@ -1651,6 +1935,8 @@ class ARCEFixedComm:
             total_lost += int(size.get("actual_num_lost_encoded_packets", 0))
             total_encoded += int(size.get("actual_num_encoded_packets", 0))
             total_source += int(size.get("actual_num_source_packets", 0))
+            total_parity += int(size.get("actual_num_parity_packets", 0))
+            total_fec_recovered += int(size.get("num_fec_recovered_source_packets", 0))
             total_missing_by_budget += int(size.get("num_missing_by_budget", 0))
             total_lost_by_bernoulli += int(size.get("num_lost_by_bernoulli", 0))
 
@@ -1665,13 +1951,16 @@ class ARCEFixedComm:
             "packetization_mode": "byte_stream",
             "loss_model": "bernoulli",
             "latency_model": "fixed_state_delay",
+            "fec_enabled": True,
             "total_transmitted_bytes": float(total_tx),
             "total_received_bytes": float(total_rx),
             "total_transmitted_mb": float(total_tx / 1_000_000.0),
             "total_received_mb": float(total_rx / 1_000_000.0),
             "total_encoded_packets": int(total_encoded),
             "total_source_packets": int(total_source),
+            "total_parity_packets": int(total_parity),
             "total_lost_encoded_packets": int(total_lost),
+            "total_fec_recovered_source_packets": int(total_fec_recovered),
             "total_missing_by_budget": int(total_missing_by_budget),
             "total_lost_by_bernoulli": int(total_lost_by_bernoulli),
             "encoded_packet_loss_ratio": (
@@ -1695,7 +1984,6 @@ class ARCEFixedComm:
             "max_records": int(self.max_records),
             "keep_tensor_results": bool(self.keep_tensor_results),
             "byte_packetizer": self.byte_packetizer.get_config(),
-            "channel_manager": self.channel_manager.get_config(),
             "action_policy": self.action_policy.get_config(),
             "fixed_policy": self.fixed_policy.get_config(),
             "loss_model": "bernoulli",
@@ -1703,6 +1991,8 @@ class ARCEFixedComm:
             "latency_model": "fixed_state_delay",
             "fixed_delay_ms": copy.deepcopy(self.fixed_delay_ms),
             "delay_policy_by_state": copy.deepcopy(self.delay_policy_by_state),
+            "fec": copy.deepcopy(self.fec_cfg),
+            "redundancy": copy.deepcopy(self.redundancy_cfg),
             "markov": {
                 "enabled": bool(self.markov_enabled),
                 "states": copy.deepcopy(self.markov_states),
@@ -1724,6 +2014,7 @@ class ARCEFixedComm:
             f"mode={self.mode}, "
             f"link_scope={self.link_scope}, "
             f"packetization=byte_stream, "
+            f"fec=enabled, "
             f"loss=bernoulli, "
             f"latency=fixed_state_delay, "
             f"num_records={len(self.records)})"
