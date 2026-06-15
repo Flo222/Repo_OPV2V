@@ -42,14 +42,17 @@ wild_setting:
         bandwidth_mbps: 27.0
         loss_rate: 0.05
         delay_ms: 10.0
+        plr: 0.05
       medium:
         bandwidth_mbps: 5.0
         loss_rate: 0.2
         delay_ms: 50.0
+        plr: 0.2
       bad:
         bandwidth_mbps: 1.0
         loss_rate: 0.35
         delay_ms: 100.0
+        plr: 0.35
     seed: 2026
 yaml_parser: load_point_pillar_params
 train_params:
@@ -224,6 +227,7 @@ model:
         lambda_comp: 0.5
         lambda_red: 0.5
         eps: 1.0e-06
+        budget_source: channel_profiles
       channel:
         mode: markov
         initial_state: medium
@@ -251,28 +255,18 @@ model:
         budget_scope: global_sum_link
         per_link_budget: false
       packetizer:
-        mode: block
-        block_size:
-        - 4
-        - 4
-        align_to_where2comm_mask: true
-        pad_boundary: true
+        mode: byte_stream
+        packet_size_bytes: 1024
+        Lp: 1024
+        quantize_first: true
+        flatten_after_quantization: true
+        pad_last_packet: true
       patch_selection:
-        enabled: true
-        source: where2comm_mask
-        mask_threshold: 0.05
-        patch_selector: score_per_byte
-        ranking: score_per_byte
-        enforce_link_budget: true
-        min_effective_patch_ratio: 0.2
-        min_patch_count: 1
-        metadata_bytes_per_packet: 8
-        score:
-          lambda_mask: 1.0
-          lambda_activation: 0.2
-          lambda_complementarity: 0.3
-        min_patch_ratio: 0.0
-        strict_min_patch: false
+        enabled: false
+        source: none
+        patch_selector: none
+        ranking: none
+        enforce_link_budget: false
       latency:
         enabled: true
         deadline_ms: 100.0
@@ -309,14 +303,17 @@ model:
           bandwidth_mbps: 27.0
           loss_rate: 0.05
           delay_ms: 10.0
+          plr: 0.05
         medium:
           bandwidth_mbps: 5.0
           loss_rate: 0.2
           delay_ms: 50.0
+          plr: 0.2
         bad:
           bandwidth_mbps: 1.0
           loss_rate: 0.35
           delay_ms: 100.0
+          plr: 0.35
       temporal_fusion: {}
 loss:
   core_method: point_pillar_loss

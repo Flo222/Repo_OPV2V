@@ -42,14 +42,17 @@ wild_setting:
         bandwidth_mbps: 27.0
         loss_rate: 0.05
         delay_ms: 10.0
+        plr: 0.05
       medium:
         bandwidth_mbps: 5.0
         loss_rate: 0.2
         delay_ms: 50.0
+        plr: 0.2
       bad:
         bandwidth_mbps: 1.0
         loss_rate: 0.35
         delay_ms: 100.0
+        plr: 0.35
 channel_state_markov:
   enabled: true
   scope: link
@@ -379,17 +382,13 @@ model:
         Lp: 1024
         quantize_first: true
         flatten_after_quantization: true
+        pad_last_packet: true
       patch_selection:
         enabled: false
         source: none
         patch_selector: none
         ranking: none
         enforce_link_budget: false
-        metadata_bytes_per_packet: 0
-        min_effective_patch_ratio: 0.0
-        min_patch_count: 1
-        strict_min_patch: false
-        min_patch_ratio: 0.0
       latency:
         enabled: true
         model: fixed_state_delay
@@ -442,14 +441,17 @@ model:
           bandwidth_mbps: 27.0
           loss_rate: 0.05
           delay_ms: 10.0
+          plr: 0.05
         medium:
           bandwidth_mbps: 5.0
           loss_rate: 0.2
           delay_ms: 50.0
+          plr: 0.2
         bad:
           bandwidth_mbps: 1.0
           loss_rate: 0.35
           delay_ms: 100.0
+          plr: 0.35
 loss:
   core_method: point_pillar_loss
   args:
