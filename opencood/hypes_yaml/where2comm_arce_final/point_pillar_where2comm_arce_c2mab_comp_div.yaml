@@ -274,16 +274,7 @@ model:
         proc_delay_ms: 10.0
         late_policy: allow_stale
         tau_stale_ms: 300.0
-      recovery:
-        temporal_cache: true
-        spatial_interpolation: true
-        zero_fill: true
-        temporal_fusion:
-          enabled: true
-          beta: 5.0
-          tau_stale_ms: 300.0
-          use_delay_penalty: true
-          update_rule: recv_ge_cache
+      recovery: temporal_cache
       fec:
         apply_to: selected_patches_only
       metrics:
@@ -309,6 +300,24 @@ model:
           delay_ms: 100.0
           plr: 0.35
       temporal_fusion: {}
+      recovery_config:
+        temporal_cache: true
+        spatial_interpolation: true
+        zero_fill: true
+        temporal_fusion:
+          enabled: true
+          beta: 5.0
+          tau_stale_ms: 300.0
+          use_delay_penalty: true
+          update_rule: recv_ge_cache
+      compact_sparse:
+        enabled: true
+        source: where2comm_confidence
+        threshold: 0.0
+        sort_by_score: true
+        budget_aware_topk: true
+        max_tokens: -1
+        scatter_back: true
 loss:
   core_method: point_pillar_loss
   args:

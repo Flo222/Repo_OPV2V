@@ -274,18 +274,13 @@ model:
         proc_delay_ms: 10.0
         late_policy: allow_stale
         tau_stale_ms: 300.0
-      recovery:
-        temporal_cache: true
-        spatial_interpolation: true
-        zero_fill: true
-        temporal_fusion:
-          enabled: true
-          beta: 5.0
-          tau_stale_ms: 300.0
-          use_delay_penalty: true
-          update_rule: recv_ge_cache
+      recovery: zero_fill
       fec:
-        apply_to: selected_patches_only
+        enabled: false
+        type: none
+        fec_type: none
+        redundancy_ratio: 0.0
+        apply_to: byte_stream_packets
       metrics:
         save_frame_records: true
         save_link_records: true
@@ -293,30 +288,116 @@ model:
         success_q_min: 0.3
         success_min_effective_patch_ratio: 0.2
       fixed_action:
+        name: w2c_channel_fp16_none
         send: 1
         quant_mode: fp16
+        quant: fp16
         fec_type: none
         redundancy_ratio: 0.0
+        rho: 0.0
         cache_enabled: 0
+        cache: 0
         recovery: zero_fill
-        name: w2c_channel_fp16_none
+        recovery_config: &id006
+          temporal_cache: false
+          spatial_interpolation: false
+          zero_fill: true
+          priority:
+          - zero_fill
       profiles:
         good:
-          bandwidth_mbps: 27.0
-          loss_rate: 0.05
-          delay_ms: 10.0
-          plr: 0.05
+          name: w2c_channel_fp16_none
+          send: 1
+          quant_mode: fp16
+          quant: fp16
+          fec_type: none
+          redundancy_ratio: 0.0
+          rho: 0.0
+          cache_enabled: 0
+          cache: 0
+          recovery: zero_fill
+          recovery_config: *id006
         medium:
-          bandwidth_mbps: 5.0
-          loss_rate: 0.2
-          delay_ms: 50.0
-          plr: 0.2
+          name: w2c_channel_fp16_none
+          send: 1
+          quant_mode: fp16
+          quant: fp16
+          fec_type: none
+          redundancy_ratio: 0.0
+          rho: 0.0
+          cache_enabled: 0
+          cache: 0
+          recovery: zero_fill
+          recovery_config: *id006
         bad:
-          bandwidth_mbps: 1.0
-          loss_rate: 0.35
-          delay_ms: 100.0
-          plr: 0.35
+          name: w2c_channel_fp16_none
+          send: 1
+          quant_mode: fp16
+          quant: fp16
+          fec_type: none
+          redundancy_ratio: 0.0
+          rho: 0.0
+          cache_enabled: 0
+          cache: 0
+          recovery: zero_fill
+          recovery_config: *id006
       temporal_fusion: {}
+      fixed_policy:
+        profiles:
+          good:
+            name: w2c_channel_fp16_none
+            send: 1
+            quant_mode: fp16
+            quant: fp16
+            fec_type: none
+            redundancy_ratio: 0.0
+            rho: 0.0
+            cache_enabled: 0
+            cache: 0
+            recovery: zero_fill
+            recovery_config: *id006
+          medium:
+            name: w2c_channel_fp16_none
+            send: 1
+            quant_mode: fp16
+            quant: fp16
+            fec_type: none
+            redundancy_ratio: 0.0
+            rho: 0.0
+            cache_enabled: 0
+            cache: 0
+            recovery: zero_fill
+            recovery_config: *id006
+          bad:
+            name: w2c_channel_fp16_none
+            send: 1
+            quant_mode: fp16
+            quant: fp16
+            fec_type: none
+            redundancy_ratio: 0.0
+            rho: 0.0
+            cache_enabled: 0
+            cache: 0
+            recovery: zero_fill
+            recovery_config: *id006
+      quantization:
+        enabled: true
+        mode: fp16
+        raw_bits: 32
+      recovery_config:
+        temporal_cache: false
+        spatial_interpolation: false
+        zero_fill: true
+        priority:
+        - zero_fill
+      compact_sparse:
+        enabled: true
+        source: where2comm_confidence
+        threshold: 0.0
+        sort_by_score: true
+        budget_aware_topk: true
+        max_tokens: -1
+        scatter_back: true
 loss:
   core_method: point_pillar_loss
   args:

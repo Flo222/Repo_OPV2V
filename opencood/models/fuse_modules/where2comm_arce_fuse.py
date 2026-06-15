@@ -200,16 +200,19 @@ class Where2commArce(nn.Module):
                         communication_rates = torch.tensor(1).to(x.device)
                         communication_masks = torch.ones((x.shape[0], 1, x.shape[-2], x.shape[-1]), dtype=x.dtype, device=x.device)
                         raw_masks = communication_masks.clone()
+                        message_scores = raw_masks
                     else:
                         batch_confidence_maps = self.regroup(psm_single, record_len)
                         communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
                             batch_confidence_maps, B, return_raw=True
                         )
+                        message_scores = _confidence_maps
                         if x.shape[-1] != communication_masks.shape[-1] or x.shape[-2] != communication_masks.shape[-2]:
                             communication_masks = F.interpolate(communication_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
                             raw_masks = F.interpolate(raw_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
+                            message_scores = F.interpolate(message_scores, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
                     x = x * communication_masks
-                    x, arce_info = self._maybe_arce_comm(x, communication_masks, raw_masks, record_len, data_dict, frame_id)
+                    x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
 
                 batch_node_features = self.regroup(x, record_len)
                 x_fuse = []
@@ -232,14 +235,16 @@ class Where2commArce(nn.Module):
                 communication_rates = torch.tensor(1).to(x.device)
                 communication_masks = torch.ones((x.shape[0], 1, x.shape[-2], x.shape[-1]), dtype=x.dtype, device=x.device)
                 raw_masks = communication_masks.clone()
+                message_scores = raw_masks
             else:
                 batch_confidence_maps = self.regroup(psm_single, record_len)
                 communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
                     batch_confidence_maps, B, return_raw=True
                 )
+                message_scores = _confidence_maps
                 x = x * communication_masks
 
-            x, arce_info = self._maybe_arce_comm(x, communication_masks, raw_masks, record_len, data_dict, frame_id)
+            x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
             batch_node_features = self.regroup(x, record_len)
             x_fuse = []
             for b in range(B):

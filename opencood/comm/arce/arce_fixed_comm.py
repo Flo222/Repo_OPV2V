@@ -1032,6 +1032,154 @@ class ARCEFixedComm:
     # Main one-link communication
     # ------------------------------------------------------------------
 
+
+
+    def _compact_feature_by_message_mask(self, feature, message_mask, action=None, budget_bytes=None, channel_profile=None):
+        """
+        Budget-aware compact packing for Where2comm messages.
+
+        It uses Where2comm confidence scores to rank BEV tokens and selects top-K
+        tokens that fit the current link/frame budget under the chosen quant/rho action.
+        """
+        try:
+            cfg = (getattr(self, "arce_cfg_raw", {}) or {}).get("compact_sparse", {}) or {}
+        except Exception:
+            cfg = {}
+
+        if not bool(cfg.get("enabled", False)):
+            return feature, None
+
+        if message_mask is None or (not torch.is_tensor(message_mask)):
+            return feature, None
+
+        if feature.dim() != 3:
+            return feature, None
+
+        C, H, W = feature.shape
+        score = message_mask.to(device=feature.device)
+
+        if score.dim() == 3:
+            if score.shape[0] == 1:
+                score2d = score[0]
+            else:
+                score2d = score.float().mean(dim=0)
+        elif score.dim() == 2:
+            score2d = score
+        else:
+            return feature, None
+
+        if score2d.shape[-2:] != (H, W):
+            score2d = torch.nn.functional.interpolate(
+                score2d.view(1, 1, score2d.shape[-2], score2d.shape[-1]).float(),
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False,
+            )[0, 0]
+
+        flat_score = score2d.reshape(-1).float()
+
+        # Candidate set: all positions with score > threshold.
+        # If threshold=0, this means all positive-confidence locations.
+        threshold = float(cfg.get("threshold", 0.0))
+        cand = torch.nonzero(flat_score > threshold, as_tuple=False).flatten()
+        if cand.numel() == 0:
+            cand = torch.arange(H * W, device=feature.device)
+
+        # Sort by confidence descending.
+        scores = flat_score[cand]
+        order = torch.argsort(scores, descending=True)
+        cand = cand[order]
+
+        # Compute budget-aware top-K.
+        # budget_bytes can be passed by executor; if absent, use full candidate set.
+        dynamic_topk = bool(cfg.get("budget_aware_topk", True))
+        max_tokens_cfg = int(cfg.get("max_tokens", -1))
+
+        K_budget = cand.numel()
+        used_budget_bytes = None
+
+        if dynamic_topk and budget_bytes is not None:
+            b = float(max(0.0, budget_bytes))
+
+            # Quantization byte width.
+            q = "fp16"
+            try:
+                q = str(self._get_action_quant_mode(action)).lower()
+            except Exception:
+                try:
+                    q = str(_safe_get_action_field(action, "quant_mode", "fp16")).lower()
+                except Exception:
+                    q = "fp16"
+
+            if q in ("int4", "4bit", "int4_uniform"):
+                bytes_per_value = 0.5
+            elif q in ("int8", "8bit", "int8_uniform"):
+                bytes_per_value = 1.0
+            else:
+                bytes_per_value = 2.0
+
+            # Redundancy ratio.
+            try:
+                rho = float(_safe_get_action_field(action, "redundancy_ratio", _safe_get_action_field(action, "rho", 0.0)))
+            except Exception:
+                rho = 0.0
+
+            token_cost = float(C) * bytes_per_value * float(1.0 + max(0.0, rho))
+            if token_cost <= 0:
+                token_cost = float(C) * 2.0
+
+            K_budget = int(b // token_cost)
+            K_budget = max(1, min(int(cand.numel()), K_budget))
+            used_budget_bytes = float(K_budget * token_cost)
+
+        if max_tokens_cfg > 0:
+            K_budget = min(K_budget, max_tokens_cfg)
+
+        selected = cand[:K_budget]
+
+        flat_feature = feature.reshape(C, H * W)
+        compact_feature = flat_feature[:, selected].contiguous().view(C, int(selected.numel()), 1)
+
+        compact_meta = {
+            "enabled": True,
+            "indices": selected,
+            "original_shape": (int(C), int(H), int(W)),
+            "num_tokens": int(selected.numel()),
+            "num_total_tokens": int(H * W),
+            "mask_ratio": float(selected.numel() / max(H * W, 1)),
+            "threshold": float(threshold),
+            "budget_aware_topk": bool(dynamic_topk),
+            "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+            "estimated_payload_budget_bytes": used_budget_bytes,
+        }
+
+        return compact_feature, compact_meta
+
+
+    def _scatter_compact_feature(self, compact_feature, compact_meta, reference_feature):
+        """
+        Scatter recovered compact message [C,K,1] back to dense [C,H,W].
+        Missing/unreceived tokens are already zero-filled in compact_feature.
+        """
+        if compact_meta is None or not compact_meta.get("enabled", False):
+            return compact_feature
+
+        indices = compact_meta.get("indices", None)
+        if indices is None or not torch.is_tensor(indices):
+            return compact_feature
+
+        C, H, W = reference_feature.shape
+        out = torch.zeros_like(reference_feature)
+
+        vals = compact_feature.reshape(C, -1)
+        K = min(vals.shape[1], indices.numel())
+        if K <= 0:
+            return out
+
+        out_flat = out.reshape(C, H * W)
+        out_flat[:, indices[:K].to(out_flat.device)] = vals[:, :K].to(out_flat.dtype)
+        return out
+
     def communicate_feature(
         self,
         feature: torch.Tensor,
@@ -1228,6 +1376,21 @@ class ARCEFixedComm:
             ego_index=ego_index,
         )
 
+
+        # 1.5. Where2comm mask-guided compact message packing.
+        # GRACE/ARCE transmits only selected Where2comm tokens instead of the full dense feature map.
+        compact_meta = None
+        feature_tx, compact_meta = self._compact_feature_by_message_mask(
+            feature_tx,
+            message_mask,
+            action=action,
+            budget_bytes=self._frame_budget_bytes_from_channel_profile(
+                channel_profile=channel_profile,
+                budget_bytes=budget_bytes,
+            ),
+            channel_profile=channel_profile,
+        )
+
         # 2. Quantize first.
         quantizer = self._build_quantizer(action)
         quant_mode = self._get_action_quant_mode(action)
@@ -1383,6 +1546,15 @@ class ARCEFixedComm:
         num_direct_received_source_packets = int(
             decode_result.num_direct_received_source_packets
         )
+
+        # 7.5. Scatter compact recovered payload back to dense BEV feature map.
+        if compact_meta is not None:
+            recovered_feature = self._scatter_compact_feature(
+                recovered_feature,
+                compact_meta,
+                reference_feature=feature,
+            )
+
         num_fec_recovered_source_packets = int(
             decode_result.num_fec_recovered_source_packets
         )
@@ -1452,6 +1624,8 @@ class ARCEFixedComm:
                     },
                 },
                 "packetization": packet_result.to_meta_dict(),
+
+                "compact_sparse": copy.deepcopy(compact_meta) if compact_meta is not None else None,
                 "byte_stream_packetization": packet_result.to_meta_dict(),
                 "quantization": quant_result.as_dict(),
                 "fec_encode": fec_encode_dict,
