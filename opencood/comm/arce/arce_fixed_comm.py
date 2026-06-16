@@ -402,6 +402,9 @@ class ARCEFixedComm:
                 self.arce_cfg_raw.get("deadline_ms", 100.0),
             )
         )
+        self.budget_source = str(
+            scheduler_cfg.get("budget_source", getattr(self, "arce_cfg_raw", {}).get("budget_source", "system_budget"))
+        )
         self.budget_scope = str(
             scheduler_cfg.get("budget_scope", "system_equal_split")
         ).strip().lower()
@@ -849,24 +852,96 @@ class ARCEFixedComm:
         self,
         channel_profile: Dict[str, Any],
         budget_bytes: Optional[float] = None,
+        channel_state: Optional[str] = None,
     ) -> float:
+
+        # C2MAB explicit allocated budget has highest priority.
+        # When C2MAB / oracle passes an explicit allocated budget for the
+        # selected sender-action proposal, it must override channel-state
+        # default budgets. Otherwise INT4/INT8 low-rate actions are selected
+        # by the oracle but the executor still transmits using the full
+        # medium/bad/good channel budget.
         if budget_bytes is not None:
             return float(max(0.0, budget_bytes))
+        """
+        Return frame-level byte budget.
 
-        if self.budget_scope == "system_equal_split":
-            return float(self._system_budget_bytes())
+        If scheduler.budget_source == channel_profiles, derive budget from
+        current Markov channel state:
+            good   -> profiles.good.bandwidth_mbps
+            medium -> profiles.medium.bandwidth_mbps
+            bad    -> profiles.bad.bandwidth_mbps
 
-        bandwidth_mbps = float(channel_profile.get("bandwidth_mbps", 0.0))
-        if bandwidth_mbps <= 0:
-            return float("inf")
+        Otherwise keep legacy fixed system_budget_mbps behavior.
+        """
+        raw_cfg = getattr(self, "arce_cfg_raw", {}) or {}
+        scheduler_cfg = raw_cfg.get("scheduler", {}) or {}
+        if not isinstance(scheduler_cfg, dict):
+            scheduler_cfg = {}
 
-        return float(
-            bandwidth_mbps
-            * 1_000_000.0
-            * (self.tx_window_ms / 1000.0)
-            / 8.0
+        budget_source = str(
+            scheduler_cfg.get(
+                "budget_source",
+                raw_cfg.get("budget_source", getattr(self, "budget_source", "system_budget")),
+            )
+        ).strip().lower()
+
+        budget_scope = str(
+            scheduler_cfg.get(
+                "budget_scope",
+                raw_cfg.get("budget_scope", getattr(self, "budget_scope", "system_equal_split")),
+            )
+        ).strip().lower()
+
+        use_channel_profiles = (
+            budget_source in ("channel_profiles", "channel_profile", "profiles")
+            or budget_scope in ("global_sum_link", "channel_profiles", "channel_profile")
         )
 
+        if not use_channel_profiles:
+            if budget_bytes is not None:
+                return float(max(0.0, budget_bytes))
+            return float(self._system_budget_bytes())
+
+        profiles = raw_cfg.get("profiles", {}) or {}
+        if not profiles and isinstance(raw_cfg.get("channel", None), dict):
+            profiles = raw_cfg.get("channel", {}).get("profiles", {}) or {}
+
+        if not isinstance(profiles, dict):
+            profiles = {}
+
+        state = None
+        if channel_state is not None:
+            state = str(channel_state).strip().lower()
+
+        if state is None and isinstance(channel_profile, dict):
+            for key in ("state", "name", "channel_state"):
+                if channel_profile.get(key) is not None:
+                    state = str(channel_profile.get(key)).strip().lower()
+                    break
+
+        if state in profiles:
+            channel_profile = profiles[state]
+
+        if channel_profile is None:
+            channel_profile = {}
+
+        bandwidth_mbps = float(channel_profile.get("bandwidth_mbps", 0.0) or 0.0)
+
+        if bandwidth_mbps <= 0:
+            return float(self._system_budget_bytes())
+
+        tx_window_ms = float(
+            scheduler_cfg.get(
+                "tx_window_ms",
+                scheduler_cfg.get(
+                    "frame_interval_ms",
+                    raw_cfg.get("tx_window_ms", raw_cfg.get("frame_interval_ms", 100.0)),
+                ),
+            )
+        )
+
+        return float(bandwidth_mbps * 1e6 / 8.0 * (tx_window_ms / 1000.0))
     def _select_encoded_packets_by_budget(
         self,
         encoded_packets: torch.Tensor,
@@ -1111,10 +1186,14 @@ class ARCEFixedComm:
                 except Exception:
                     q = "fp16"
 
-            if q in ("int4", "4bit", "int4_uniform"):
-                bytes_per_value = 0.5
+            if q in ("fp32", "float32", "none", "raw"):
+                bytes_per_value = 4.0
+            elif q in ("fp16", "float16", "half"):
+                bytes_per_value = 2.0
             elif q in ("int8", "8bit", "int8_uniform"):
                 bytes_per_value = 1.0
+            elif q in ("int4", "4bit", "int4_uniform"):
+                bytes_per_value = 0.5
             else:
                 bytes_per_value = 2.0
 
@@ -1387,6 +1466,7 @@ class ARCEFixedComm:
             budget_bytes=self._frame_budget_bytes_from_channel_profile(
                 channel_profile=channel_profile,
                 budget_bytes=budget_bytes,
+                channel_state=active_channel_state,
             ),
             channel_profile=channel_profile,
         )
@@ -1434,6 +1514,7 @@ class ARCEFixedComm:
         frame_budget_bytes = self._frame_budget_bytes_from_channel_profile(
             channel_profile=channel_profile,
             budget_bytes=budget_bytes,
+            channel_state=active_channel_state,
         )
 
         tx_mask = self._select_encoded_packets_by_budget(

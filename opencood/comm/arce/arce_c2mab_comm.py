@@ -25,9 +25,10 @@ Modified for the new communication setting:
        Bad    -> [0.03, 0.17, 0.80]
 
 5. Bandwidth budget:
-   The bandwidth budget is a system-level budget.
-   It is split equally among collaborators:
-       per_link_budget = system_budget / num_collaborators
+   Final setting supports channel_profiles + global_sum_link.
+   Each collaborator obtains a state-dependent link budget from its current
+   Markov channel state, and the ego-side oracle uses their sum as the
+   global super-arm budget.
 
 6. Packetization cost model:
    Quantize first, then flatten Q(F) into a byte stream.
@@ -48,6 +49,7 @@ Modified for the new communication setting:
 from __future__ import annotations
 
 import copy
+import math
 import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -404,10 +406,16 @@ class ARCEC2MABComm:
                 "fec_main",
                 action_cfg.get("fec_mode", "raptor_sim"),
             ),
-            send_values=action_cfg.get("send_values", (0, 1)),
-            quant_modes=action_cfg.get("quant_modes", ("fp16", "int8", "int4")),
-            redundancy_ratios=action_cfg.get("redundancy_ratios", (0.0, 0.25, 0.5)),
-            cache_values=action_cfg.get("cache_values", (0, 1)),
+            send_values=action_cfg.get("send_values", action_cfg.get("send", (0, 1))),
+            quant_modes=action_cfg.get(
+                "quant_modes",
+                action_cfg.get("quant", ("fp32", "fp16", "int8", "int4")),
+            ),
+            redundancy_ratios=action_cfg.get(
+                "redundancy_ratios",
+                action_cfg.get("rho", (0.0, 0.25, 0.5)),
+            ),
+            cache_values=action_cfg.get("cache_values", action_cfg.get("cache", (0, 1))),
             xor_group_size=int(action_cfg.get("xor_group_size", 4)),
             decode_overhead=float(action_cfg.get("decode_overhead", 0.0)),
         )
@@ -445,6 +453,37 @@ class ARCEC2MABComm:
             lambda_comp=float(oracle_cfg.get("lambda_comp", 0.5)),
             lambda_red=float(oracle_cfg.get("lambda_red", 0.5)),
             diversity_aware=bool(oracle_cfg.get("diversity_aware", True)),
+            cost_alpha=float(oracle_cfg.get("cost_alpha", self.arce_cfg.get("cost_alpha", 0.25))),
+            quant_quality_prior=oracle_cfg.get(
+                "quant_quality_prior",
+                self.arce_cfg.get(
+                    "quant_quality_prior",
+                    {"fp32": 1.0, "fp16": 0.97, "int8": 0.85, "int4": 0.55},
+                ),
+            ),
+        )
+
+        # Sender-side proposal expansion: each sender/link submits multiple
+        # candidate actions to the ego oracle instead of only one. The ego
+        # oracle still selects at most one action for each sender.
+        self.sender_topk_actions = int(
+            oracle_cfg.get(
+                "sender_topk_actions",
+                self.arce_cfg.get("sender_topk_actions", 12),
+            )
+        )
+        self.sender_topk_actions = max(1, int(self.sender_topk_actions))
+        self.sender_force_quant_coverage = bool(
+            oracle_cfg.get(
+                "sender_force_quant_coverage",
+                self.arce_cfg.get("sender_force_quant_coverage", True),
+            )
+        )
+        self.sender_include_low_cost = bool(
+            oracle_cfg.get(
+                "sender_include_low_cost",
+                self.arce_cfg.get("sender_include_low_cost", True),
+            )
         )
 
         # ------------------------------------------------------------------
@@ -461,7 +500,10 @@ class ARCEC2MABComm:
 
         # New formal budget scope.
         self.budget_scope = str(
-            scheduler_cfg.get("budget_scope", "system_equal_split")
+            scheduler_cfg.get(
+                "budget_scope",
+                self.arce_cfg.get("budget_scope", "global_sum_link"),
+            )
         ).strip().lower()
 
         # System total bandwidth, not per-link bandwidth.
@@ -514,6 +556,9 @@ class ARCEC2MABComm:
         self.reward_alpha_c = float(reward_cfg.get("alpha_c", 0.3))
         self.reward_alpha_d = float(reward_cfg.get("alpha_d", 0.2))
         self.reward_alpha_v = float(reward_cfg.get("alpha_v", 1.0))
+        self.reward_alpha_m = float(reward_cfg.get("alpha_m", 0.25))
+        self.reward_alpha_r = float(reward_cfg.get("alpha_r", 0.20))
+        self.reward_alpha_t = float(reward_cfg.get("alpha_t", 0.15))
         self.reward_tau_stale_ms = float(reward_cfg.get("tau_stale_ms", 300.0))
         self.reward_stale_max_ms = float(reward_cfg.get("stale_max_ms", 400.0))
 
@@ -662,10 +707,60 @@ class ARCEC2MABComm:
     # Budget helpers
     # ------------------------------------------------------------------
 
+    def _budget_source_scope(self) -> Tuple[str, str]:
+        scheduler_cfg = self.arce_cfg.get("scheduler", {}) or {}
+        if not isinstance(scheduler_cfg, dict):
+            scheduler_cfg = {}
+
+        oracle_cfg = self.arce_cfg.get("ego_oracle", {}) or {}
+        if not isinstance(oracle_cfg, dict):
+            oracle_cfg = {}
+
+        budget_source = str(
+            scheduler_cfg.get(
+                "budget_source",
+                self.arce_cfg.get(
+                    "budget_source",
+                    oracle_cfg.get("budget_source", "channel_profiles"),
+                ),
+            )
+        ).strip().lower()
+
+        budget_scope = str(
+            scheduler_cfg.get(
+                "budget_scope",
+                self.arce_cfg.get(
+                    "budget_scope",
+                    oracle_cfg.get("budget_scope", self.budget_scope),
+                ),
+            )
+        ).strip().lower()
+
+        return budget_source, budget_scope
+
+    def _use_channel_profile_budget(self) -> bool:
+        budget_source, budget_scope = self._budget_source_scope()
+        return (
+            budget_source in ("channel_profiles", "channel_profile", "profiles")
+            or budget_scope in ("global_sum_link", "channel_profiles", "channel_profile")
+        )
+
     def _system_budget_bytes(self) -> float:
         return float(
             budget_bytes_from_bandwidth(
                 self.system_budget_mbps,
+                self.tx_window_ms,
+            )
+        )
+
+    def _channel_profile_budget_bytes(self, profile: Dict[str, Any]) -> float:
+        bandwidth_mbps = _profile_scalar(
+            profile.get("bandwidth_mbps", self.system_budget_mbps),
+            self.system_budget_mbps,
+        )
+        return float(
+            budget_bytes_from_bandwidth(
+                bandwidth_mbps,
                 self.tx_window_ms,
             )
         )
@@ -685,8 +780,19 @@ class ARCEC2MABComm:
         """
         Resolve link state/profile/frame budget for one sender.
 
-        New rule:
-            link_budget_bytes = system_budget_bytes / num_collaborators
+        Final setting:
+            scheduler.budget_source = channel_profiles
+            scheduler.budget_scope  = global_sum_link
+
+        Under this setting, each link first obtains its state-dependent
+        channel budget:
+            good   -> 27 Mbps
+            medium -> 5 Mbps
+            bad    -> 1 Mbps
+
+        The ego-side oracle then uses the sum of these link budgets as the
+        global super-arm budget, so useful CAVs can consume more budget and
+        redundant CAVs can be suppressed by no-send.
         """
         state_name = self._state_name_for_sender(data_dict, batch_idx, sender_idx)
         profile = self._profile_for_state(state_name)
@@ -694,7 +800,11 @@ class ARCEC2MABComm:
         if state_name == "ego_or_padding":
             return state_name, profile, 0.0
 
-        link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+        if self._use_channel_profile_budget():
+            link_budget_bytes = self._channel_profile_budget_bytes(profile)
+        else:
+            link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+
         return state_name, profile, float(link_budget_bytes)
 
     # ------------------------------------------------------------------
@@ -708,12 +818,22 @@ class ARCEC2MABComm:
         budget_bytes: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Estimate cost for:
-            Q(F) -> bytes -> 1024-byte packets -> FEC parity packets.
+        Estimate communication cost for C2MAB proposal ranking.
 
-        This is proposal-stage cost only.
-        The executor should do the real quantization, packetization, FEC,
-        Bernoulli loss, and reconstruction.
+        Final setting: quantization mode is treated as a rate-distortion
+        operating point under one global shared bandwidth budget.
+
+            fp32 -> high fidelity / high budget
+            fp16 -> medium-high fidelity / medium budget
+            int8 -> compressed / low budget
+            int4 -> strongly compressed / very low budget
+
+        The global oracle still enforces:
+            sum(selected.cost_bytes) <= global_budget_bytes
+
+        Therefore this does not violate the 1/5/27 Mbps shared bandwidth
+        constraint. It only changes how each quantized action requests a share
+        of that global budget.
         """
         if getattr(action, "is_no_send", False):
             return {
@@ -730,17 +850,22 @@ class ARCEC2MABComm:
                 "metadata_bytes": 0.0,
                 "encoded_bytes": 0.0,
                 "estimated_transmitted_bytes": 0.0,
+                "max_tx_packets_under_budget": 0,
                 "effective_packet_ratio": 0.0,
+                "packet_size_bytes": int(self.packet_size_bytes),
+                "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+                "proposal_budget_share": 0.0,
+                "cost_model": "allocation_aware_quant_share",
             }
 
         raw_fp32 = raw_feature_bytes_fp32(feature_shape)
         q = str(action.quant_mode).strip().lower()
         quant_ratio = float(QUANT_RATIO_TO_FP32.get(q, 0.5))
 
-        # Strict byte-stream size after quantization.
         source_bytes = float(raw_fp32 * quant_ratio)
 
         Lp = int(self.packet_size_bytes)
+        packet_unit = float(Lp + max(0, self.metadata_bytes_per_packet))
         source_packets = int(math.ceil(source_bytes / max(Lp, 1))) if source_bytes > 0 else 0
 
         rho = float(getattr(action, "redundancy_ratio", 0.0))
@@ -751,31 +876,41 @@ class ARCEC2MABComm:
         encoded_bytes = float(encoded_packets * Lp + metadata_bytes)
 
         if budget_bytes is None:
-            estimated_tx = encoded_bytes
-            feasible = encoded_packets > 0
-            effective_ratio = 1.0 if encoded_packets > 0 else 0.0
-            max_tx_packets = encoded_packets
+            target_tx_bytes = float(encoded_bytes)
+            proposal_share = 1.0
         else:
             budget = float(max(0.0, budget_bytes))
-            if encoded_packets <= 0:
-                max_tx_packets = 0
-            else:
-                max_tx_packets = int(
-                    min(
-                        encoded_packets,
-                        math.floor(
-                            budget / float(Lp + max(0, self.metadata_bytes_per_packet))
-                        ),
-                    )
-                )
-            feasible = max_tx_packets > 0
-            estimated_tx = float(
+
+            # Quantization-aware rate allocation:
+            #   fp32: 1.00
+            #   fp16: 0.50
+            #   int8: 0.25
+            #   int4: 0.125
+            #
+            # Redundancy increases requested budget; the final value is clipped
+            # by the global budget.
+            proposal_share = float(quant_ratio) * float(1.0 + max(rho, 0.0))
+            proposal_share = max(0.02, min(1.0, proposal_share))
+
+            target_tx_bytes = float(min(encoded_bytes, budget * proposal_share))
+
+            # At least one packet if the action is feasible.
+            if target_tx_bytes > 0.0 and target_tx_bytes < packet_unit:
+                target_tx_bytes = packet_unit
+
+        if encoded_packets <= 0 or target_tx_bytes <= 0.0:
+            max_tx_packets = 0
+        else:
+            max_tx_packets = int(
                 min(
-                    encoded_bytes,
-                    max_tx_packets * (Lp + max(0, self.metadata_bytes_per_packet)),
+                    encoded_packets,
+                    math.floor(target_tx_bytes / packet_unit),
                 )
             )
-            effective_ratio = float(max_tx_packets / max(1, encoded_packets))
+
+        feasible = max_tx_packets > 0
+        estimated_tx = float(max_tx_packets * packet_unit)
+        effective_ratio = float(max_tx_packets / max(1, encoded_packets))
 
         return {
             "feasible": bool(feasible),
@@ -795,8 +930,10 @@ class ARCEC2MABComm:
             "effective_packet_ratio": float(effective_ratio),
             "packet_size_bytes": int(Lp),
             "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
-            "cost_model": "byte_stream_quantize_first_with_fec",
+            "proposal_budget_share": float(proposal_share),
+            "cost_model": "allocation_aware_quant_share",
         }
+
 
     # ------------------------------------------------------------------
     # Cache / records
@@ -870,6 +1007,171 @@ class ARCEC2MABComm:
     # Main APIs
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # mask complementarity utilities
+    # ------------------------------------------------------------------
+    def _mask_to_bool_2d(self, mask):
+        """Convert Where2comm message/confidence mask to a 2D boolean mask."""
+        if mask is None:
+            return None
+
+        import torch
+
+        if not torch.is_tensor(mask):
+            return None
+
+        m = mask.detach()
+
+        # Common Where2comm mask shapes may include singleton batch/channel dims.
+        while m.dim() > 2:
+            if m.shape[0] == 1:
+                m = m[0]
+            else:
+                # Aggregate channel-like dimension.
+                m = m.float().max(dim=0)[0]
+
+        if m.dim() != 2:
+            return None
+
+        return (m > 0)
+
+    def _mask_complementarity(self, sender_mask, ego_mask) -> float:
+        """
+        Comp(i, ego) = |M_i ∩ not(M_ego)| / |M_i|.
+        """
+        sm = self._mask_to_bool_2d(sender_mask)
+        em = self._mask_to_bool_2d(ego_mask)
+
+        if sm is None or em is None:
+            return 0.0
+
+        if tuple(sm.shape) != tuple(em.shape):
+            return 0.0
+
+        denom = float(sm.sum().item())
+        if denom <= 0:
+            return 0.0
+
+        novel = float((sm & (~em)).sum().item())
+        return float(novel / denom)
+
+
+    def _mask_to_float_2d(self, mask):
+        """Convert mask/confidence map to a 2D float tensor."""
+        if mask is None:
+            return None
+
+        if not torch.is_tensor(mask):
+            return None
+
+        m = mask.detach().float()
+
+        # Remove singleton dimensions first.
+        while m.dim() > 2:
+            if m.shape[0] == 1:
+                m = m[0]
+            else:
+                # Aggregate channel-like dimension.
+                m = m.max(dim=0)[0]
+
+        if m.dim() != 2:
+            return None
+
+        return m
+
+    def _confidence_advantage_complementarity(
+        self,
+        sender_score,
+        ego_score,
+        threshold: float = 0.05,
+    ):
+        """
+        Confidence-aware complementarity for Where2comm.
+
+        The original binary-mask formula is:
+            |M_i ∩ not(M_ego)| / |M_i|
+
+        In practice, Where2comm's communication mask can be all-one when the
+        threshold is too low, making binary complementarity always zero.
+        This function instead uses the confidence-map advantage:
+
+            Comp(i, ego) =
+                sum_{u in M_i} max(C_i(u) - C_ego(u), 0)
+                / (sum_{u in M_i} C_i(u) + eps)
+
+        where M_i is the sender's active/high-confidence region.
+
+        This is not a debug fallback. It directly measures where the sender is
+        more confident than ego over the sender's own candidate communication
+        regions, which matches the intended "new useful information" semantics.
+        """
+        ss = self._mask_to_float_2d(sender_score)
+        es = self._mask_to_float_2d(ego_score)
+
+        stats = {
+            "mode": "confidence_advantage",
+            "sender_valid": False,
+            "ego_valid": False,
+            "sender_mean": 0.0,
+            "ego_mean": 0.0,
+            "sender_max": 0.0,
+            "ego_max": 0.0,
+            "sender_active_ratio": 0.0,
+            "advantage_sum": 0.0,
+            "sender_weight_sum": 0.0,
+        }
+
+        if ss is None or es is None:
+            return 0.0, None, stats
+
+        if tuple(ss.shape) != tuple(es.shape):
+            stats["shape_mismatch"] = {
+                "sender_shape": tuple(int(x) for x in ss.shape),
+                "ego_shape": tuple(int(x) for x in es.shape),
+            }
+            return 0.0, None, stats
+
+        stats["sender_valid"] = True
+        stats["ego_valid"] = True
+        stats["sender_mean"] = float(ss.mean().item())
+        stats["ego_mean"] = float(es.mean().item())
+        stats["sender_max"] = float(ss.max().item())
+        stats["ego_max"] = float(es.max().item())
+
+        thr = float(threshold)
+
+        # Sender active region. Prefer the configured Where2comm threshold.
+        sender_active = ss > thr
+
+        # If threshold makes the active set empty, fall back to sender-above-mean.
+        # This fallback only defines the candidate region M_i; the comp score
+        # still depends on confidence advantage C_i - C_ego.
+        if int(sender_active.sum().item()) <= 0:
+            sender_active = ss > float(ss.mean().item())
+
+        if int(sender_active.sum().item()) <= 0:
+            return 0.0, sender_active, stats
+
+        advantage = torch.clamp(ss - es, min=0.0) * sender_active.float()
+        sender_weight = ss * sender_active.float()
+
+        advantage_sum = float(advantage.sum().item())
+        sender_weight_sum = float(sender_weight.sum().item())
+        active_ratio = float(sender_active.float().mean().item())
+
+        stats["sender_active_ratio"] = active_ratio
+        stats["advantage_sum"] = advantage_sum
+        stats["sender_weight_sum"] = sender_weight_sum
+
+        if sender_weight_sum <= 1e-12:
+            comp = 0.0
+        else:
+            comp = advantage_sum / max(sender_weight_sum, 1e-12)
+
+        comp = max(0.0, min(1.0, float(comp)))
+        return comp, sender_active, stats
+
+
     def communicate_agent_features(
         self,
         features: torch.Tensor,
@@ -883,6 +1185,13 @@ class ARCEC2MABComm:
     ):
         """
         Communicate one batch item's features [N, C, H, W].
+
+        Final GRACE semantics:
+            1. Each non-ego CAV builds a context vector.
+            2. Each CAV proposes one C2MAB action.
+            3. Ego-side oracle performs diversity-aware greedy knapsack.
+            4. Selected CAVs communicate with selected actions.
+            5. Unselected CAVs are strict no-send.
         """
         if features.dim() != 4:
             raise ValueError(f"Expected features [N,C,H,W], got {tuple(features.shape)}")
@@ -896,8 +1205,12 @@ class ARCEC2MABComm:
         ]
         num_collaborators = len(collaborator_indices)
 
+        # Initial fallback budgets. They may be overwritten by channel-profile budgets.
         total_budget_bytes = self._system_budget_bytes()
         per_link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+
+        budget_source_cfg, budget_scope_cfg = self._budget_source_scope()
+        use_channel_profile_budget = self._use_channel_profile_budget()
 
         ego_conf = float(self.last_ego_confidence)
 
@@ -919,6 +1232,42 @@ class ARCEC2MABComm:
             link_profiles[sender_idx] = profile
             link_budgets[sender_idx] = float(link_budget_bytes)
 
+        # Final global shared bandwidth budget:
+        # In the final experimental setting, the Markov channel state defines
+        # ONE ego-side shared bandwidth budget for all collaborators:
+        #
+        #   bad    = 1  Mbps  -> 12500  bytes at tx_window_ms=100
+        #   medium = 5  Mbps  -> 62500  bytes at tx_window_ms=100
+        #   good   = 27 Mbps  -> 337500 bytes at tx_window_ms=100
+        #
+        # This is NOT a per-link bandwidth. All collaborators compete for this
+        # single total_budget_bytes in the ego oracle.
+        #
+        # Note:
+        # _prepare_link_channel_budget() is still called above to obtain the
+        # current Markov channel profile/state. Under the intended setting,
+        # all collaborators in the same frame should share the same global
+        # channel state. If multiple states appear, we use the first valid
+        # profile as the global profile and expose nominal equal shares only
+        # for logging/debugging.
+        if use_channel_profile_budget and link_profiles:
+            first_sender = next(iter(link_profiles.keys()))
+            global_profile = link_profiles[first_sender]
+
+            total_budget_bytes = float(
+                self._channel_profile_budget_bytes(global_profile)
+            )
+            per_link_budget_bytes = (
+                float(total_budget_bytes) / float(max(1, len(link_budgets)))
+            )
+
+            # Logging-only nominal equal share. The oracle still allocates
+            # total_budget_bytes adaptively according to candidate action costs.
+            link_budgets = {
+                int(k): float(per_link_budget_bytes)
+                for k in link_budgets.keys()
+            }
+
         proposals: List[CAVProposal] = []
         no_send_candidates: Dict[int, PDFARCEAction] = {}
 
@@ -930,6 +1279,14 @@ class ARCEC2MABComm:
             profile = link_profiles.get(sender_idx, self._profile_for_state(state_name))
             link_budget_bytes = float(link_budgets.get(sender_idx, per_link_budget_bytes))
 
+            # For global_sum_link, proposal budget is the global pool.
+            # The selected proposal consumes selected.cost_bytes from this pool.
+            # For legacy equal-split, proposal budget remains per-link.
+            if use_channel_profile_budget and budget_scope_cfg == "global_sum_link":
+                proposal_budget_bytes = float(total_budget_bytes)
+            else:
+                proposal_budget_bytes = float(link_budget_bytes)
+
             latency_ms = _profile_scalar(
                 profile.get("delay_ms", profile.get("fixed_delay_ms", 50.0)),
                 50.0,
@@ -938,31 +1295,68 @@ class ARCEC2MABComm:
 
             comp_i_ego = 0.0
             comp_source = "none"
+            sender_mask = None
+            ego_mask = None
+            sender_mask_for_oracle = None
+            comp_stats = {
+                "mode": "none",
+                "sender_valid": False,
+                "ego_valid": False,
+            }
+
             if message_masks is not None:
                 try:
                     mask_threshold = float(
                         self.arce_cfg.get("patch_selection", {}).get("mask_threshold", 0.05)
                     )
+
+                    # Here message_masks is expected to be Where2comm confidence maps.
+                    # sender_mask / ego_mask are continuous confidence scores.
                     ego_mask = message_masks[int(ego_index)]
                     sender_mask = message_masks[int(sender_idx)]
-                    comp_i_ego = float(
-                        ego_complementarity(
+
+                    comp_i_ego, sender_mask_for_oracle, comp_stats = (
+                        self._confidence_advantage_complementarity(
                             sender_mask,
                             ego_mask,
                             threshold=mask_threshold,
                         )
                     )
-                    comp_source = "where2comm_raw_mask"
+                    comp_source = "where2comm_confidence_advantage"
+
+                    # If confidence-map advantage is exactly zero, keep it zero.
+                    # Do not replace it with sender coverage ratio; that would make
+                    # the policy prefer large masks rather than true new information.
+                    if sender_mask_for_oracle is None:
+                        sender_mask_for_oracle = self._mask_to_bool_2d(sender_mask)
+
                 except Exception as exc:
                     comp_i_ego = 0.0
                     comp_source = f"fallback_zero:{type(exc).__name__}"
+                    sender_mask = None
+                    ego_mask = None
+                    sender_mask_for_oracle = None
+                    comp_stats = {
+                        "mode": "exception",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+
+            # Bounded complementarity normalization.
+            # Raw mask complementarity is often around 1e-5~1e-4, much smaller
+            # than other context dimensions in [0,1]. We map it to [0,1] using
+            # a saturating transform rather than a hard-coded linear multiplier.
+            comp_raw = float(comp_i_ego)
+            comp_tau = float(self.arce_cfg.get("complementarity_tau", 5e-5))
+            comp_tau = max(comp_tau, 1e-12)
+            comp_norm = 1.0 - math.exp(-max(0.0, comp_raw) / comp_tau)
+            comp_norm = max(0.0, min(1.0, float(comp_norm)))
 
             context = self.context_builder.build(
                 channel_profile=profile,
                 latency_ms=latency_ms,
                 ego_confidence=ego_conf,
                 cache_quality=cache_q,
-                complementarity=comp_i_ego,
+                complementarity=comp_norm,
             )
 
             feasible = []
@@ -973,7 +1367,7 @@ class ARCEC2MABComm:
                 cost_info = self._estimate_byte_stream_fec_cost(
                     feature_shape=features.shape[1:],
                     action=action,
-                    budget_bytes=link_budget_bytes,
+                    budget_bytes=proposal_budget_bytes,
                 )
 
                 if not bool(cost_info["feasible"]):
@@ -992,61 +1386,123 @@ class ARCEC2MABComm:
                 continue
 
             policy = self.get_policy(ego_id, sender_idx)
-            feasible_ids = [a.action_id for a, _, _ in feasible]
-            best_score = policy.select(feasible_ids, context.vector)
 
-            action_cost_map = {
-                a.action_id: (a, c, info)
-                for a, c, info in feasible
-            }
-            best_action, best_cost, best_cost_info = action_cost_map[best_score.action_id]
+            scored = []
+            for a, c, info in feasible:
+                score = policy.score(a.action_id, context.vector)
+                scored.append((score, a, float(c), info))
 
-            proposals.append(
-                CAVProposal(
-                    ego_id=ego_id,
-                    sender_id=sender_idx,
-                    action=best_action,
-                    action_id=best_action.action_id,
-                    context=context,
-                    ucb=best_score.ucb,
-                    mean=best_score.mean,
-                    bonus=best_score.bonus,
-                    cost_bytes=float(best_cost),
-                    record={
-                        "channel_state": state_name,
-                        "complementarity": float(comp_i_ego),
-                        "complementarity_source": str(comp_source),
-                        "channel_profile": profile,
-                        "link_budget_bytes": float(link_budget_bytes),
-                        "per_link_budget_bytes": float(per_link_budget_bytes),
-                        "system_budget_bytes": float(total_budget_bytes),
-                        "num_collaborators": int(num_collaborators),
-                        "budget_scope": "system_equal_split",
-                        "budget_source": "system_budget_equal_split",
-                        "proposal_cost_model": "byte_stream_quantize_first_with_fec",
-                        "estimated_tx_bytes": float(best_cost),
-                        "estimated_source_bytes": float(best_cost_info["source_bytes"]),
-                        "estimated_parity_bytes": float(
-                            best_cost_info["parity_packets"] * self.packet_size_bytes
-                        ),
-                        "estimated_metadata_bytes": float(best_cost_info["metadata_bytes"]),
-                        "estimated_encoded_bytes": float(best_cost_info["encoded_bytes"]),
-                        "estimated_packet_ratio": float(best_cost_info["effective_packet_ratio"]),
-                        "num_source_packets": int(best_cost_info["source_packets"]),
-                        "num_parity_packets": int(best_cost_info["parity_packets"]),
-                        "num_encoded_packets": int(best_cost_info["encoded_packets"]),
-                        "max_tx_packets_under_budget": int(
-                            best_cost_info["max_tx_packets_under_budget"]
-                        ),
-                        "fec_type": str(best_cost_info["fec_type"]),
-                        "rho": float(best_cost_info["rho"]),
-                        "packet_size_bytes": int(self.packet_size_bytes),
-                        "bandwidth_selection": copy.deepcopy(best_cost_info),
-                        "num_feasible_actions": int(len(feasible)),
-                    },
-                    complementarity=float(comp_i_ego),
-                )
+            scored_by_ucb = sorted(
+                scored,
+                key=lambda x: float(x[0].ucb),
+                reverse=True,
             )
+
+            candidate_map = {}
+
+            def _add_candidate(item, reason: str):
+                score, action, cost, cost_info = item
+                old_item = candidate_map.get(action.action_id)
+                if old_item is None:
+                    candidate_map[action.action_id] = [score, action, cost, cost_info, {reason}]
+                else:
+                    old_item[4].add(reason)
+
+            # 1) LinUCB top-k actions.
+            for item in scored_by_ucb[: self.sender_topk_actions]:
+                _add_candidate(item, "topk_ucb")
+
+            # 2) Ensure fp32/fp16/int8/int4 all have a chance when feasible.
+            if self.sender_force_quant_coverage:
+                quant_groups = {}
+                for item in scored:
+                    _, action, _, _ = item
+                    q = str(getattr(action, "quant_mode", "unknown")).lower()
+                    quant_groups.setdefault(q, []).append(item)
+                for q, items in quant_groups.items():
+                    best_q = max(items, key=lambda x: float(x[0].ucb))
+                    _add_candidate(best_q, f"best_ucb_quant_{q}")
+
+            # 3) Add low-cost candidates, especially INT8/INT4, so the ego
+            # oracle can select multiple CAVs under a tight shared budget.
+            if self.sender_include_low_cost:
+                cheapest_all = min(scored, key=lambda x: float(x[2]))
+                _add_candidate(cheapest_all, "cheapest_all")
+
+                quant_groups = {}
+                for item in scored:
+                    _, action, _, _ = item
+                    q = str(getattr(action, "quant_mode", "unknown")).lower()
+                    quant_groups.setdefault(q, []).append(item)
+                for q, items in quant_groups.items():
+                    cheapest_q = min(items, key=lambda x: float(x[2]))
+                    _add_candidate(cheapest_q, f"cheapest_quant_{q}")
+
+            sender_candidates = list(candidate_map.values())
+            sender_candidates = sorted(
+                sender_candidates,
+                key=lambda x: (float(x[0].ucb) / max(float(x[2]), 1.0)),
+                reverse=True,
+            )
+
+            for local_rank, (score, cand_action, cand_cost, cand_cost_info, reasons) in enumerate(sender_candidates):
+                proposals.append(
+                    CAVProposal(
+                        ego_id=ego_id,
+                        sender_id=sender_idx,
+                        action=cand_action,
+                        action_id=cand_action.action_id,
+                        context=context,
+                        ucb=score.ucb,
+                        mean=score.mean,
+                        bonus=score.bonus,
+                        cost_bytes=float(cand_cost),
+                        record={
+                            "channel_state": state_name,
+                            "complementarity": float(comp_i_ego),
+                            "complementarity_source": str(comp_source),
+                            "complementarity_stats": copy.deepcopy(comp_stats),
+                            "channel_profile": profile,
+                            "link_budget_bytes": float(link_budget_bytes),
+                            "proposal_budget_bytes": float(proposal_budget_bytes),
+                            "per_link_budget_bytes": float(per_link_budget_bytes),
+                            "system_budget_bytes": float(total_budget_bytes),
+                            "num_collaborators": int(num_collaborators),
+                            "budget_scope": str(budget_scope_cfg),
+                            "budget_source": str(budget_source_cfg),
+                            "proposal_cost_model": "byte_stream_quantize_first_with_fec",
+                            "estimated_tx_bytes": float(cand_cost),
+                            "estimated_source_bytes": float(cand_cost_info["source_bytes"]),
+                            "estimated_parity_bytes": float(
+                                cand_cost_info["parity_packets"] * self.packet_size_bytes
+                            ),
+                            "estimated_metadata_bytes": float(cand_cost_info["metadata_bytes"]),
+                            "estimated_encoded_bytes": float(cand_cost_info["encoded_bytes"]),
+                            "estimated_packet_ratio": float(cand_cost_info["effective_packet_ratio"]),
+                            "num_source_packets": int(cand_cost_info["source_packets"]),
+                            "num_parity_packets": int(cand_cost_info["parity_packets"]),
+                            "num_encoded_packets": int(cand_cost_info["encoded_packets"]),
+                            "max_tx_packets_under_budget": int(
+                                cand_cost_info["max_tx_packets_under_budget"]
+                            ),
+                            "fec_type": str(cand_cost_info["fec_type"]),
+                            "rho": float(cand_cost_info["rho"]),
+                            "packet_size_bytes": int(self.packet_size_bytes),
+                            "bandwidth_selection": copy.deepcopy(cand_cost_info),
+                            "num_feasible_actions": int(len(feasible)),
+                            "num_sender_candidate_actions": int(len(sender_candidates)),
+                            "complementarity_raw": float(comp_i_ego),
+                            "complementarity_normalized": float(comp_norm),
+                            "sender_candidate_rank": int(local_rank),
+                            "sender_candidate_reasons": sorted(str(x) for x in reasons),
+                            "sender_topk_actions": int(self.sender_topk_actions),
+                            "sender_force_quant_coverage": bool(self.sender_force_quant_coverage),
+                            "sender_include_low_cost": bool(self.sender_include_low_cost),
+                        },
+                        mask=sender_mask_for_oracle,
+                        complementarity=float(comp_i_ego),
+                    )
+                )
 
         oracle_result = self.oracle.select(proposals, budget_bytes=total_budget_bytes)
         selected_by_sender = {
@@ -1075,12 +1531,14 @@ class ARCEC2MABComm:
                     action,
                 )
                 rec["system_budget"] = {
-                    "budget_scope": "system_equal_split",
+                    "budget_scope": str(budget_scope_cfg),
+                    "budget_source": str(budget_source_cfg),
                     "system_budget_mbps": float(self.system_budget_mbps),
                     "tx_window_ms": float(self.tx_window_ms),
                     "system_budget_bytes": float(total_budget_bytes),
                     "num_collaborators": int(num_collaborators),
                     "per_link_budget_bytes": float(per_link_budget_bytes),
+                    "link_budgets": {str(k): float(v) for k, v in link_budgets.items()},
                 }
                 frame_records.append(rec)
                 self._append_record(rec)
@@ -1096,6 +1554,15 @@ class ARCEC2MABComm:
             )
 
             state_name = selected.record.get("channel_state", "medium")
+            allocated_budget_bytes = float(
+                selected.record.get(
+                    "estimated_tx_bytes",
+                    selected.record.get(
+                        "proposal_budget_bytes",
+                        selected.record.get("link_budget_bytes", total_budget_bytes),
+                    ),
+                )
+            )
 
             try:
                 recovered, record = self.executor.communicate_feature(
@@ -1106,12 +1573,7 @@ class ARCEC2MABComm:
                     ego_index=ego_index,
                     channel_state=state_name,
                     action_override=arce_action,
-                    budget_bytes=float(
-                        selected.record.get(
-                            "link_budget_bytes",
-                            per_link_budget_bytes,
-                        )
-                    ),
+                    budget_bytes=float(allocated_budget_bytes),
                     message_mask=(
                         message_masks[sender_idx]
                         if message_masks is not None
@@ -1138,11 +1600,18 @@ class ARCEC2MABComm:
                     "budget_bytes": float(total_budget_bytes),
                     "used_budget_bytes": float(oracle_result["used_budget_bytes"]),
                     "remaining_budget_bytes": float(oracle_result["remaining_budget_bytes"]),
+                    "budget_scope": str(budget_scope_cfg),
+                    "budget_source": str(budget_source_cfg),
+                    "oracle_raw": {
+                        k: v for k, v in oracle_result.items()
+                        if k not in ("selected",)
+                    },
                 },
             }
             record["pdf_action"] = pdf_action.as_dict()
             record["system_budget"] = {
-                "budget_scope": "system_equal_split",
+                "budget_scope": str(budget_scope_cfg),
+                "budget_source": str(budget_source_cfg),
                 "system_budget_mbps": float(self.system_budget_mbps),
                 "tx_window_ms": float(self.tx_window_ms),
                 "system_budget_bytes": float(total_budget_bytes),
@@ -1151,6 +1620,11 @@ class ARCEC2MABComm:
                 "link_budget_bytes": float(
                     selected.record.get("link_budget_bytes", per_link_budget_bytes)
                 ),
+                "proposal_budget_bytes": float(
+                    selected.record.get("proposal_budget_bytes", total_budget_bytes)
+                ),
+                "allocated_budget_bytes": float(allocated_budget_bytes),
+                "link_budgets": {str(k): float(v) for k, v in link_budgets.items()},
             }
 
             tx_bytes = float(
@@ -1205,8 +1679,6 @@ class ARCEC2MABComm:
             )
 
             if selected_src > 0.0:
-                # Transport-level receive quality before temporal/spatial/zero-fill
-                # dominates the reward.
                 q_recv = max(
                     0.0,
                     min(
@@ -1239,10 +1711,38 @@ class ARCEC2MABComm:
                 tau_stale_ms=self.reward_tau_stale_ms,
             )
 
-            link_budget = float(
-                selected.record.get("link_budget_bytes", per_link_budget_bytes)
+            reward_budget = float(
+                selected.record.get(
+                    "proposal_budget_bytes",
+                    selected.record.get("link_budget_bytes", total_budget_bytes),
+                )
             )
-            link_violation = bool(tx_bytes > link_budget + 1e-6)
+            link_violation = bool(tx_bytes > reward_budget + 1e-6)
+
+            try:
+                _fec_gain_for_reward = float(fec_recovered) / max(float(missing_by_loss), 1.0)
+            except Exception:
+                _fec_gain_for_reward = 0.0
+            _fec_gain_for_reward = max(0.0, min(1.0, _fec_gain_for_reward))
+
+            try:
+                _cache_quality_for_reward = float(cache_q)
+            except Exception:
+                try:
+                    _cache_quality_for_reward = float(selected.record.get("cache_quality", 0.0))
+                except Exception:
+                    _cache_quality_for_reward = 0.0
+            _cache_quality_for_reward = max(0.0, min(1.0, _cache_quality_for_reward))
+
+            try:
+                _cache_enabled_for_reward = int(getattr(selected.action, "cache_enabled", 0))
+            except Exception:
+                _cache_enabled_for_reward = 0
+
+            try:
+                _redundancy_ratio_for_reward = float(getattr(selected.action, "redundancy_ratio", 0.0))
+            except Exception:
+                _redundancy_ratio_for_reward = 0.0
 
             self.pending_reward.add(
                 {
@@ -1251,11 +1751,19 @@ class ARCEC2MABComm:
                     "action_id": selected.action_id,
                     "context_vector": selected.context.vector,
                     "cost_bytes": float(tx_bytes),
-                    "link_budget_bytes": float(link_budget),
+                    "link_budget_bytes": float(reward_budget),
                     "delay_ms": float(delay_ms),
                     "q_recv": float(q_recv),
                     "q_eff": float(q_eff),
                     "budget_violation": bool(link_violation),
+                    "quant_mode": str(getattr(selected.action, "quant_mode", "")).lower(),
+                    "channel_state": str(selected.record.get("channel_state", "medium")).lower(),
+                    "redundancy_ratio": float(_redundancy_ratio_for_reward),
+                    "cache_enabled": int(_cache_enabled_for_reward),
+                    "cache_quality": float(_cache_quality_for_reward),
+                    "fec_gain": float(_fec_gain_for_reward),
+                    "complementarity_raw": float(selected.record.get("complementarity_raw", selected.record.get("complementarity", 0.0))),
+                    "complementarity_normalized": float(selected.record.get("complementarity_normalized", selected.record.get("complementarity", 0.0))),
                     "contribution_weight": float(
                         selected.record.get("estimated_packet_ratio", 1.0)
                     ),
@@ -1268,8 +1776,8 @@ class ARCEC2MABComm:
             "ego_id": str(ego_id),
             "dc2mab_superarm": {
                 "budget_bytes": float(total_budget_bytes),
-                "budget_scope": "system_equal_split",
-                "budget_source": "system_budget_equal_split",
+                "budget_scope": str(budget_scope_cfg),
+                "budget_source": str(budget_source_cfg),
                 "system_budget_mbps": float(self.system_budget_mbps),
                 "tx_window_ms": float(self.tx_window_ms),
                 "num_collaborators": int(num_collaborators),
@@ -1411,10 +1919,18 @@ class ARCEC2MABComm:
                 ),
                 delay_ms=float(item.get("delay_ms", 0.0)),
                 budget_violation=bool(item.get("budget_violation", False)),
+                quant_mode=str(item.get("quant_mode", "fp32")),
+                redundancy_ratio=float(item.get("redundancy_ratio", 0.0)),
+                cache_enabled=bool(item.get("cache_enabled", 0)),
+                cache_quality=float(item.get("cache_quality", 0.0)),
+                fec_gain=float(item.get("fec_gain", 0.0)),
                 alpha_q=self.reward_alpha_q,
                 alpha_c=self.reward_alpha_c,
                 alpha_d=self.reward_alpha_d,
                 alpha_v=self.reward_alpha_v,
+                alpha_m=self.reward_alpha_m,
+                alpha_r=self.reward_alpha_r,
+                alpha_t=self.reward_alpha_t,
                 stale_max_ms=self.reward_stale_max_ms,
             )
 
@@ -1429,6 +1945,14 @@ class ARCEC2MABComm:
                 }
             )
             info["q_recv"] = float(item.get("q_recv", 0.0))
+            info["quant_mode"] = str(item.get("quant_mode", ""))
+            info["channel_state"] = str(item.get("channel_state", ""))
+            info["redundancy_ratio"] = float(item.get("redundancy_ratio", 0.0))
+            info["cache_enabled"] = float(item.get("cache_enabled", 0))
+            info["cache_quality"] = float(item.get("cache_quality", 0.0))
+            info["fec_gain"] = float(item.get("fec_gain", 0.0))
+            info["complementarity_raw"] = float(item.get("complementarity_raw", 0.0))
+            info["complementarity_normalized"] = float(item.get("complementarity_normalized", 0.0))
 
             reward_infos.append(info)
 
@@ -1479,6 +2003,8 @@ class ARCEC2MABComm:
                 )
             )
 
+        budget_source, budget_scope = self._budget_source_scope()
+
         return {
             "mode": "dc2mab",
             "num_records": int(len(self.records)),
@@ -1487,7 +2013,8 @@ class ARCEC2MABComm:
             "total_transmitted_bytes": float(total_tx),
             "total_received_bytes": float(total_rx),
             "system_budget": {
-                "budget_scope": "system_equal_split",
+                "budget_scope": str(budget_scope),
+                "budget_source": str(budget_source),
                 "system_budget_mbps": float(self.system_budget_mbps),
                 "tx_window_ms": float(self.tx_window_ms),
                 "system_budget_bytes": float(self._system_budget_bytes()),

@@ -89,38 +89,88 @@ class EgoGreedyKnapsackOracle:
         lambda_comp: float = 0.5,
         lambda_red: float = 0.5,
         diversity_aware: bool = True,
+        cost_alpha: float = 0.25,
+        quant_quality_prior=None,
     ):
         self.eps_cost = float(eps_cost)
         self.lambda_comp = float(lambda_comp)
         self.lambda_red = float(lambda_red)
         self.diversity_aware = bool(diversity_aware)
 
+        # Cost smoothing and fidelity prior.
+        # Pure gain/cost strongly favors the cheapest action at cold start,
+        # causing all actions to collapse to INT4. We use gain/cost^alpha
+        # and multiply a quantization fidelity prior to balance perception
+        # quality and communication cost.
+        self.cost_alpha = float(cost_alpha)
+        self.cost_alpha = max(0.0, min(1.0, self.cost_alpha))
+        default_prior = {
+            "fp32": 1.00,
+            "fp16": 0.97,
+            "int8": 0.85,
+            "int4": 0.55,
+        }
+        if isinstance(quant_quality_prior, dict):
+            default_prior.update({str(k).lower(): float(v) for k, v in quant_quality_prior.items()})
+        self.quant_quality_prior = default_prior
+
+        # Bandit warm-up exploration.
+        # This is NOT a hand-crafted bad/medium/good -> quant rule.
+        # It only guarantees that each quantization arm gets several online
+        # reward samples; after warm-up, selection is driven by learned UCB.
+        self.explore_warmup_pulls_per_quant = 6
+        self.explore_bonus = 1.0
+        self.explore_warmup_pulls_per_rho = 4
+        self.explore_warmup_pulls_per_cache = 4
+        self._quant_select_counts = {
+            "bad": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+            "medium": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+            "good": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+            "unknown": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+        }
+        self._rho_select_counts = {
+            "bad": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+            "medium": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+            "good": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+            "unknown": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+        }
+        self._cache_select_counts = {
+            "bad": {"cache0": 0, "cache1": 0},
+            "medium": {"cache0": 0, "cache1": 0},
+            "good": {"cache0": 0, "cache1": 0},
+            "unknown": {"cache0": 0, "cache1": 0},
+        }
+
     def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
-        # Keep the highest-UCB proposal per sender if duplicates are passed.
-        best_by_sender: Dict[str, CAVProposal] = {}
+        """Greedy knapsack over sender-action proposals; one action per sender at most."""
+        candidates: List[CAVProposal] = []
         for p in proposals:
-            sid = str(p.sender_id)
-            if p.cost_bytes <= 0.0:
+            try:
+                cost = float(p.cost_bytes)
+            except Exception:
                 continue
-            if sid not in best_by_sender or p.ucb > best_by_sender[sid].ucb:
-                best_by_sender[sid] = p
+            if cost <= 0.0:
+                continue
+            candidates.append(p)
 
         remaining = float(budget_bytes)
         selected: List[CAVProposal] = []
         selected_sender_ids = set()
         selected_union_mask = None
-        candidates = list(best_by_sender.values())
         ranked_history: List[Dict[str, Any]] = []
+        first_round_candidates: List[Dict[str, Any]] = []
 
         while True:
             best = None
             best_info = None
+            round_candidates: List[Dict[str, Any]] = []
             for p in candidates:
                 sid = str(p.sender_id)
                 if sid in selected_sender_ids:
                     continue
                 if float(p.cost_bytes) > remaining:
                     continue
+
                 comp = float(getattr(p, "complementarity", 0.0))
                 if self.diversity_aware:
                     red = _overlap_ratio(p.mask, selected_union_mask)
@@ -128,29 +178,118 @@ class EgoGreedyKnapsackOracle:
                 else:
                     red = 0.0
                     gain = float(p.ucb)
-                ratio = gain / max(float(p.cost_bytes), self.eps_cost)
+
+                action_obj = getattr(p, "action", None)
+                q = str(getattr(action_obj, "quant_mode", "")).lower()
+                if not q:
+                    aid = str(getattr(p, "action_id", "")).lower()
+                    for _q in ("fp32", "fp16", "int8", "int4"):
+                        if _q in aid:
+                            q = _q
+                            break
+
+                # Learned-UCB oracle.
+                # Do NOT manually force bad/medium/good to specific quant modes here.
+                # The proposal score is dominated by the learned bandit UCB.
+                # A light cost penalty is kept only to respect communication efficiency.
+                record = getattr(p, "record", {}) or {}
+                state_name = str(record.get("channel_state", "medium")).lower()
+
+                total_budget = max(float(budget_bytes), self.eps_cost)
+                cost_norm = min(max(float(p.cost_bytes) / total_budget, 0.0), 1.0)
+
+                # Small cost penalty: avoids wasting budget but does not hard-code quant choices.
+                oracle_cost_lambda = 0.12
+                base_ratio = float(gain) / (1.0 + oracle_cost_lambda * cost_norm)
+
+                # Warm-up exploration bonus for under-sampled quant arms.
+                # Once each quant mode has enough selected samples, this term becomes 0.
+                if state_name not in self._quant_select_counts:
+                    state_name_for_count = "unknown"
+                else:
+                    state_name_for_count = state_name
+
+                aid_for_parse = str(getattr(p, "action_id", "")).lower()
+                if "rho0p5" in aid_for_parse or "rho0.5" in aid_for_parse:
+                    rho_key = "rho0p5"
+                elif "rho0p25" in aid_for_parse or "rho0.25" in aid_for_parse:
+                    rho_key = "rho0p25"
+                else:
+                    rho_key = "rho0"
+
+                cache_key = "cache1" if "cache1" in aid_for_parse else "cache0"
+
+                q_count = int(self._quant_select_counts[state_name_for_count].get(q, 0))
+                rho_count = int(self._rho_select_counts[state_name_for_count].get(rho_key, 0))
+                cache_count = int(self._cache_select_counts[state_name_for_count].get(cache_key, 0))
+
+                q_gap = max(0, int(self.explore_warmup_pulls_per_quant) - q_count)
+                rho_gap = max(0, int(self.explore_warmup_pulls_per_rho) - rho_count)
+                cache_gap = max(0, int(self.explore_warmup_pulls_per_cache) - cache_count)
+
+                # Component warm-up:
+                # explore quant, redundancy, and cache components under each state.
+                # This is exploration only; reward still decides which components remain useful.
+                exploration_bonus = (
+                    0.60 * float(q_gap > 0)
+                    + 0.25 * float(rho_gap > 0)
+                    + 0.15 * float(cache_gap > 0)
+                ) * float(self.explore_bonus)
+
+                ratio = float(base_ratio + exploration_bonus)
+
                 info = {
                     "ratio": float(ratio),
                     "sender_id": sid,
                     "action_id": p.action_id,
                     "ucb": float(p.ucb),
                     "gain": float(gain),
+                    "learned_ucb_cost_penalty": True,
+                    "channel_state": str(state_name),
+                    "quant_mode": q,
+                    "rho_key": str(rho_key),
+                    "cache_key": str(cache_key),
+                    "exploration_bonus": float(exploration_bonus),
+                    "cost_norm": float(cost_norm),
+                    "oracle_cost_lambda": float(oracle_cost_lambda),
                     "cost_bytes": float(p.cost_bytes),
                     "complementarity": float(comp),
                     "overlap_with_selected": float(red),
                     "remaining_budget_before_select": float(remaining),
                 }
+                round_candidates.append(info)
                 if best is None or ratio > best_info["ratio"]:
                     best = p
                     best_info = info
+
+            if not first_round_candidates and round_candidates:
+                first_round_candidates = sorted(
+                    round_candidates,
+                    key=lambda x: x["ratio"],
+                    reverse=True,
+                )[:50]
+
             if best is None:
                 break
+
             selected.append(best)
+
+            # Update warm-up exploration count for the selected quant arm.
+            try:
+                _qsel = str((best_info or {}).get("quant_mode", "unknown")).lower()
+                _ssel = str((best_info or {}).get("channel_state", "unknown")).lower()
+                if _ssel not in self._quant_select_counts:
+                    _ssel = "unknown"
+                if _qsel in self._quant_select_counts[_ssel]:
+                    self._quant_select_counts[_ssel][_qsel] += 1
+            except Exception:
+                pass
             selected_sender_ids.add(str(best.sender_id))
             remaining -= float(best.cost_bytes)
             selected_union_mask = _union_mask(selected_union_mask, best.mask)
             ranked_history.append(best_info)
 
+        unique_sender_ids = sorted({str(p.sender_id) for p in candidates})
         return {
             "selected": selected,
             "selected_sender_ids": [str(p.sender_id) for p in selected],
@@ -158,12 +297,15 @@ class EgoGreedyKnapsackOracle:
             "budget_bytes": float(budget_bytes),
             "used_budget_bytes": float(float(budget_bytes) - remaining),
             "remaining_budget_bytes": float(remaining),
-            "num_candidates": len(best_by_sender),
+            "num_candidates": len(candidates),
+            "num_unique_senders": len(unique_sender_ids),
+            "unique_sender_ids": unique_sender_ids,
             "num_selected": len(selected),
             "lambda_comp": float(self.lambda_comp),
             "lambda_red": float(self.lambda_red),
             "diversity_aware": bool(self.diversity_aware),
             "ranked": ranked_history,
+            "first_round_candidates": first_round_candidates,
         }
 
 

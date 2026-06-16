@@ -201,3 +201,17 @@ def downsample_lidar_minimum(pcd_np_list):
         pcd_np_list[i] = downsample_lidar(pcd_np, minimum)
 
     return pcd_np_list
+
+def load_lidar_bin(path, zero_intensity=False):
+    """Load V2X-Real LiDAR .bin file.
+
+    V2X-Real stores point cloud as float32 binary with shape (-1, 4).
+    """
+    bin_pcd = np.fromfile(path, dtype=np.float32)
+    points = bin_pcd.reshape(-1, 4)
+    mask = np.logical_not(np.isnan(points[:, :3]).any(axis=1))
+    points = points[mask]
+    if zero_intensity:
+        points[:, -1] = 0
+    return points
+

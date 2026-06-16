@@ -52,10 +52,18 @@ def c2mab_link_proxy_reward(
     link_budget_bytes: float,
     delay_ms: float,
     budget_violation: bool,
+    quant_mode: str = "fp32",
+    redundancy_ratio: float = 0.0,
+    cache_enabled: bool = False,
+    cache_quality: float = 0.0,
+    fec_gain: float = 0.0,
     alpha_q: float = 0.5,
     alpha_c: float = 0.3,
     alpha_d: float = 0.2,
     alpha_v: float = 1.0,
+    alpha_m: float = 0.25,
+    alpha_r: float = 0.20,
+    alpha_t: float = 0.15,
     stale_max_ms: float = 400.0,
 ) -> Tuple[float, Dict[str, float]]:
     """Compute link-level C2MAB reward for one selected CAV-action.
@@ -67,21 +75,54 @@ def c2mab_link_proxy_reward(
     """
     w = float(contribution_weight)
     q = max(0.0, min(1.0, float(q_eff)))
+
+    qm = str(quant_mode).lower()
+    quant_quality = {
+        "fp32": 1.00,
+        "fp16": 0.98,
+        "int8": 0.88,
+        "int4": 0.68,
+    }.get(qm, 0.90)
+
+    q_total = q * float(quant_quality)
+    quant_loss = 1.0 - float(quant_quality)
+
     cost_norm = float(cost_bytes) / max(float(link_budget_bytes), 1.0)
+    cost_norm = max(0.0, min(float(cost_norm), 1.0))
+
     stale_norm = min(max(float(delay_ms), 0.0) / max(float(stale_max_ms), 1e-6), 1.0)
     violation = 1.0 if bool(budget_violation) else 0.0
+
+    fec_gain = max(0.0, min(1.0, float(fec_gain)))
+    cache_quality = max(0.0, min(1.0, float(cache_quality)))
+    cache_term = float(cache_quality) if bool(cache_enabled) else 0.0
+    redundancy_ratio = max(0.0, float(redundancy_ratio))
+
     reward = (
         w * float(delta_confidence)
-        + float(alpha_q) * q
+        + float(alpha_q) * q_total
         - float(alpha_c) * cost_norm
         - float(alpha_d) * stale_norm
         - float(alpha_v) * violation
+        - float(alpha_m) * quant_loss
+        + float(alpha_r) * fec_gain
+        + float(alpha_t) * cache_term
     )
+
     return float(reward), {
         "reward": float(reward),
         "delta_confidence": float(delta_confidence),
         "contribution_weight": float(w),
         "q_eff": float(q),
+        "quant_mode": str(qm),
+        "quant_quality": float(quant_quality),
+        "q_total": float(q_total),
+        "quant_loss": float(quant_loss),
+        "redundancy_ratio": float(redundancy_ratio),
+        "fec_gain": float(fec_gain),
+        "cache_enabled": float(1.0 if bool(cache_enabled) else 0.0),
+        "cache_quality": float(cache_quality),
+        "cache_term": float(cache_term),
         "cost_bytes": float(cost_bytes),
         "link_budget_bytes": float(link_budget_bytes),
         "normalized_cost": float(cost_norm),
@@ -92,6 +133,9 @@ def c2mab_link_proxy_reward(
         "alpha_c": float(alpha_c),
         "alpha_d": float(alpha_d),
         "alpha_v": float(alpha_v),
+        "alpha_m": float(alpha_m),
+        "alpha_r": float(alpha_r),
+        "alpha_t": float(alpha_t),
     }
 
 

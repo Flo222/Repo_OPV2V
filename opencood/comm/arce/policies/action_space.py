@@ -1,22 +1,33 @@
 """
-Final-setting 36-dimensional ARCE action space.
+Final-setting 48-dimensional ARCE action space.
 
-This module implements the action definition in the Notion/PDF design:
+This module implements the action definition in the final GRACE / C2MAB design:
+
     a = (a1, a2, a3, a4)
+
     a1: collaboration trigger / send flag {0, 1}
-    a2: compression / quantization {fp16, int8, int4}
+    a2: compression / quantization {fp32, fp16, int8, int4}
     a3: redundancy ratio {0.0, 0.25, 0.50}
     a4: temporal fusion/cache flag {0, 1}
+
+Therefore, the full action space size is:
+
+    2 x 4 x 3 x 2 = 48
 
 The FEC type is an engineering realization of rho. It is not an additional
 PDF action dimension. By default, rho > 0 maps to raptor_sim for the main method.
 XOR should be used through fec_mode="xor" for FEC ablations.
+
+Important:
+    This file only defines PDF/C2MAB-level actions and cost estimates.
+    The actual communication execution is handled by ARCEFixedComm through
+    action_override.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 try:
     from opencood.comm.arce.fixed_policy import ARCEAction
@@ -34,16 +45,60 @@ except Exception:  # pragma: no cover
 
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 
-QUANT_MODES: Tuple[str, ...] = ("fp16", "int8", "int4")
+
+# ----------------------------------------------------------------------
+# Final action dimensions
+# ----------------------------------------------------------------------
+
+QUANT_MODES: Tuple[str, ...] = ("fp32", "fp16", "int8", "int4")
 RHO_VALUES: Tuple[float, ...] = (0.0, 0.25, 0.50)
 CACHE_VALUES: Tuple[int, ...] = (0, 1)
 SEND_VALUES: Tuple[int, ...] = (0, 1)
+
+
+QUANT_ALIASES: Dict[str, str] = {
+    "fp32": "fp32",
+    "float32": "fp32",
+    "torch.float32": "fp32",
+    "float": "fp32",
+
+    "fp16": "fp16",
+    "float16": "fp16",
+    "torch.float16": "fp16",
+    "half": "fp16",
+
+    "int8": "int8",
+    "uint8": "int8",
+
+    "int4": "int4",
+}
+
+
 QUANT_BITS: Dict[str, int] = {
+    "fp32": 32,
     "fp16": 16,
     "int8": 8,
     "int4": 4,
 }
 
+
+def normalize_pdf_quant_mode(mode: Any) -> str:
+    """Normalize quantization mode names used in YAML / runtime records."""
+    q = str(mode).strip().lower()
+    q = QUANT_ALIASES.get(q, q)
+
+    if q not in QUANT_BITS:
+        raise ValueError(
+            f"Unsupported quant_mode={q!r}; final action space uses "
+            "fp32/fp16/int8/int4."
+        )
+
+    return q
+
+
+# ----------------------------------------------------------------------
+# Action dataclass
+# ----------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class PDFARCEAction:
@@ -65,27 +120,47 @@ class PDFARCEAction:
 
     @property
     def quant_bits(self) -> int:
-        return int(QUANT_BITS[self.quant_mode])
+        q = normalize_pdf_quant_mode(self.quant_mode)
+        return int(QUANT_BITS[q])
 
     @property
     def compression_ratio(self) -> float:
-        """Ratio relative to FP32 byte size."""
+        """
+        Ratio relative to FP32 byte size.
+
+        fp32 -> 1.000
+        fp16 -> 0.500
+        int8 -> 0.250
+        int4 -> 0.125
+        """
         return float(self.quant_bits) / 32.0
 
     def as_dict(self) -> Dict[str, Any]:
+        q = normalize_pdf_quant_mode(self.quant_mode)
         out = asdict(self)
+        out["quant_mode"] = q
         out["is_no_send"] = self.is_no_send
         out["quant_bits"] = self.quant_bits
         out["compression_ratio"] = self.compression_ratio
         return out
 
     def recovery_priority(self) -> Tuple[str, ...]:
-        if self.cache_enabled:
+        """
+        Recovery order used by the ARCE executor.
+
+        cache_enabled=1:
+            temporal cache -> spatial interpolation -> zero-fill
+
+        cache_enabled=0:
+            spatial interpolation -> zero-fill
+        """
+        if int(self.cache_enabled):
             return (
                 RECOVERY_METHOD_TEMPORAL_CACHE,
                 RECOVERY_METHOD_SPATIAL_INTERPOLATION,
                 RECOVERY_METHOD_ZERO_FILL,
             )
+
         return (
             RECOVERY_METHOD_SPATIAL_INTERPOLATION,
             RECOVERY_METHOD_ZERO_FILL,
@@ -96,10 +171,12 @@ class PDFARCEAction:
         if ARCEAction is None:
             raise ImportError("ARCEAction is unavailable; check OpenCOOD import path.")
 
+        q = normalize_pdf_quant_mode(self.quant_mode)
+
         action = ARCEAction(
             name=self.action_id,
             channel_state=self.channel_state,
-            quant_mode=self.quant_mode,
+            quant_mode=q,
             fec_type=self.fec_type,
             redundancy_ratio=float(self.redundancy_ratio),
             xor_group_size=int(self.xor_group_size),
@@ -111,7 +188,7 @@ class PDFARCEAction:
                 "action_id": self.action_id,
                 "send": int(self.send),
                 "cache_enabled": int(self.cache_enabled),
-                "quant_mode": self.quant_mode,
+                "quant_mode": q,
                 "fec_type": self.fec_type,
                 "redundancy_ratio": float(self.redundancy_ratio),
                 "xor_group_size": int(self.xor_group_size),
@@ -128,6 +205,10 @@ class PDFARCEAction:
         )
 
 
+# ----------------------------------------------------------------------
+# Action construction utilities
+# ----------------------------------------------------------------------
+
 def _canonical_float_text(x: float) -> str:
     if abs(float(x)) < 1e-12:
         return "0"
@@ -135,36 +216,50 @@ def _canonical_float_text(x: float) -> str:
 
 
 def infer_fec_type(rho: float, fec_mode: str = "raptor_sim") -> str:
+    """
+    Infer executor-level FEC type from redundancy ratio.
+
+    rho = 0:
+        no redundancy, fec_type = none
+
+    rho > 0:
+        fec_type follows fec_mode.
+    """
     rho = float(rho)
+
     if rho <= 0.0:
         return "none"
+
     fec_mode = str(fec_mode).strip().lower()
+
     if fec_mode in ("raptor", "raptor_sim", "fountain"):
         return "raptor_sim"
+
     if fec_mode == "xor":
         return "xor"
+
     raise ValueError(f"Unsupported fec_mode={fec_mode!r}; expected raptor_sim or xor.")
 
 
 def is_valid_pdf_action_combination(send: int, quant_mode: str, rho: float) -> bool:
-    """Return whether a PDF-level action is executable by the current ARCE backend.
-
-    The current FEC backend operates on integer packet symbols. Therefore
-    FP16 messages are treated as high-precision no-FEC transmission, while
-    redundancy ratios > 0 are only executable for INT8/INT4 packet streams.
-    This function defines the common legal action set used by Fixed/Random/C2MAB
-    style policies.
     """
-    send_i = int(send)
-    if send_i == 0:
-        return True
+    Return whether a PDF-level action is valid.
 
-    q = str(quant_mode).strip().lower()
-    rho_f = float(rho)
+    Final GRACE setting keeps the complete action space:
+        send ∈ {0, 1}
+        quant ∈ {fp32, fp16, int8, int4}
+        rho ∈ {0, 0.25, 0.5}
 
-    if q == "fp16" and rho_f > 0.0:
-        return False
+    Therefore all normalized combinations are valid.
 
+    The actual feasibility under a frame budget is handled later by:
+        estimate_action_cost_bytes(...)
+        feasible_action_costs(...)
+        ARCEC2MABComm._estimate_byte_stream_fec_cost(...)
+    """
+    _ = int(send)
+    _ = float(rho)
+    normalize_pdf_quant_mode(quant_mode)
     return True
 
 
@@ -178,40 +273,46 @@ def build_pdf_action_space(
     xor_group_size: int = 4,
     decode_overhead: float = 0.0,
 ) -> List[PDFARCEAction]:
-    """Build the final 2x3x3x2 = 36 ARCE action space."""
+    """
+    Build the final 2 x 4 x 3 x 2 = 48 ARCE action space.
+
+    Notes:
+        1. send=0 combinations are retained so that the formal action space
+           remains exactly 48-dimensional.
+        2. ARCEC2MABComm normally skips no-send actions during proposal
+           generation and uses no-send as fallback for unselected CAVs.
+        3. rho > 0 maps to raptor_sim by default.
+    """
     actions: List[PDFARCEAction] = []
+
     for send in send_values:
+        send_i = int(send)
+
         for q in quant_modes:
-            q = str(q).lower()
-            if q not in QUANT_BITS:
-                raise ValueError(f"Unsupported quant_mode={q!r}; final action space uses fp16/int8/int4.")
+            q = normalize_pdf_quant_mode(q)
+
             for rho in redundancy_ratios:
-                rho = float(rho)
+                rho_f = float(rho)
+
                 for cache in cache_values:
-                    send_i = int(send)
                     cache_i = int(cache)
 
-                    # Use one canonical no-send action. Other send=0 combinations
-                    # are semantically identical and would only create redundant arms.
-                    if send_i == 0 and not (q == "fp16" and abs(rho) < 1e-12 and cache_i == 0):
+                    if not is_valid_pdf_action_combination(send_i, q, rho_f):
                         continue
 
-                    # Keep the executable legal action set consistent with the
-                    # current ARCE backend and Random baseline.
-                    if not is_valid_pdf_action_combination(send_i, q, rho):
-                        continue
+                    fec_type = infer_fec_type(rho_f, fec_mode) if send_i else "none"
 
-                    fec_type = infer_fec_type(rho, fec_mode) if send_i else "none"
                     action_id = (
-                        f"send{send_i}_{q}_rho{_canonical_float_text(rho)}"
+                        f"send{send_i}_{q}_rho{_canonical_float_text(rho_f)}"
                         f"_cache{cache_i}_{fec_type}"
                     )
+
                     actions.append(
                         PDFARCEAction(
                             action_id=action_id,
                             send=send_i,
                             quant_mode=q,
-                            redundancy_ratio=rho,
+                            redundancy_ratio=rho_f,
                             cache_enabled=cache_i,
                             fec_type=fec_type,
                             xor_group_size=int(xor_group_size),
@@ -219,10 +320,21 @@ def build_pdf_action_space(
                             channel_state=str(channel_state),
                         )
                     )
+
     return actions
 
 
+# ----------------------------------------------------------------------
+# Cost utilities
+# ----------------------------------------------------------------------
+
 def raw_feature_bytes_fp32(feature_shape: Sequence[int]) -> float:
+    """
+    Estimate raw FP32 feature size in bytes.
+
+    feature_shape:
+        Usually [C, H, W].
+    """
     n = 1
     for v in feature_shape:
         n *= int(v)
@@ -230,12 +342,21 @@ def raw_feature_bytes_fp32(feature_shape: Sequence[int]) -> float:
 
 
 def estimate_action_cost_bytes(raw_fp32_bytes: float, action: PDFARCEAction) -> float:
-    """Cost in bytes under PDF constraint (1+rho)(1-r)|F|.
+    """
+    Estimate action cost in bytes.
 
-    We represent (1-r)|F| by quantized bytes relative to FP32.
+    Cost model:
+        cost = FP32_bytes × quant_ratio × (1 + rho)
+
+    where:
+        fp32: 1.000
+        fp16: 0.500
+        int8: 0.250
+        int4: 0.125
     """
     if action.is_no_send:
         return 0.0
+
     compressed = float(raw_fp32_bytes) * action.compression_ratio
     return float(compressed * (1.0 + float(action.redundancy_ratio)))
 
@@ -244,7 +365,18 @@ def budget_bytes_from_bandwidth(
     bandwidth_mbps: float,
     tau_trans_ms: float = 100.0,
 ) -> float:
-    return float(float(bandwidth_mbps) * 1e6 / 8.0 * (float(tau_trans_ms) / 1000.0))
+    """
+    Convert bandwidth budget to byte budget.
+
+    bandwidth_mbps:
+        Mbps.
+
+    tau_trans_ms:
+        Transmission window in milliseconds.
+    """
+    return float(
+        float(bandwidth_mbps) * 1e6 / 8.0 * (float(tau_trans_ms) / 1000.0)
+    )
 
 
 def feasible_action_costs(
@@ -253,13 +385,20 @@ def feasible_action_costs(
     budget_bytes: float,
     include_no_send: bool = True,
 ) -> List[Tuple[PDFARCEAction, float]]:
+    """
+    Return actions whose estimated cost fits the given budget.
+    """
     feasible: List[Tuple[PDFARCEAction, float]] = []
+
     for action in actions:
         if action.is_no_send and not include_no_send:
             continue
+
         cost = estimate_action_cost_bytes(raw_fp32_bytes, action)
+
         if action.is_no_send or cost <= float(budget_bytes):
             feasible.append((action, float(cost)))
+
     return feasible
 
 
@@ -273,6 +412,8 @@ __all__ = [
     "RHO_VALUES",
     "CACHE_VALUES",
     "SEND_VALUES",
+    "QUANT_BITS",
+    "normalize_pdf_quant_mode",
     "build_pdf_action_space",
     "estimate_action_cost_bytes",
     "raw_feature_bytes_fp32",

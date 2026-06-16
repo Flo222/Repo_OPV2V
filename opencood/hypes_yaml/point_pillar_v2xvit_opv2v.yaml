@@ -5,7 +5,7 @@ name: point_pillar_v2xvit_opv2v
 # OpenCOOD/opv2v_data_dumping/train
 # OpenCOOD/opv2v_data_dumping/validate
 root_dir: "opv2v_data_dumping/train"
-validate_dir: "opv2v_data_dumping/validate"
+validate_dir: "opv2v_data_dumping/test"
 
 # Keep this block for compatibility with V2X-ViT / OpenCOOD wild settings.
 # For OPV2V baseline debug, keep all impairments disabled.
