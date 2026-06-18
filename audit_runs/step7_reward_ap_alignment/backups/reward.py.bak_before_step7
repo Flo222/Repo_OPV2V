@@ -95,14 +95,7 @@ def c2mab_link_proxy_reward(
 
     fec_gain = max(0.0, min(1.0, float(fec_gain)))
     cache_quality = max(0.0, min(1.0, float(cache_quality)))
-    # Step 7: gate cache reward by communication quality.
-    # Cache should be rewarded mainly when current received quality is insufficient.
-    # q is clipped q_eff in [0, 1].
-    cache_term = (
-        float(cache_quality) * (1.0 - float(q))
-        if bool(cache_enabled)
-        else 0.0
-    )
+    cache_term = float(cache_quality) if bool(cache_enabled) else 0.0
     redundancy_ratio = max(0.0, float(redundancy_ratio))
 
     reward = (

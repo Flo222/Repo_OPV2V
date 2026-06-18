@@ -1,0 +1,30 @@
+--- audit_runs/step6_c2mab_learning_loop/backups/ego_greedy_oracle.py.bak_before_step6	2026-06-17 08:59:10.136228009 +0800
++++ opencood/comm/arce/policies/ego_greedy_oracle.py	2026-06-17 09:00:52.292530907 +0800
+@@ -274,14 +274,25 @@
+ 
+             selected.append(best)
+ 
+-            # Update warm-up exploration count for the selected quant arm.
++            # Update warm-up exploration counts for selected quant/rho/cache arms.
++            # Step 6: all three action components must be counted; otherwise
++            # rho/cache warm-up bonus may remain active for too long.
+             try:
+-                _qsel = str((best_info or {}).get("quant_mode", "unknown")).lower()
+                 _ssel = str((best_info or {}).get("channel_state", "unknown")).lower()
+                 if _ssel not in self._quant_select_counts:
+                     _ssel = "unknown"
++
++                _qsel = str((best_info or {}).get("quant_mode", "unknown")).lower()
+                 if _qsel in self._quant_select_counts[_ssel]:
+                     self._quant_select_counts[_ssel][_qsel] += 1
++
++                _rho = str((best_info or {}).get("rho_key", "rho0"))
++                if _rho in self._rho_select_counts[_ssel]:
++                    self._rho_select_counts[_ssel][_rho] += 1
++
++                _cache = str((best_info or {}).get("cache_key", "cache0"))
++                if _cache in self._cache_select_counts[_ssel]:
++                    self._cache_select_counts[_ssel][_cache] += 1
+             except Exception:
+                 pass
+             selected_sender_ids.add(str(best.sender_id))
