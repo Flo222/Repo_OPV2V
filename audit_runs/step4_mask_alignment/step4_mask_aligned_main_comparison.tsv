@@ -1,0 +1,3 @@
+method	exp_dir	split	samples	epoch	ap03	ap05	ap07	note
+Strict_FP32_baseline	opencood/logs/where2comm_markov_trueloss_fp32_rho0_cache0	test	2170	20	0.776	0.760	0.578	mask_aligned_fixed_send1_fp32_rho0_cache0_no_fec
+Mask_aligned_GRACE_current	opencood/logs/main_opv2v_where2comm_grace_full	test	2170	20	0.794	0.779	0.610	mask_aligned_grace_current

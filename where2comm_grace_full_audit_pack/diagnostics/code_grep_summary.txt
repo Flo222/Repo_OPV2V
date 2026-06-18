@@ -1,0 +1,732 @@
+===== update/reward path =====
+opencood/models/point_pillar_where2comm_arce.py:266:            and hasattr(self.arce_comm, "update_with_proxy_reward")
+opencood/models/point_pillar_where2comm_arce.py:283:                arce_reward_update = self.arce_comm.update_with_proxy_reward(
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:275:            and hasattr(self.arce_comm, "update_with_proxy_reward")
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:292:                arce_reward_update = self.arce_comm.update_with_proxy_reward(
+opencood/comm/arce/policies/reward.py:47:def c2mab_link_proxy_reward(
+opencood/comm/arce/policies/reward.py:154:    c2mab_link_proxy_reward().
+opencood/comm/arce/policies/reward.py:192:    "c2mab_link_proxy_reward",
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:47:def c2mab_link_proxy_reward(
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:134:    c2mab_link_proxy_reward().
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:172:    "c2mab_link_proxy_reward",
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:47:def c2mab_link_proxy_reward(
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:110:    c2mab_link_proxy_reward().
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:148:    "c2mab_link_proxy_reward",
+opencood/comm/arce/__init__.py:338:    policy.update(cfg)
+opencood/comm/arce/arce_c2mab_comm.py:73:    c2mab_link_proxy_reward,
+opencood/comm/arce/arce_c2mab_comm.py:1747:            self.pending_reward.add(
+opencood/comm/arce/arce_c2mab_comm.py:1882:    def update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py:1912:            reward, info = c2mab_link_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py:1938:            policy.update(item["action_id"], item["context_vector"], reward)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:72:    c2mab_link_proxy_reward,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1707:            self.pending_reward.add(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1836:    def update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1866:            reward, info = c2mab_link_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1886:            policy.update(item["action_id"], item["context_vector"], reward)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:73:    c2mab_link_proxy_reward,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1747:            self.pending_reward.add(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1882:    def update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1912:            reward, info = c2mab_link_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1938:            policy.update(item["action_id"], item["context_vector"], reward)
+opencood/comm/arce/arce_c2mab_comm.py.bak_pass_quant_reward:72:    c2mab_link_proxy_reward,
+opencood/comm/arce/arce_c2mab_comm.py.bak_pass_quant_reward:1706:            self.pending_reward.add(
+opencood/comm/arce/arce_c2mab_comm.py.bak_pass_quant_reward:1833:    def update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_pass_quant_reward:1863:            reward, info = c2mab_link_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_pass_quant_reward:1881:            policy.update(item["action_id"], item["context_vector"], reward)
+opencood/logs/main_opv2v_where2comm_grace_full/channel_aware_qra_snapshot_0616_130135/channel_aware_qra_code_diff.patch:916:             self.pending_reward.add(
+opencood/logs/main_opv2v_where2comm_grace_full/channel_aware_qra_snapshot_0616_130135/arce_c2mab_comm.py:72:    c2mab_link_proxy_reward,
+opencood/logs/main_opv2v_where2comm_grace_full/channel_aware_qra_snapshot_0616_130135/arce_c2mab_comm.py:1706:            self.pending_reward.add(
+opencood/logs/main_opv2v_where2comm_grace_full/channel_aware_qra_snapshot_0616_130135/arce_c2mab_comm.py:1833:    def update_with_proxy_reward(
+opencood/logs/main_opv2v_where2comm_grace_full/channel_aware_qra_snapshot_0616_130135/arce_c2mab_comm.py:1863:            reward, info = c2mab_link_proxy_reward(
+opencood/logs/main_opv2v_where2comm_grace_full/channel_aware_qra_snapshot_0616_130135/arce_c2mab_comm.py:1881:            policy.update(item["action_id"], item["context_vector"], reward)
+
+===== budget path =====
+opencood/comm/metrics/final_alignment_metrics.py:36:def get_tx_bytes(r: Dict[str, Any]) -> float:
+opencood/comm/metrics/final_alignment_metrics.py:37:    return float(r.get('tx_bytes', r.get('transmitted_bytes', _get(r, 'size', 'tx_bytes', default=0.0))) or 0.0)
+opencood/comm/metrics/final_alignment_metrics.py:40:def get_rx_bytes(r: Dict[str, Any]) -> float:
+opencood/comm/metrics/final_alignment_metrics.py:41:    return float(r.get('rx_bytes', r.get('received_bytes', _get(r, 'size', 'rx_bytes', default=0.0))) or 0.0)
+opencood/comm/metrics/final_alignment_metrics.py:44:def get_budget_bytes(r: Dict[str, Any]) -> float:
+opencood/comm/metrics/final_alignment_metrics.py:45:    return float(r.get('B_link_bytes', r.get('budget_bytes', _get(r, 'budget', 'link_bytes', default=0.0))) or 0.0)
+opencood/comm/metrics/final_alignment_metrics.py:48:def get_total_budget_bytes(frame_records: List[Dict[str, Any]]) -> float:
+opencood/comm/metrics/final_alignment_metrics.py:65:        return not bool(no_send) and get_tx_bytes(r) > 0
+opencood/comm/metrics/final_alignment_metrics.py:66:    return bool(int(send)) and get_tx_bytes(r) > 0
+opencood/comm/metrics/final_alignment_metrics.py:84:        tx = sum(get_tx_bytes(r) for r in rs)
+opencood/comm/metrics/final_alignment_metrics.py:85:        rx = sum(get_rx_bytes(r) for r in rs)
+opencood/comm/metrics/final_alignment_metrics.py:88:        total_budget = get_total_budget_bytes(rs)
+opencood/comm/metrics/final_alignment_metrics.py:89:        link_viol = any((get_budget_bytes(r) > 0 and get_tx_bytes(r) > get_budget_bytes(r) + 1e-6) for r in rs)
+opencood/comm/metrics/final_alignment_metrics.py:106:        frame_summaries.append({'frame_id': fid, 'channel_state': state, 'tx_bytes': tx, 'rx_bytes': rx, 'success': succ, 'budget_violation': viol})
+opencood/comm/metrics/final_alignment_metrics.py:111:        'avg_tx_bytes_per_frame': avg_tx,
+opencood/comm/metrics/final_alignment_metrics.py:114:        'avg_rx_bytes_per_frame': total_rx / n_frames,
+opencood/comm/arce/policies/bandwidth_patch_selector.py:41:    budget_bytes: float
+opencood/comm/arce/policies/bandwidth_patch_selector.py:235:        budget_bytes: float,
+opencood/comm/arce/policies/bandwidth_patch_selector.py:255:        budget_bytes = float(max(0.0, budget_bytes))
+opencood/comm/arce/policies/bandwidth_patch_selector.py:302:            if float(est["total_bytes"]) <= budget_bytes:
+opencood/comm/arce/policies/bandwidth_patch_selector.py:340:            budget_bytes=float(budget_bytes),
+opencood/comm/arce/policies/random_pdf_policy.py:36:    def select(self, raw_fp32_bytes: float, budget_bytes: float) -> Tuple[PDFARCEAction, float]:
+opencood/comm/arce/policies/random_pdf_policy.py:40:            budget_bytes=budget_bytes,
+opencood/comm/arce/policies/reward.py:52:    link_budget_bytes: float,
+opencood/comm/arce/policies/reward.py:90:    cost_norm = float(cost_bytes) / max(float(link_budget_bytes), 1.0)
+opencood/comm/arce/policies/reward.py:127:        "link_budget_bytes": float(link_budget_bytes),
+opencood/comm/arce/policies/reward.py:146:    budget_bytes: float,
+opencood/comm/arce/policies/reward.py:157:    cost_term = float(communication_cost_bytes) / max(float(budget_bytes), 1.0)
+opencood/comm/arce/policies/reward.py:166:        "budget_bytes": float(budget_bytes),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:117:    def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:129:        remaining = float(budget_bytes)
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:255:            "budget_bytes": float(budget_bytes),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:256:            "used_budget_bytes": float(float(budget_bytes) - remaining),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:257:            "remaining_budget_bytes": float(remaining),
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:52:    link_budget_bytes: float,
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:84:    cost_norm = float(cost_bytes) / max(float(link_budget_bytes), 1.0)
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:109:        "link_budget_bytes": float(link_budget_bytes),
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:126:    budget_bytes: float,
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:137:    cost_term = float(communication_cost_bytes) / max(float(budget_bytes), 1.0)
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:146:        "budget_bytes": float(budget_bytes),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:130:    def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:142:        remaining = float(budget_bytes)
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:184:                total_budget = max(float(budget_bytes), self.eps_cost)
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:260:            "budget_bytes": float(budget_bytes),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:261:            "used_budget_bytes": float(float(budget_bytes) - remaining),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:262:            "remaining_budget_bytes": float(remaining),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:117:    def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:129:        remaining = float(budget_bytes)
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:171:                total_budget = max(float(budget_bytes), self.eps_cost)
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:220:            "budget_bytes": float(budget_bytes),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:221:            "used_budget_bytes": float(float(budget_bytes) - remaining),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:222:            "remaining_budget_bytes": float(remaining),
+opencood/comm/arce/policies/ego_greedy_oracle.py:144:    def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
+opencood/comm/arce/policies/ego_greedy_oracle.py:156:        remaining = float(budget_bytes)
+opencood/comm/arce/policies/ego_greedy_oracle.py:198:                total_budget = max(float(budget_bytes), self.eps_cost)
+opencood/comm/arce/policies/ego_greedy_oracle.py:297:            "budget_bytes": float(budget_bytes),
+opencood/comm/arce/policies/ego_greedy_oracle.py:298:            "used_budget_bytes": float(float(budget_bytes) - remaining),
+opencood/comm/arce/policies/ego_greedy_oracle.py:299:            "remaining_budget_bytes": float(remaining),
+opencood/comm/arce/policies/action_space.py:364:def budget_bytes_from_bandwidth(
+opencood/comm/arce/policies/action_space.py:385:    budget_bytes: float,
+opencood/comm/arce/policies/action_space.py:399:        if action.is_no_send or cost <= float(budget_bytes):
+opencood/comm/arce/policies/action_space.py:420:    "budget_bytes_from_bandwidth",
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_state_quant_warmup:130:    def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_state_quant_warmup:142:        remaining = float(budget_bytes)
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_state_quant_warmup:184:                total_budget = max(float(budget_bytes), self.eps_cost)
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_state_quant_warmup:248:            "budget_bytes": float(budget_bytes),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_state_quant_warmup:249:            "used_budget_bytes": float(float(budget_bytes) - remaining),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_state_quant_warmup:250:            "remaining_budget_bytes": float(remaining),
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:52:    link_budget_bytes: float,
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:70:    cost_norm = float(cost_bytes) / max(float(link_budget_bytes), 1.0)
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:86:        "link_budget_bytes": float(link_budget_bytes),
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:102:    budget_bytes: float,
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:113:    cost_term = float(communication_cost_bytes) / max(float(budget_bytes), 1.0)
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:122:        "budget_bytes": float(budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:63:    budget_bytes_from_bandwidth,
+opencood/comm/arce/arce_c2mab_comm.py:510:        self.system_budget_mbps = float(
+opencood/comm/arce/arce_c2mab_comm.py:512:                "system_budget_mbps",
+opencood/comm/arce/arce_c2mab_comm.py:523:        self.total_budget_mbps = self.system_budget_mbps
+opencood/comm/arce/arce_c2mab_comm.py:748:    def _system_budget_bytes(self) -> float:
+opencood/comm/arce/arce_c2mab_comm.py:750:            budget_bytes_from_bandwidth(
+opencood/comm/arce/arce_c2mab_comm.py:751:                self.system_budget_mbps,
+opencood/comm/arce/arce_c2mab_comm.py:756:    def _channel_profile_budget_bytes(self, profile: Dict[str, Any]) -> float:
+opencood/comm/arce/arce_c2mab_comm.py:758:            profile.get("bandwidth_mbps", self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py:759:            self.system_budget_mbps,
+opencood/comm/arce/arce_c2mab_comm.py:762:            budget_bytes_from_bandwidth(
+opencood/comm/arce/arce_c2mab_comm.py:768:    def _per_link_budget_bytes(self, num_collaborators: int) -> float:
+opencood/comm/arce/arce_c2mab_comm.py:771:        return float(self._system_budget_bytes() / float(num_collaborators))
+opencood/comm/arce/arce_c2mab_comm.py:804:            link_budget_bytes = self._channel_profile_budget_bytes(profile)
+opencood/comm/arce/arce_c2mab_comm.py:806:            link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+opencood/comm/arce/arce_c2mab_comm.py:808:        return state_name, profile, float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:818:        budget_bytes: Optional[float] = None,
+opencood/comm/arce/arce_c2mab_comm.py:832:            sum(selected.cost_bytes) <= global_budget_bytes
+opencood/comm/arce/arce_c2mab_comm.py:856:                "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+opencood/comm/arce/arce_c2mab_comm.py:878:        if budget_bytes is None:
+opencood/comm/arce/arce_c2mab_comm.py:879:            target_tx_bytes = float(encoded_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:882:            budget = float(max(0.0, budget_bytes))
+opencood/comm/arce/arce_c2mab_comm.py:895:            target_tx_bytes = float(min(encoded_bytes, budget * proposal_share))
+opencood/comm/arce/arce_c2mab_comm.py:898:            if target_tx_bytes > 0.0 and target_tx_bytes < packet_unit:
+opencood/comm/arce/arce_c2mab_comm.py:899:                target_tx_bytes = packet_unit
+opencood/comm/arce/arce_c2mab_comm.py:901:        if encoded_packets <= 0 or target_tx_bytes <= 0.0:
+opencood/comm/arce/arce_c2mab_comm.py:907:                    math.floor(target_tx_bytes / packet_unit),
+opencood/comm/arce/arce_c2mab_comm.py:932:            "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+opencood/comm/arce/arce_c2mab_comm.py:1209:        total_budget_bytes = self._system_budget_bytes()
+opencood/comm/arce/arce_c2mab_comm.py:1210:        per_link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+opencood/comm/arce/arce_c2mab_comm.py:1222:            state_name, profile, link_budget_bytes = self._prepare_link_channel_budget(
+opencood/comm/arce/arce_c2mab_comm.py:1233:            link_budgets[sender_idx] = float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:1244:        # single total_budget_bytes in the ego oracle.
+opencood/comm/arce/arce_c2mab_comm.py:1257:            total_budget_bytes = float(
+opencood/comm/arce/arce_c2mab_comm.py:1258:                self._channel_profile_budget_bytes(global_profile)
+opencood/comm/arce/arce_c2mab_comm.py:1260:            per_link_budget_bytes = (
+opencood/comm/arce/arce_c2mab_comm.py:1261:                float(total_budget_bytes) / float(max(1, len(link_budgets)))
+opencood/comm/arce/arce_c2mab_comm.py:1265:            # total_budget_bytes adaptively according to candidate action costs.
+opencood/comm/arce/arce_c2mab_comm.py:1267:                int(k): float(per_link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:1280:            link_budget_bytes = float(link_budgets.get(sender_idx, per_link_budget_bytes))
+opencood/comm/arce/arce_c2mab_comm.py:1286:                proposal_budget_bytes = float(total_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:1288:                proposal_budget_bytes = float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:1370:                    budget_bytes=proposal_budget_bytes,
+opencood/comm/arce/arce_c2mab_comm.py:1466:                            "link_budget_bytes": float(link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1467:                            "proposal_budget_bytes": float(proposal_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1468:                            "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1469:                            "system_budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1474:                            "estimated_tx_bytes": float(cand_cost),
+opencood/comm/arce/arce_c2mab_comm.py:1507:        oracle_result = self.oracle.select(proposals, budget_bytes=total_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:1533:                rec["system_budget"] = {
+opencood/comm/arce/arce_c2mab_comm.py:1536:                    "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py:1538:                    "system_budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1540:                    "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1557:            allocated_budget_bytes = float(
+opencood/comm/arce/arce_c2mab_comm.py:1559:                    "estimated_tx_bytes",
+opencood/comm/arce/arce_c2mab_comm.py:1561:                        "proposal_budget_bytes",
+opencood/comm/arce/arce_c2mab_comm.py:1562:                        selected.record.get("link_budget_bytes", total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1576:                    budget_bytes=float(allocated_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1589:                    "action_override / budget_bytes / channel_state yet. "
+opencood/comm/arce/arce_c2mab_comm.py:1600:                    "budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1601:                    "used_budget_bytes": float(oracle_result["used_budget_bytes"]),
+opencood/comm/arce/arce_c2mab_comm.py:1602:                    "remaining_budget_bytes": float(oracle_result["remaining_budget_bytes"]),
+opencood/comm/arce/arce_c2mab_comm.py:1612:            record["system_budget"] = {
+opencood/comm/arce/arce_c2mab_comm.py:1615:                "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py:1617:                "system_budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1619:                "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1620:                "link_budget_bytes": float(
+opencood/comm/arce/arce_c2mab_comm.py:1621:                    selected.record.get("link_budget_bytes", per_link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:1623:                "proposal_budget_bytes": float(
+opencood/comm/arce/arce_c2mab_comm.py:1624:                    selected.record.get("proposal_budget_bytes", total_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py:1626:                "allocated_budget_bytes": float(allocated_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1630:            tx_bytes = float(
+opencood/comm/arce/arce_c2mab_comm.py:1635:                        record.get("tx_bytes", selected.cost_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1639:            used_cost += tx_bytes
+opencood/comm/arce/arce_c2mab_comm.py:1716:                    "proposal_budget_bytes",
+opencood/comm/arce/arce_c2mab_comm.py:1717:                    selected.record.get("link_budget_bytes", total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1720:            link_violation = bool(tx_bytes > reward_budget + 1e-6)
+opencood/comm/arce/arce_c2mab_comm.py:1753:                    "cost_bytes": float(tx_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1754:                    "link_budget_bytes": float(reward_budget),
+opencood/comm/arce/arce_c2mab_comm.py:1778:                "budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1781:                "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py:1784:                "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py:1787:                "used_budget_bytes": float(used_cost),
+opencood/comm/arce/arce_c2mab_comm.py:1886:        budget_bytes: Optional[float] = None,
+opencood/comm/arce/arce_c2mab_comm.py:1917:                link_budget_bytes=float(
+opencood/comm/arce/arce_c2mab_comm.py:1918:                    item.get("link_budget_bytes", budget_bytes or 1.0)
+opencood/comm/arce/arce_c2mab_comm.py:1996:                    r.get("transmitted_bytes", r.get("tx_bytes", 0.0)),
+opencood/comm/arce/arce_c2mab_comm.py:2002:                    r.get("received_bytes", r.get("rx_bytes", 0.0)),
+opencood/comm/arce/arce_c2mab_comm.py:2015:            "system_budget": {
+opencood/comm/arce/arce_c2mab_comm.py:2018:                "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py:2020:                "system_budget_bytes": float(self._system_budget_bytes()),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:62:    budget_bytes_from_bandwidth,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:509:        self.system_budget_mbps = float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:511:                "system_budget_mbps",
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:522:        self.total_budget_mbps = self.system_budget_mbps
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:745:    def _system_budget_bytes(self) -> float:
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:747:            budget_bytes_from_bandwidth(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:748:                self.system_budget_mbps,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:753:    def _channel_profile_budget_bytes(self, profile: Dict[str, Any]) -> float:
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:755:            profile.get("bandwidth_mbps", self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:756:            self.system_budget_mbps,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:759:            budget_bytes_from_bandwidth(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:765:    def _per_link_budget_bytes(self, num_collaborators: int) -> float:
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:768:        return float(self._system_budget_bytes() / float(num_collaborators))
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:801:            link_budget_bytes = self._channel_profile_budget_bytes(profile)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:803:            link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:805:        return state_name, profile, float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:815:        budget_bytes: Optional[float] = None,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:829:            sum(selected.cost_bytes) <= global_budget_bytes
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:853:                "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:875:        if budget_bytes is None:
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:876:            target_tx_bytes = float(encoded_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:879:            budget = float(max(0.0, budget_bytes))
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:892:            target_tx_bytes = float(min(encoded_bytes, budget * proposal_share))
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:895:            if target_tx_bytes > 0.0 and target_tx_bytes < packet_unit:
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:896:                target_tx_bytes = packet_unit
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:898:        if encoded_packets <= 0 or target_tx_bytes <= 0.0:
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:904:                    math.floor(target_tx_bytes / packet_unit),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:929:            "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1206:        total_budget_bytes = self._system_budget_bytes()
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1207:        per_link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1219:            state_name, profile, link_budget_bytes = self._prepare_link_channel_budget(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1230:            link_budgets[sender_idx] = float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1241:        # single total_budget_bytes in the ego oracle.
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1254:            total_budget_bytes = float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1255:                self._channel_profile_budget_bytes(global_profile)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1257:            per_link_budget_bytes = (
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1258:                float(total_budget_bytes) / float(max(1, len(link_budgets)))
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1262:            # total_budget_bytes adaptively according to candidate action costs.
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1264:                int(k): float(per_link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1277:            link_budget_bytes = float(link_budgets.get(sender_idx, per_link_budget_bytes))
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1283:                proposal_budget_bytes = float(total_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1285:                proposal_budget_bytes = float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1357:                    budget_bytes=proposal_budget_bytes,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1453:                            "link_budget_bytes": float(link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1454:                            "proposal_budget_bytes": float(proposal_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1455:                            "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1456:                            "system_budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1461:                            "estimated_tx_bytes": float(cand_cost),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1492:        oracle_result = self.oracle.select(proposals, budget_bytes=total_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1518:                rec["system_budget"] = {
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1521:                    "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1523:                    "system_budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1525:                    "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1542:            allocated_budget_bytes = float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1544:                    "estimated_tx_bytes",
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1546:                        "proposal_budget_bytes",
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1547:                        selected.record.get("link_budget_bytes", total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1561:                    budget_bytes=float(allocated_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1574:                    "action_override / budget_bytes / channel_state yet. "
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1585:                    "budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1586:                    "used_budget_bytes": float(oracle_result["used_budget_bytes"]),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1587:                    "remaining_budget_bytes": float(oracle_result["remaining_budget_bytes"]),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1597:            record["system_budget"] = {
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1600:                "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1602:                "system_budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1604:                "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1605:                "link_budget_bytes": float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1606:                    selected.record.get("link_budget_bytes", per_link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1608:                "proposal_budget_bytes": float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1609:                    selected.record.get("proposal_budget_bytes", total_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1611:                "allocated_budget_bytes": float(allocated_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1615:            tx_bytes = float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1620:                        record.get("tx_bytes", selected.cost_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1624:            used_cost += tx_bytes
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1701:                    "proposal_budget_bytes",
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1702:                    selected.record.get("link_budget_bytes", total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1705:            link_violation = bool(tx_bytes > reward_budget + 1e-6)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1713:                    "cost_bytes": float(tx_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1714:                    "link_budget_bytes": float(reward_budget),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1732:                "budget_bytes": float(total_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1735:                "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1738:                "per_link_budget_bytes": float(per_link_budget_bytes),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1741:                "used_budget_bytes": float(used_cost),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1840:        budget_bytes: Optional[float] = None,
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1871:                link_budget_bytes=float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1872:                    item.get("link_budget_bytes", budget_bytes or 1.0)
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1938:                    r.get("transmitted_bytes", r.get("tx_bytes", 0.0)),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1944:                    r.get("received_bytes", r.get("rx_bytes", 0.0)),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1957:            "system_budget": {
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1960:                "system_budget_mbps": float(self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1962:                "system_budget_bytes": float(self._system_budget_bytes()),
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:63:    budget_bytes_from_bandwidth,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:510:        self.system_budget_mbps = float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:512:                "system_budget_mbps",
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:523:        self.total_budget_mbps = self.system_budget_mbps
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:748:    def _system_budget_bytes(self) -> float:
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:750:            budget_bytes_from_bandwidth(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:751:                self.system_budget_mbps,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:756:    def _channel_profile_budget_bytes(self, profile: Dict[str, Any]) -> float:
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:758:            profile.get("bandwidth_mbps", self.system_budget_mbps),
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:759:            self.system_budget_mbps,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:762:            budget_bytes_from_bandwidth(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:768:    def _per_link_budget_bytes(self, num_collaborators: int) -> float:
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:771:        return float(self._system_budget_bytes() / float(num_collaborators))
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:804:            link_budget_bytes = self._channel_profile_budget_bytes(profile)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:806:            link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:808:        return state_name, profile, float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:818:        budget_bytes: Optional[float] = None,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:832:            sum(selected.cost_bytes) <= global_budget_bytes
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:856:                "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:878:        if budget_bytes is None:
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:879:            target_tx_bytes = float(encoded_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:882:            budget = float(max(0.0, budget_bytes))
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:895:            target_tx_bytes = float(min(encoded_bytes, budget * proposal_share))
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:898:            if target_tx_bytes > 0.0 and target_tx_bytes < packet_unit:
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:899:                target_tx_bytes = packet_unit
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:901:        if encoded_packets <= 0 or target_tx_bytes <= 0.0:
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:907:                    math.floor(target_tx_bytes / packet_unit),
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:932:            "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1209:        total_budget_bytes = self._system_budget_bytes()
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1210:        per_link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1222:            state_name, profile, link_budget_bytes = self._prepare_link_channel_budget(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1233:            link_budgets[sender_idx] = float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1244:        # single total_budget_bytes in the ego oracle.
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1257:            total_budget_bytes = float(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1258:                self._channel_profile_budget_bytes(global_profile)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1260:            per_link_budget_bytes = (
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1261:                float(total_budget_bytes) / float(max(1, len(link_budgets)))
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1265:            # total_budget_bytes adaptively according to candidate action costs.
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1267:                int(k): float(per_link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1280:            link_budget_bytes = float(link_budgets.get(sender_idx, per_link_budget_bytes))
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1286:                proposal_budget_bytes = float(total_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1288:                proposal_budget_bytes = float(link_budget_bytes)
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1370:                    budget_bytes=proposal_budget_bytes,
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1466:                            "link_budget_bytes": float(link_budget_bytes),
+
+===== quant/fec/cache/action path =====
+opencood/comm/packet/size_estimator.py:142:def normalize_quant_mode(mode: Optional[str]) -> str:
+opencood/comm/packet/size_estimator.py:175:def quant_mode_to_bits(mode: Optional[str]) -> int:
+opencood/comm/packet/size_estimator.py:179:    mode = normalize_quant_mode(mode)
+opencood/comm/packet/size_estimator.py:335:def estimate_feature_bytes_by_quant_mode(
+opencood/comm/packet/size_estimator.py:337:    quant_mode: Optional[str] = DEFAULT_QUANT_MODE,
+opencood/comm/packet/size_estimator.py:343:    bits = quant_mode_to_bits(quant_mode)
+opencood/comm/packet/size_estimator.py:366:def compression_ratio_from_quant_mode(
+opencood/comm/packet/size_estimator.py:367:    quant_mode: Optional[str],
+opencood/comm/packet/size_estimator.py:374:        quant_bits=quant_mode_to_bits(quant_mode),
+opencood/comm/packet/size_estimator.py:495:    redundancy_ratio: Any = 0.0,
+opencood/comm/packet/size_estimator.py:509:                parity = ceil(K * redundancy_ratio)
+opencood/comm/packet/size_estimator.py:512:            parity = ceil(K * redundancy_ratio)
+opencood/comm/packet/size_estimator.py:522:    redundancy_ratio : float
+opencood/comm/packet/size_estimator.py:523:        Redundancy ratio rho.
+opencood/comm/packet/size_estimator.py:535:    redundancy_ratio = _as_non_negative_float(
+opencood/comm/packet/size_estimator.py:536:        redundancy_ratio,
+opencood/comm/packet/size_estimator.py:537:        "redundancy_ratio",
+opencood/comm/packet/size_estimator.py:550:    return int(math.ceil(k * redundancy_ratio))
+opencood/comm/packet/size_estimator.py:556:    redundancy_ratio: Any = 0.0,
+opencood/comm/packet/size_estimator.py:572:        redundancy_ratio=redundancy_ratio,
+opencood/comm/packet/size_estimator.py:738:    quant_mode: str
+opencood/comm/packet/size_estimator.py:751:    redundancy_ratio_config: float
+opencood/comm/packet/size_estimator.py:757:    effective_redundancy_ratio: float
+opencood/comm/packet/size_estimator.py:789:            quant_mode="int8",
+opencood/comm/packet/size_estimator.py:803:            redundancy_ratio: 0.25
+opencood/comm/packet/size_estimator.py:820:        self.default_quant_mode = normalize_quant_mode(
+opencood/comm/packet/size_estimator.py:828:        self.default_redundancy_ratio = _as_non_negative_float(
+opencood/comm/packet/size_estimator.py:829:            self.fec_cfg.get("redundancy_ratio", 0.0),
+opencood/comm/packet/size_estimator.py:830:            "redundancy_ratio",
+opencood/comm/packet/size_estimator.py:882:        quant_mode: Optional[str] = None,
+opencood/comm/packet/size_estimator.py:886:        redundancy_ratio: Optional[float] = None,
+opencood/comm/packet/size_estimator.py:901:        quant_mode : str, optional
+opencood/comm/packet/size_estimator.py:914:        redundancy_ratio : float, optional
+opencood/comm/packet/size_estimator.py:937:        quant_mode = normalize_quant_mode(quant_mode or self.default_quant_mode)
+opencood/comm/packet/size_estimator.py:938:        quant_bits_per_value = quant_mode_to_bits(quant_mode)
+opencood/comm/packet/size_estimator.py:956:        if redundancy_ratio is None:
+opencood/comm/packet/size_estimator.py:957:            redundancy_ratio = self.default_redundancy_ratio
+opencood/comm/packet/size_estimator.py:958:        redundancy_ratio = _as_non_negative_float(
+opencood/comm/packet/size_estimator.py:959:            redundancy_ratio,
+opencood/comm/packet/size_estimator.py:960:            "redundancy_ratio",
+opencood/comm/packet/size_estimator.py:1004:            redundancy_ratio=redundancy_ratio,
+opencood/comm/packet/size_estimator.py:1008:        effective_redundancy_ratio = (
+opencood/comm/packet/size_estimator.py:1046:            quant_mode=quant_mode,
+opencood/comm/packet/size_estimator.py:1055:            redundancy_ratio_config=float(redundancy_ratio),
+opencood/comm/packet/size_estimator.py:1060:            effective_redundancy_ratio=float(effective_redundancy_ratio),
+opencood/comm/packet/size_estimator.py:1074:        quant_mode: Optional[str] = None,
+opencood/comm/packet/size_estimator.py:1076:        redundancy_ratio: Optional[float] = None,
+opencood/comm/packet/size_estimator.py:1091:            quant_mode=quant_mode,
+opencood/comm/packet/size_estimator.py:1094:            redundancy_ratio=redundancy_ratio,
+opencood/comm/packet/size_estimator.py:1107:            "default_quant_mode": self.default_quant_mode,
+opencood/comm/packet/size_estimator.py:1109:            "default_redundancy_ratio": float(self.default_redundancy_ratio),
+opencood/comm/packet/size_estimator.py:1120:            f"default_quant_mode={self.default_quant_mode}, "
+opencood/comm/packet/size_estimator.py:1122:            f"default_redundancy_ratio={self.default_redundancy_ratio}, "
+opencood/comm/fec/fec_xor.py:63:    effective_redundancy_ratio,
+opencood/comm/fec/fec_xor.py:220:                    redundancy_ratio: 0.25
+opencood/comm/fec/fec_xor.py:234:        # redundancy_ratio is kept as config/logging information.
+opencood/comm/fec/fec_xor.py:235:        if self.redundancy_ratio <= 0.0:
+opencood/comm/fec/fec_xor.py:236:            self.redundancy_ratio = 1.0 / float(self.group_size)
+opencood/comm/fec/fec_xor.py:387:            "redundancy_ratio_config": float(self.redundancy_ratio),
+opencood/comm/fec/fec_xor.py:388:            "effective_redundancy_ratio": float(
+opencood/comm/fec/fec_xor.py:389:                effective_redundancy_ratio(
+opencood/comm/fec/fec_xor.py:410:            redundancy_ratio_config=float(self.redundancy_ratio),
+opencood/comm/fec/fec_xor.py:657:            "redundancy_ratio": float(self.redundancy_ratio),
+opencood/comm/fec/fec_xor.py:668:            f"redundancy_ratio={self.redundancy_ratio})"
+opencood/comm/fec/__init__.py:173:def normalize_redundancy_ratio(value: Any = DEFAULT_REDUNDANCY_RATIO) -> float:
+opencood/comm/fec/__init__.py:180:        Redundancy ratio rho. For example:
+opencood/comm/fec/__init__.py:190:    return _as_non_negative_float(value, "redundancy_ratio")
+opencood/comm/fec/__init__.py:236:    redundancy_ratio: Any = DEFAULT_REDUNDANCY_RATIO,
+opencood/comm/fec/__init__.py:251:            parity = ceil(K * redundancy_ratio)
+opencood/comm/fec/__init__.py:254:        parity = ceil(K * redundancy_ratio)
+opencood/comm/fec/__init__.py:264:    redundancy_ratio : float
+opencood/comm/fec/__init__.py:265:        Redundancy ratio rho.
+opencood/comm/fec/__init__.py:277:    redundancy_ratio = normalize_redundancy_ratio(redundancy_ratio)
+opencood/comm/fec/__init__.py:287:            return int(math.ceil(k * redundancy_ratio))
+opencood/comm/fec/__init__.py:293:        return int(math.ceil(k * redundancy_ratio))
+opencood/comm/fec/__init__.py:301:    redundancy_ratio: Any = DEFAULT_REDUNDANCY_RATIO,
+opencood/comm/fec/__init__.py:315:    redundancy_ratio : float
+opencood/comm/fec/__init__.py:316:        Redundancy ratio rho.
+opencood/comm/fec/__init__.py:331:        redundancy_ratio=redundancy_ratio,
+opencood/comm/fec/__init__.py:338:def effective_redundancy_ratio(
+opencood/comm/fec/__init__.py:346:        rho_eff = num_parity_packets / num_source_packets
+opencood/comm/fec/__init__.py:414:            redundancy_ratio: 0.25
+opencood/comm/fec/__init__.py:424:                "redundancy_ratio": float,
+opencood/comm/fec/__init__.py:444:    redundancy_ratio = normalize_redundancy_ratio(
+opencood/comm/fec/__init__.py:445:        cfg.get("redundancy_ratio", DEFAULT_REDUNDANCY_RATIO)
+opencood/comm/fec/__init__.py:459:        "redundancy_ratio": float(redundancy_ratio),
+opencood/comm/fec/__init__.py:467:    redundancy_ratio: Any = DEFAULT_REDUNDANCY_RATIO,
+opencood/comm/fec/__init__.py:478:        effective_redundancy_ratio
+opencood/comm/fec/__init__.py:481:    redundancy_ratio = normalize_redundancy_ratio(redundancy_ratio)
+opencood/comm/fec/__init__.py:490:        "redundancy_ratio": float(redundancy_ratio),
+opencood/comm/fec/__init__.py:500:            redundancy_ratio=redundancy_ratio,
+opencood/comm/fec/__init__.py:509:                "effective_redundancy_ratio": float(
+opencood/comm/fec/__init__.py:510:                    effective_redundancy_ratio(k, num_parity)
+opencood/comm/fec/__init__.py:562:    "normalize_redundancy_ratio",
+opencood/comm/fec/__init__.py:567:    "effective_redundancy_ratio",
+opencood/comm/fec/fec_raptor_sim.py:67:    normalize_redundancy_ratio,
+opencood/comm/fec/fec_raptor_sim.py:69:    effective_redundancy_ratio,
+opencood/comm/fec/fec_raptor_sim.py:225:    rho(1) = 1 / K
+opencood/comm/fec/fec_raptor_sim.py:226:    rho(d) = 1 / (d * (d - 1)), d = 2..K
+opencood/comm/fec/fec_raptor_sim.py:230:    rho = np.zeros(k, dtype=np.float64)
+opencood/comm/fec/fec_raptor_sim.py:233:        rho[0] = 1.0
+opencood/comm/fec/fec_raptor_sim.py:234:        return rho
+opencood/comm/fec/fec_raptor_sim.py:236:    rho[0] = 1.0 / float(k)
+opencood/comm/fec/fec_raptor_sim.py:239:        rho[d - 1] = 1.0 / float(d * (d - 1))
+opencood/comm/fec/fec_raptor_sim.py:241:    rho = rho / rho.sum()
+opencood/comm/fec/fec_raptor_sim.py:242:    return rho
+opencood/comm/fec/fec_raptor_sim.py:289:    rho = _ideal_soliton_distribution(k)
+opencood/comm/fec/fec_raptor_sim.py:293:        return rho
+opencood/comm/fec/fec_raptor_sim.py:305:    beta = float((rho + tau).sum())
+opencood/comm/fec/fec_raptor_sim.py:308:        return rho
+opencood/comm/fec/fec_raptor_sim.py:310:    mu = (rho + tau) / beta
+opencood/comm/fec/fec_raptor_sim.py:419:                    redundancy_ratio: 0.25
+opencood/comm/fec/fec_raptor_sim.py:441:        self.redundancy_ratio = normalize_redundancy_ratio(
+opencood/comm/fec/fec_raptor_sim.py:443:                "redundancy_ratio",
+opencood/comm/fec/fec_raptor_sim.py:444:                self.redundancy_ratio
+opencood/comm/fec/fec_raptor_sim.py:445:                if self.redundancy_ratio > 0.0
+opencood/comm/fec/fec_raptor_sim.py:511:        return int(math.ceil(k * float(self.redundancy_ratio)))
+opencood/comm/fec/fec_raptor_sim.py:706:            "redundancy_ratio_config": float(self.redundancy_ratio),
+opencood/comm/fec/fec_raptor_sim.py:707:            "effective_redundancy_ratio": float(
+opencood/comm/fec/fec_raptor_sim.py:708:                effective_redundancy_ratio(k, p)
+opencood/comm/fec/fec_raptor_sim.py:733:            redundancy_ratio_config=float(self.redundancy_ratio),
+opencood/comm/fec/fec_raptor_sim.py:1040:            "redundancy_ratio": float(self.redundancy_ratio),
+opencood/comm/fec/fec_raptor_sim.py:1056:            f"redundancy_ratio={self.redundancy_ratio}, "
+opencood/comm/fec/fec_none.py:65:                redundancy_ratio = 0.0
+opencood/comm/fec/fec_none.py:71:        self.redundancy_ratio = 0.0
+opencood/comm/fec/fec_none.py:121:            "redundancy_ratio_config": 0.0,
+opencood/comm/fec/fec_none.py:122:            "effective_redundancy_ratio": 0.0,
+opencood/comm/fec/fec_none.py:131:            redundancy_ratio_config=0.0,
+opencood/comm/fec/fec_none.py:241:            "redundancy_ratio": 0.0,
+opencood/comm/fec/fec_none.py:247:        return "NoFEC(enabled=False, fec_type=none, redundancy_ratio=0.0)"
+opencood/comm/fec/fec_base.py:67:    normalize_redundancy_ratio,
+opencood/comm/fec/fec_base.py:71:    effective_redundancy_ratio,
+opencood/comm/fec/fec_base.py:410:    redundancy_ratio_config : float
+opencood/comm/fec/fec_base.py:428:    redundancy_ratio_config: float = 0.0
+opencood/comm/fec/fec_base.py:447:    def effective_redundancy_ratio(self) -> float:
+opencood/comm/fec/fec_base.py:448:        return effective_redundancy_ratio(
+opencood/comm/fec/fec_base.py:524:            "redundancy_ratio_config": float(self.redundancy_ratio_config),
+opencood/comm/fec/fec_base.py:525:            "effective_redundancy_ratio": float(self.effective_redundancy_ratio),
+opencood/comm/fec/fec_base.py:701:        self.redundancy_ratio = normalize_redundancy_ratio(
+opencood/comm/fec/fec_base.py:702:            cfg.get("redundancy_ratio", DEFAULT_REDUNDANCY_RATIO)
+opencood/comm/fec/fec_base.py:764:            redundancy_ratio=self.redundancy_ratio,
+opencood/comm/fec/fec_base.py:926:            "redundancy_ratio": float(self.redundancy_ratio),
+opencood/comm/fec/fec_base.py:936:            f"redundancy_ratio={self.redundancy_ratio}, "
+opencood/comm/metrics/final_alignment_metrics.py:100:            q = r.get('quant_mode', _get(r, 'action', 'quant', default='unknown'))
+opencood/comm/metrics/final_alignment_metrics.py:101:            rho = r.get('rho', r.get('redundancy_ratio', _get(r, 'action', 'rho', default='unknown')))
+opencood/comm/metrics/final_alignment_metrics.py:102:            cache = r.get('cache_enabled', _get(r, 'action', 'cache', default='unknown'))
+opencood/comm/metrics/final_alignment_metrics.py:103:            action_counter[f'q={q}|rho={rho}|cache={cache}|send={int(is_selected_send(r))}'] += 1
+opencood/comm/metrics/__init__.py:66:METRIC_REDUNDANCY_RATIO = "redundancy_ratio"
+opencood/comm/metrics/__init__.py:93:METRIC_QUANT_MODE = "quant_mode"
+opencood/comm/metrics/__init__.py:488:                "actual_effective_redundancy_ratio",
+opencood/comm/metrics/__init__.py:489:                size.get("effective_redundancy_ratio", 0.0),
+opencood/comm/metrics/__init__.py:526:        METRIC_QUANT_MODE: action.get("quant_mode", quant.get("mode", None)),
+opencood/comm/metrics/__init__.py:775:    summarize_by_key(records, "quant_mode")
+opencood/comm/metrics/comm_stats.py:144:    by_quant_mode : dict
+opencood/comm/metrics/comm_stats.py:157:    by_quant_mode: Dict[str, Any] = field(default_factory=dict)
+opencood/comm/metrics/comm_stats.py:170:                "by_quant_mode": self.by_quant_mode,
+opencood/comm/metrics/comm_stats.py:457:    def summarize_by_quant_mode(self) -> Dict[str, Any]:
+opencood/comm/metrics/comm_stats.py:515:            by_quant_mode=self.summarize_by_quant_mode(),
+opencood/comm/arce/policies/bandwidth_patch_selector.py:27:    quant_mode_to_bits,
+opencood/comm/arce/policies/bandwidth_patch_selector.py:57:    quant_mode: str
+opencood/comm/arce/policies/bandwidth_patch_selector.py:60:    redundancy_ratio: float
+opencood/comm/arce/policies/bandwidth_patch_selector.py:69:    lambda_complementarity: float
+opencood/comm/arce/policies/bandwidth_patch_selector.py:70:    complementarity: float
+opencood/comm/arce/policies/bandwidth_patch_selector.py:115:        self.lambda_complementarity = float(merged.get("lambda_complementarity", score_cfg.get("lambda_complementarity", 0.3)))
+opencood/comm/arce/policies/bandwidth_patch_selector.py:206:        redundancy_ratio: float,
+opencood/comm/arce/policies/bandwidth_patch_selector.py:217:            redundancy_ratio=redundancy_ratio,
+opencood/comm/arce/policies/bandwidth_patch_selector.py:237:        complementarity: float = 0.0,
+opencood/comm/arce/policies/bandwidth_patch_selector.py:247:        quant_mode = str(self._action_get(action, "quant_mode", "fp16")).strip().lower()
+opencood/comm/arce/policies/bandwidth_patch_selector.py:248:        quant_bits = int(quant_mode_to_bits(quant_mode))
+opencood/comm/arce/policies/bandwidth_patch_selector.py:250:        redundancy_ratio = float(self._action_get(action, "redundancy_ratio", 0.0))
+opencood/comm/arce/policies/bandwidth_patch_selector.py:275:        comp = float(complementarity)
+opencood/comm/arce/policies/bandwidth_patch_selector.py:279:            + float(self.lambda_complementarity) * comp
+opencood/comm/arce/policies/bandwidth_patch_selector.py:301:            est = self._estimate_total_for_indices(candidate, source_packet_bytes, fec_type, redundancy_ratio, group_size)
+opencood/comm/arce/policies/bandwidth_patch_selector.py:354:            quant_mode=quant_mode,
+opencood/comm/arce/policies/bandwidth_patch_selector.py:357:            redundancy_ratio=float(redundancy_ratio),
+opencood/comm/arce/policies/bandwidth_patch_selector.py:365:            lambda_complementarity=float(self.lambda_complementarity),
+opencood/comm/arce/policies/bandwidth_patch_selector.py:366:            complementarity=float(comp),
+opencood/comm/arce/policies/bandwidth_patch_selector.py:381:            "lambda_complementarity": float(self.lambda_complementarity),
+opencood/comm/arce/policies/complementarity.py:1:"""Mask complementarity and diversity utilities for Where2comm-ARCE.
+opencood/comm/arce/policies/complementarity.py:46:def ego_complementarity(cav_mask: Any, ego_mask: Any, threshold: float = 0.5, eps: float = 1e-6) -> float:
+opencood/comm/arce/policies/complementarity.py:105:def compute_pairwise_complementarity(raw_masks: Any, record_len: Optional[Sequence[int]] = None, batch_index: int = 0, threshold: float = 0.5) -> Dict[int, Dict[str, float]]:
+opencood/comm/arce/policies/complementarity.py:114:            'comp_to_ego': 0.0 if idx == 0 else ego_complementarity(m, ego, threshold=threshold),
+opencood/comm/arce/policies/random_pdf_policy.py:28:            quant_modes=action_cfg.get("quant_modes", ("fp32", "fp16", "int8", "int4")),
+opencood/comm/arce/policies/random_pdf_policy.py:29:            redundancy_ratios=action_cfg.get("redundancy_ratios", (0.0, 0.25, 0.5)),
+opencood/comm/arce/policies/fixed_pdf_policy.py:27:            quant_modes=action_cfg.get("quant_modes", ("fp32", "fp16", "int8", "int4")),
+opencood/comm/arce/policies/fixed_pdf_policy.py:28:            redundancy_ratios=action_cfg.get("redundancy_ratios", (0.0, 0.25, 0.5)),
+opencood/comm/arce/policies/fixed_pdf_policy.py:37:            self.selected_action_id = "send1_int8_rho0_cache1_none"
+opencood/comm/arce/policies/action_adapter.py:4:    PDFARCEAction has PDF-level fields such as send/cache_enabled/action_id.
+opencood/comm/arce/policies/action_adapter.py:40:    # For example, no-send actions may have PDF rho=0.25 in the 48-action
+opencood/comm/arce/policies/action_adapter.py:41:    # space, while low-level ARCEAction correctly uses effective rho=0.0
+opencood/comm/arce/policies/action_adapter.py:42:    # for execution. Policy/logging should still see the PDF rho.
+opencood/comm/arce/policies/action_adapter.py:45:        "cache_enabled",
+opencood/comm/arce/policies/action_adapter.py:48:        "quant_mode",
+opencood/comm/arce/policies/action_adapter.py:50:        "redundancy_ratio",
+opencood/comm/arce/policies/action_adapter.py:102:    cache_enabled: Optional[int] = None,
+opencood/comm/arce/policies/action_adapter.py:105:    default_cache_enabled: int = 0,
+opencood/comm/arce/policies/action_adapter.py:119:    if cache_enabled is None:
+opencood/comm/arce/policies/action_adapter.py:120:        cache_enabled = int(get_action_field(action, "cache_enabled", default_cache_enabled))
+opencood/comm/arce/policies/action_adapter.py:122:        cache_enabled = int(cache_enabled)
+opencood/comm/arce/policies/action_adapter.py:128:    set_action_field(action, "cache_enabled", int(cache_enabled))
+opencood/comm/arce/policies/action_adapter.py:163:        ("cache_enabled", 0),
+opencood/comm/arce/policies/action_adapter.py:165:        ("quant_mode", None),
+opencood/comm/arce/policies/action_adapter.py:167:        ("redundancy_ratio", 0.0),
+opencood/comm/arce/policies/reward.py:55:    quant_mode: str = "fp32",
+opencood/comm/arce/policies/reward.py:56:    redundancy_ratio: float = 0.0,
+opencood/comm/arce/policies/reward.py:57:    cache_enabled: bool = False,
+opencood/comm/arce/policies/reward.py:58:    cache_quality: float = 0.0,
+opencood/comm/arce/policies/reward.py:59:    fec_gain: float = 0.0,
+opencood/comm/arce/policies/reward.py:79:    qm = str(quant_mode).lower()
+opencood/comm/arce/policies/reward.py:96:    fec_gain = max(0.0, min(1.0, float(fec_gain)))
+opencood/comm/arce/policies/reward.py:97:    cache_quality = max(0.0, min(1.0, float(cache_quality)))
+opencood/comm/arce/policies/reward.py:98:    cache_term = float(cache_quality) if bool(cache_enabled) else 0.0
+opencood/comm/arce/policies/reward.py:99:    redundancy_ratio = max(0.0, float(redundancy_ratio))
+opencood/comm/arce/policies/reward.py:108:        + float(alpha_r) * fec_gain
+opencood/comm/arce/policies/reward.py:117:        "quant_mode": str(qm),
+opencood/comm/arce/policies/reward.py:121:        "redundancy_ratio": float(redundancy_ratio),
+opencood/comm/arce/policies/reward.py:122:        "fec_gain": float(fec_gain),
+opencood/comm/arce/policies/reward.py:123:        "cache_enabled": float(1.0 if bool(cache_enabled) else 0.0),
+opencood/comm/arce/policies/reward.py:124:        "cache_quality": float(cache_quality),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:27:    complementarity: float = 0.0
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:42:            "complementarity": float(self.complementarity),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:147:                comp = float(getattr(p, "complementarity", 0.0))
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:156:                q = str(getattr(action_obj, "quant_mode", "")).lower()
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:221:                    "quant_mode": q,
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_remove_manual_state_prior:225:                    "complementarity": float(comp),
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:55:    quant_mode: str = "fp32",
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:73:    qm = str(quant_mode).lower()
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:104:        "quant_mode": str(qm),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:27:    complementarity: float = 0.0
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:42:            "complementarity": float(self.complementarity),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:160:                comp = float(getattr(p, "complementarity", 0.0))
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:169:                q = str(getattr(action_obj, "quant_mode", "")).lower()
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:215:                    "quant_mode": q,
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:219:                    "complementarity": float(comp),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_rho_cache_warmup:242:                _qsel = str((best_info or {}).get("quant_mode", "unknown")).lower()
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:27:    complementarity: float = 0.0
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:42:            "complementarity": float(self.complementarity),
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:147:                comp = float(getattr(p, "complementarity", 0.0))
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:156:                q = str(getattr(action_obj, "quant_mode", "")).lower()
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:186:                    "quant_mode": q,
+opencood/comm/arce/policies/ego_greedy_oracle.py.bak_warmup_exploration:190:                    "complementarity": float(comp),
+opencood/comm/arce/policies/context_builder.py:6:Where2comm-mask complementarity as the sixth context dimension. When raw
+opencood/comm/arce/policies/context_builder.py:7:masks are not available yet, callers may pass complementarity=0.0, which
+opencood/comm/arce/policies/context_builder.py:80:        cache_quality: float,
+opencood/comm/arce/policies/context_builder.py:81:        complementarity: float = 0.0,
+opencood/comm/arce/policies/context_builder.py:94:                float(cache_quality),
+opencood/comm/arce/policies/context_builder.py:95:                float(complementarity),
+opencood/comm/arce/policies/context_builder.py:113:                "cache_quality": float(vec[4]),
+opencood/comm/arce/policies/context_builder.py:114:                "complementarity": float(vec[5]),
+opencood/comm/arce/policies/ego_greedy_oracle.py:27:    complementarity: float = 0.0
+opencood/comm/arce/policies/ego_greedy_oracle.py:42:            "complementarity": float(self.complementarity),
+opencood/comm/arce/policies/ego_greedy_oracle.py:123:        self.explore_warmup_pulls_per_rho = 4
+opencood/comm/arce/policies/ego_greedy_oracle.py:131:        self._rho_select_counts = {
+opencood/comm/arce/policies/ego_greedy_oracle.py:132:            "bad": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+opencood/comm/arce/policies/ego_greedy_oracle.py:133:            "medium": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+opencood/comm/arce/policies/ego_greedy_oracle.py:134:            "good": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+opencood/comm/arce/policies/ego_greedy_oracle.py:135:            "unknown": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+opencood/comm/arce/policies/ego_greedy_oracle.py:174:                comp = float(getattr(p, "complementarity", 0.0))
+opencood/comm/arce/policies/ego_greedy_oracle.py:183:                q = str(getattr(action_obj, "quant_mode", "")).lower()
+opencood/comm/arce/policies/ego_greedy_oracle.py:213:                if "rho0p5" in aid_for_parse or "rho0.5" in aid_for_parse:
+opencood/comm/arce/policies/ego_greedy_oracle.py:214:                    rho_key = "rho0p5"
+opencood/comm/arce/policies/ego_greedy_oracle.py:215:                elif "rho0p25" in aid_for_parse or "rho0.25" in aid_for_parse:
+opencood/comm/arce/policies/ego_greedy_oracle.py:216:                    rho_key = "rho0p25"
+opencood/comm/arce/policies/ego_greedy_oracle.py:218:                    rho_key = "rho0"
+opencood/comm/arce/policies/ego_greedy_oracle.py:223:                rho_count = int(self._rho_select_counts[state_name_for_count].get(rho_key, 0))
+opencood/comm/arce/policies/ego_greedy_oracle.py:227:                rho_gap = max(0, int(self.explore_warmup_pulls_per_rho) - rho_count)
+opencood/comm/arce/policies/ego_greedy_oracle.py:235:                    + 0.25 * float(rho_gap > 0)
+opencood/comm/arce/policies/ego_greedy_oracle.py:249:                    "quant_mode": q,
+opencood/comm/arce/policies/ego_greedy_oracle.py:250:                    "rho_key": str(rho_key),
+opencood/comm/arce/policies/ego_greedy_oracle.py:256:                    "complementarity": float(comp),
+opencood/comm/arce/policies/ego_greedy_oracle.py:279:                _qsel = str((best_info or {}).get("quant_mode", "unknown")).lower()
+opencood/comm/arce/policies/action_space.py:17:The FEC type is an engineering realization of rho. It is not an additional
+opencood/comm/arce/policies/action_space.py:18:PDF action dimension. By default, rho > 0 maps to raptor_sim for the main method.
+opencood/comm/arce/policies/action_space.py:85:def normalize_pdf_quant_mode(mode: Any) -> str:
+opencood/comm/arce/policies/action_space.py:92:            f"Unsupported quant_mode={q!r}; final action space uses "
+opencood/comm/arce/policies/action_space.py:109:    quant_mode: str
+opencood/comm/arce/policies/action_space.py:110:    redundancy_ratio: float
+opencood/comm/arce/policies/action_space.py:111:    cache_enabled: int
+opencood/comm/arce/policies/action_space.py:123:        q = normalize_pdf_quant_mode(self.quant_mode)
+opencood/comm/arce/policies/action_space.py:139:        q = normalize_pdf_quant_mode(self.quant_mode)
+opencood/comm/arce/policies/action_space.py:141:        out["quant_mode"] = q
+opencood/comm/arce/policies/action_space.py:151:        cache_enabled=1:
+opencood/comm/arce/policies/action_space.py:154:        cache_enabled=0:
+opencood/comm/arce/policies/action_space.py:157:        if int(self.cache_enabled):
+opencood/comm/arce/policies/action_space.py:174:        q = normalize_pdf_quant_mode(self.quant_mode)
+opencood/comm/arce/policies/action_space.py:179:            quant_mode=q,
+opencood/comm/arce/policies/action_space.py:181:            redundancy_ratio=float(self.redundancy_ratio),
+opencood/comm/arce/policies/action_space.py:190:                "cache_enabled": int(self.cache_enabled),
+opencood/comm/arce/policies/action_space.py:191:                "quant_mode": q,
+opencood/comm/arce/policies/action_space.py:193:                "redundancy_ratio": float(self.redundancy_ratio),
+opencood/comm/arce/policies/action_space.py:203:            cache_enabled=int(self.cache_enabled),
+opencood/comm/arce/policies/action_space.py:218:def infer_fec_type(rho: float, fec_mode: str = "raptor_sim") -> str:
+opencood/comm/arce/policies/action_space.py:222:    rho = 0:
+opencood/comm/arce/policies/action_space.py:225:    rho > 0:
+opencood/comm/arce/policies/action_space.py:228:    rho = float(rho)
+opencood/comm/arce/policies/action_space.py:230:    if rho <= 0.0:
+opencood/comm/arce/policies/action_space.py:244:def is_valid_pdf_action_combination(send: int, quant_mode: str, rho: float) -> bool:
+opencood/comm/arce/policies/action_space.py:251:        rho ∈ {0, 0.25, 0.5}
+opencood/comm/arce/policies/action_space.py:261:    _ = float(rho)
+opencood/comm/arce/policies/action_space.py:262:    normalize_pdf_quant_mode(quant_mode)
+
+===== eval path =====
+opencood/tools/debug_utils.py:61:        gt_box_tensor, _ = opencood_dataset.post_processor.post_process_debug(
+opencood/tools/debug_utils.py:63:        vis_utils.visualize_single_sample_output_bev(gt_box_tensor,
+opencood/tools/inference_arce.py:667:        pred_box_tensor, pred_score, gt_box_tensor
+opencood/tools/inference_arce.py:694:            "pred_box_tensor, pred_score, gt_box_tensor."
+opencood/tools/inference_arce.py:697:    pred_box_tensor, pred_score, gt_box_tensor = output[:3]
+opencood/tools/inference_arce.py:698:    return pred_box_tensor, pred_score, gt_box_tensor
+opencood/tools/inference_arce.py:720:    pred_box_tensor: Any,
+opencood/tools/inference_arce.py:722:    gt_box_tensor: Any,
+opencood/tools/inference_arce.py:734:        "pred_box_tensor": pred_box_tensor,
+opencood/tools/inference_arce.py:736:        "gt_box_tensor": gt_box_tensor,
+opencood/tools/inference_arce.py:758:                pred_box_tensor,
+opencood/tools/inference_arce.py:760:                gt_box_tensor,
+opencood/tools/inference_arce.py:773:    if not hasattr(eval_utils, "eval_final_results"):
+opencood/tools/inference_arce.py:774:        raise AttributeError("eval_utils has no eval_final_results().")
+opencood/tools/inference_arce.py:777:        return eval_utils.eval_final_results(
+opencood/tools/inference_arce.py:783:        return eval_utils.eval_final_results(
+opencood/tools/inference_arce.py:810:    pred_box_tensor: Any,
+opencood/tools/inference_arce.py:812:    gt_box_tensor: Any,
+opencood/tools/inference_arce.py:827:                pred_box_tensor,
+opencood/tools/inference_arce.py:828:                gt_box_tensor,
+opencood/tools/inference_arce.py:841:    pred_box_tensor: Any,
+opencood/tools/inference_arce.py:842:    gt_box_tensor: Any,
+opencood/tools/inference_arce.py:869:            pred_box_tensor,
+opencood/tools/inference_arce.py:870:            gt_box_tensor,
+opencood/tools/inference_arce.py:968:            pred_box_tensor, pred_score, gt_box_tensor = run_inference_one(
+opencood/tools/inference_arce.py:977:                pred_box_tensor=pred_box_tensor,
+opencood/tools/inference_arce.py:979:                gt_box_tensor=gt_box_tensor,
+opencood/tools/inference_arce.py:986:                pred_box_tensor=pred_box_tensor,
+opencood/tools/inference_arce.py:988:                gt_box_tensor=gt_box_tensor,
+opencood/tools/inference_arce.py:996:                pred_box_tensor=pred_box_tensor,
+opencood/tools/inference_arce.py:997:                gt_box_tensor=gt_box_tensor,
+opencood/tools/inference_utils.py:27:    pred_box_tensor : torch.Tensor
+opencood/tools/inference_utils.py:29:    gt_box_tensor : torch.Tensor
+opencood/tools/inference_utils.py:37:    pred_box_tensor, pred_score, gt_box_tensor = \
+opencood/tools/inference_utils.py:41:    return pred_box_tensor, pred_score, gt_box_tensor
+opencood/tools/inference_utils.py:56:    pred_box_tensor : torch.Tensor
+opencood/tools/inference_utils.py:58:    gt_box_tensor : torch.Tensor
+opencood/tools/inference_utils.py:66:    pred_box_tensor, pred_score, gt_box_tensor = \
+opencood/tools/inference_utils.py:70:    return pred_box_tensor, pred_score, gt_box_tensor
+opencood/tools/inference_utils.py:85:    pred_box_tensor : torch.Tensor
+opencood/tools/inference_utils.py:87:    gt_box_tensor : torch.Tensor
+opencood/tools/select_best_pdf_fixed.py:20:    r"Average Precision at IOU 0\.3 is ([0-9.]+),\s*The Average Precision at IOU 0\.5 is ([0-9.]+),\s*The Average Precision at IOU 0\.7 is ([0-9.]+)"
+opencood/tools/inference_v2xreal.py:114:                pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor = \
+opencood/tools/inference_v2xreal.py:119:                pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor = \
+opencood/tools/inference_v2xreal.py:124:                pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor = \
+opencood/tools/inference_v2xreal.py:129:                pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor = \
+opencood/tools/inference_v2xreal.py:141:                    eval_utils.caluclate_tp_fp(pred_box_tensor[keep_index_pred, ...],
+opencood/tools/inference_v2xreal.py:143:                                               gt_box_tensor[keep_index_gt, ...],
+opencood/tools/inference_v2xreal.py:150:                inference_utils.save_prediction_gt(pred_box_tensor,
+opencood/tools/inference_v2xreal.py:151:                                                   gt_box_tensor,
+opencood/tools/inference_v2xreal.py:164:                # pred_box_tensor
+opencood/tools/inference_v2xreal.py:165:                opencood_dataset.visualize_result(pred_box_tensor,
+opencood/tools/inference_v2xreal.py:166:                                                  gt_box_tensor,
+opencood/tools/inference_v2xreal.py:177:                        pred_box_tensor,
+opencood/tools/inference_v2xreal.py:178:                        gt_box_tensor,
+opencood/tools/inference_v2xreal.py:207:    eval_utils.eval_final_results(result_stat,
+opencood/tools/inference.py:108:                pred_box_tensor, pred_score, gt_box_tensor = \
+opencood/tools/inference.py:113:                pred_box_tensor, pred_score, gt_box_tensor = \
+opencood/tools/inference.py:118:                pred_box_tensor, pred_score, gt_box_tensor = \
+opencood/tools/inference.py:126:            eval_utils.caluclate_tp_fp(pred_box_tensor,
+opencood/tools/inference.py:128:                                       gt_box_tensor,
+opencood/tools/inference.py:131:            eval_utils.caluclate_tp_fp(pred_box_tensor,
+opencood/tools/inference.py:133:                                       gt_box_tensor,
+opencood/tools/inference.py:136:            eval_utils.caluclate_tp_fp(pred_box_tensor,
+opencood/tools/inference.py:138:                                       gt_box_tensor,
+opencood/tools/inference.py:145:                inference_utils.save_prediction_gt(pred_box_tensor,
+opencood/tools/inference.py:146:                                                   gt_box_tensor,
+opencood/tools/inference.py:160:                opencood_dataset.visualize_result(pred_box_tensor,
+opencood/tools/inference.py:161:                                                  gt_box_tensor,
+opencood/tools/inference.py:171:                        pred_box_tensor,
+opencood/tools/inference.py:172:                        gt_box_tensor,
+opencood/tools/inference.py:200:    eval_utils.eval_final_results(result_stat,
+opencood/utils/eval_utils_v2xreal.py:17:    VOC 2010 Average Precision.
+opencood/utils/eval_utils_v2xreal.py:95:def calculate_ap(result_stat, iou):
+opencood/utils/eval_utils_v2xreal.py:136:def eval_final_results(result_stat, save_path):
+opencood/utils/eval_utils_v2xreal.py:141:            ap, mrec, mpre = calculate_ap(result_stat[class_name], iou_threshold)
+opencood/utils/eval_utils.py:17:    VOC 2010 Average Precision.
+opencood/utils/eval_utils.py:98:def calculate_ap(result_stat, iou, global_sort_detections):
+opencood/utils/eval_utils.py:155:def eval_final_results(result_stat, save_path, global_sort_detections):
+opencood/utils/eval_utils.py:158:    ap_30, mrec_30, mpre_30 = calculate_ap(result_stat, 0.30, global_sort_detections)
+opencood/utils/eval_utils.py:159:    ap_50, mrec_50, mpre_50 = calculate_ap(result_stat, 0.50, global_sort_detections)
+opencood/utils/eval_utils.py:160:    ap_70, mrec_70, mpre_70 = calculate_ap(result_stat, 0.70, global_sort_detections)
+opencood/utils/eval_utils.py:174:    print('The Average Precision at IOU 0.3 is %.3f, '
+opencood/utils/eval_utils.py:175:          'The Average Precision at IOU 0.5 is %.3f, '
+opencood/utils/eval_utils.py:176:          'The Average Precision at IOU 0.7 is %.3f' % (ap_30, ap_50, ap_70))

@@ -1,0 +1,41 @@
+            )
+            record = copy.deepcopy(base_record)
+            record.update(
+                {
+                    "bypassed": True,
+                    "bypass_reason": reason,
+                    "output_shape": tuple(int(x) for x in feature.shape),
+                }
+            )
+            self.num_bypassed_links += 1
+            self._append_record(record)
+            result = ARCECommResult(recovered_feature=feature, record=record)
+            return result if return_result else (feature, record)
+
+        self.num_processed_links += 1
+
+        channel_profile = self._profile_for_state(active_channel_state)
+        bandwidth_mbps = float(channel_profile.get("bandwidth_mbps", 0.0))
+
+        if action_override is not None:
+            action = action_override
+            action_source = "override"
+        else:
+            action = self.action_policy.select(channel_profile=channel_profile)
+            action_source = str(self.policy_name)
+
+        action = normalize_runtime_action(action)
+        action_dict = runtime_action_as_dict(action)
+
+        send_flag = int(_safe_get_action_field(action, "send", 1))
+        if send_flag == 0:
+            recovered_feature = torch.zeros_like(feature)
+
+            if update_cache:
+                self._update_prev_feature_cache(
+                    feature=feature,
+                    link_id=link_id,
+                    agent_index=agent_index,
+                    ego_index=ego_index,
+                )
+

@@ -1216,6 +1216,16 @@ class ARCEFixedComm:
 
         selected = cand[:K_budget]
 
+        # Mask-alignment instrumentation.
+        # After Step 4, message_mask should be _confidence_maps * raw_masks.
+        # Therefore selected positions with score <= threshold indicate leakage
+        # outside the Where2Comm binary candidate region.
+        selected_scores = flat_score[selected] if selected.numel() > 0 else flat_score.new_empty((0,))
+        selected_positive = selected_scores > threshold
+        selected_inside = int(selected_positive.sum().item())
+        selected_total = int(selected.numel())
+        selected_outside = int(selected_total - selected_inside)
+
         flat_feature = feature.reshape(C, H * W)
         compact_feature = flat_feature[:, selected].contiguous().view(C, int(selected.numel()), 1)
 
@@ -1230,6 +1240,16 @@ class ARCEFixedComm:
             "budget_aware_topk": bool(dynamic_topk),
             "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
             "estimated_payload_budget_bytes": used_budget_bytes,
+            "mask_alignment": {
+                "selected_tokens_total": int(selected_total),
+                "selected_tokens_inside_mask": int(selected_inside),
+                "selected_tokens_outside_mask": int(selected_outside),
+                "outside_mask_ratio": float(selected_outside / max(selected_total, 1)),
+                "selected_score_min": float(selected_scores.min().detach().cpu()) if selected_total > 0 else None,
+                "selected_score_max": float(selected_scores.max().detach().cpu()) if selected_total > 0 else None,
+                "candidate_tokens_total": int(cand.numel()),
+                "candidate_ratio": float(cand.numel() / max(H * W, 1)),
+            },
         }
 
         return compact_feature, compact_meta
@@ -1360,12 +1380,23 @@ class ARCEFixedComm:
             action = action_override
             action_source = "override"
         else:
-            action = self.action_policy.select(channel_profile=channel_profile)
-            action_source = str(self.policy_name)
+            # For a fair fixed baseline, YAML fixed_action must override
+            # the default FixedARCEPolicy state-action table.
+            fixed_action_cfg = None
+            if str(self.policy_name).strip().lower() == "fixed":
+                fixed_action_cfg = self.arce_cfg_raw.get("fixed_action", None)
+
+            if isinstance(fixed_action_cfg, dict) and int(fixed_action_cfg.get("send", 1)) == 1:
+                action = fixed_action_cfg
+                action_source = "fixed_action"
+            else:
+                action = self.action_policy.select(channel_profile=channel_profile)
+                action_source = str(self.policy_name)
 
         action = normalize_runtime_action(action)
         action_dict = runtime_action_as_dict(action)
 
+        cache_enabled = int(_safe_get_action_field(action, "cache_enabled", 0))
         send_flag = int(_safe_get_action_field(action, "send", 1))
         if send_flag == 0:
             recovered_feature = torch.zeros_like(feature)
@@ -1447,13 +1478,19 @@ class ARCEFixedComm:
             return result if return_result else (recovered_feature, record)
 
         # 1. State-aware temporal source.
-        feature_tx, temporal_source = self._get_temporal_tx_feature(
-            feature=feature,
-            state_name=active_channel_state,
-            link_id=link_id,
-            agent_index=agent_index,
-            ego_index=ego_index,
-        )
+        # cache_enabled=0 strictly uses current feature and forbids previous_frame.
+        # cache_enabled=1 allows state-aware temporal source such as previous_frame.
+        if int(cache_enabled):
+            feature_tx, temporal_source = self._get_temporal_tx_feature(
+                feature=feature,
+                state_name=active_channel_state,
+                link_id=link_id,
+                agent_index=agent_index,
+                ego_index=ego_index,
+            )
+        else:
+            feature_tx = feature
+            temporal_source = "current_cache_disabled"
 
 
         # 1.5. Where2comm mask-guided compact message packing.

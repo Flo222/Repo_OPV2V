@@ -1,0 +1,116 @@
+
+    return q
+
+
+# ----------------------------------------------------------------------
+# Action dataclass
+# ----------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PDFARCEAction:
+    """One PDF-level ARCE action."""
+
+    action_id: str
+    send: int
+    quant_mode: str
+    redundancy_ratio: float
+    cache_enabled: int
+    fec_type: str = "none"
+    xor_group_size: int = 4
+    decode_overhead: float = 0.0
+    channel_state: str = "medium"
+
+    @property
+    def is_no_send(self) -> bool:
+        return int(self.send) == 0
+
+    @property
+    def quant_bits(self) -> int:
+        q = normalize_pdf_quant_mode(self.quant_mode)
+        return int(QUANT_BITS[q])
+
+    @property
+    def compression_ratio(self) -> float:
+        """
+        Ratio relative to FP32 byte size.
+
+        fp32 -> 1.000
+        fp16 -> 0.500
+        int8 -> 0.250
+        int4 -> 0.125
+        """
+        return float(self.quant_bits) / 32.0
+
+    def as_dict(self) -> Dict[str, Any]:
+        q = normalize_pdf_quant_mode(self.quant_mode)
+        out = asdict(self)
+        out["quant_mode"] = q
+        out["is_no_send"] = self.is_no_send
+        out["quant_bits"] = self.quant_bits
+        out["compression_ratio"] = self.compression_ratio
+        return out
+
+    def recovery_priority(self) -> Tuple[str, ...]:
+        """
+        Recovery order used by the ARCE executor.
+
+        cache_enabled=1:
+            temporal cache -> spatial interpolation -> zero-fill
+
+        cache_enabled=0:
+            spatial interpolation -> zero-fill
+        """
+        if int(self.cache_enabled):
+            return (
+                RECOVERY_METHOD_TEMPORAL_CACHE,
+                RECOVERY_METHOD_SPATIAL_INTERPOLATION,
+                RECOVERY_METHOD_ZERO_FILL,
+            )
+
+        return (
+            RECOVERY_METHOD_SPATIAL_INTERPOLATION,
+            RECOVERY_METHOD_ZERO_FILL,
+        )
+
+    def to_arce_action(self):
+        """Convert PDF action to the existing ARCEAction executor format."""
+        if ARCEAction is None:
+            raise ImportError("ARCEAction is unavailable; check OpenCOOD import path.")
+
+        q = normalize_pdf_quant_mode(self.quant_mode)
+
+        action = ARCEAction(
+            name=self.action_id,
+            channel_state=self.channel_state,
+            quant_mode=q,
+            fec_type=self.fec_type,
+            redundancy_ratio=float(self.redundancy_ratio),
+            xor_group_size=int(self.xor_group_size),
+            decode_overhead=float(self.decode_overhead),
+            recovery="arce" if int(self.send) == 1 else "zero_fill",
+            recovery_priority=self.recovery_priority(),
+            extra={
+                "pdf_action_id": self.action_id,
+                "action_id": self.action_id,
+                "send": int(self.send),
+                "cache_enabled": int(self.cache_enabled),
+                "quant_mode": q,
+                "fec_type": self.fec_type,
+                "redundancy_ratio": float(self.redundancy_ratio),
+                "xor_group_size": int(self.xor_group_size),
+                "decode_overhead": float(self.decode_overhead),
+                "channel_state": self.channel_state,
+            },
+        )
+
+        return normalize_runtime_action(
+            action,
+            send=int(self.send),
+            cache_enabled=int(self.cache_enabled),
+            action_id=str(self.action_id),
+        )
+
+
+# ----------------------------------------------------------------------
+# Action construction utilities
+# ----------------------------------------------------------------------

@@ -1,0 +1,31 @@
+===== git branch =====
+grace_compact_where2comm
+
+===== git status =====
+?? where2comm_grace_full_audit_pack/
+
+===== recent commits =====
+7f8cbd4 新增v2xreal处理逻辑
+c239fb6 Remove obsolete backup and experiment scripts
+7a7aaed Implement compact Where2comm message passing for GRACE
+2abd67c Align ARCE final configs with byte-stream packetization and global budget
+9db8aad Align final ARCE channel and budget configs with PDF settings
+b0e3cf9 now
+86c8f96 修改为最终设置
+b7ff35d 0614
+75b527e Fix C2MAB online update reward and legal action space
+ac04daf readme
+595be3f Handle list delay profiles in C2MAB communication
+09e5b92 Allow sparse patch transmission under low bandwidth
+78a5da5 Enable dataset-level Markov channel states for final experiments
+77a1061 Fix C2MAB scalar profiles and patch shape handling
+53bd417 Sanitize fixed and random ARCE backends for Markov configs
+b538822 Add delay-aware temporal fusion to ARCE recovery
+c849a50 Connect Where2comm masks to C2MAB complementarity
+665017f 初次修改完毕
+dc5c626 Fix C2MAB executor compatibility with fixed ARCE backend
+3952986 Add final Where2comm-ARCE YAML generation configs
+
+===== git remote =====
+origin	https://github.com/Flo222/Repo_OPV2V.git (fetch)
+origin	https://github.com/Flo222/Repo_OPV2V.git (push)

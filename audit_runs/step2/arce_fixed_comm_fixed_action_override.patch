@@ -1,0 +1,25 @@
+diff --git a/opencood/comm/arce/arce_fixed_comm.py b/opencood/comm/arce/arce_fixed_comm.py
+index 23aac7b..b196665 100644
+--- a/opencood/comm/arce/arce_fixed_comm.py
++++ b/opencood/comm/arce/arce_fixed_comm.py
+@@ -1360,8 +1360,18 @@ class ARCEFixedComm:
+             action = action_override
+             action_source = "override"
+         else:
+-            action = self.action_policy.select(channel_profile=channel_profile)
+-            action_source = str(self.policy_name)
++            # For a fair fixed baseline, YAML fixed_action must override
++            # the default FixedARCEPolicy state-action table.
++            fixed_action_cfg = None
++            if str(self.policy_name).strip().lower() == "fixed":
++                fixed_action_cfg = self.arce_cfg_raw.get("fixed_action", None)
++
++            if isinstance(fixed_action_cfg, dict) and int(fixed_action_cfg.get("send", 1)) == 1:
++                action = fixed_action_cfg
++                action_source = "fixed_action"
++            else:
++                action = self.action_policy.select(channel_profile=channel_profile)
++                action_source = str(self.policy_name)
+ 
+         action = normalize_runtime_action(action)
+         action_dict = runtime_action_as_dict(action)

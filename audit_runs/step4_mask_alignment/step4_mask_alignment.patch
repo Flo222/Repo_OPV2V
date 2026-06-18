@@ -1,0 +1,119 @@
+diff --git a/opencood/comm/arce/arce_fixed_comm.py b/opencood/comm/arce/arce_fixed_comm.py
+index 23aac7b..95d1cbc 100644
+--- a/opencood/comm/arce/arce_fixed_comm.py
++++ b/opencood/comm/arce/arce_fixed_comm.py
+@@ -1216,6 +1216,16 @@ class ARCEFixedComm:
+ 
+         selected = cand[:K_budget]
+ 
++        # Mask-alignment instrumentation.
++        # After Step 4, message_mask should be _confidence_maps * raw_masks.
++        # Therefore selected positions with score <= threshold indicate leakage
++        # outside the Where2Comm binary candidate region.
++        selected_scores = flat_score[selected] if selected.numel() > 0 else flat_score.new_empty((0,))
++        selected_positive = selected_scores > threshold
++        selected_inside = int(selected_positive.sum().item())
++        selected_total = int(selected.numel())
++        selected_outside = int(selected_total - selected_inside)
++
+         flat_feature = feature.reshape(C, H * W)
+         compact_feature = flat_feature[:, selected].contiguous().view(C, int(selected.numel()), 1)
+ 
+@@ -1230,6 +1240,16 @@ class ARCEFixedComm:
+             "budget_aware_topk": bool(dynamic_topk),
+             "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+             "estimated_payload_budget_bytes": used_budget_bytes,
++            "mask_alignment": {
++                "selected_tokens_total": int(selected_total),
++                "selected_tokens_inside_mask": int(selected_inside),
++                "selected_tokens_outside_mask": int(selected_outside),
++                "outside_mask_ratio": float(selected_outside / max(selected_total, 1)),
++                "selected_score_min": float(selected_scores.min().detach().cpu()) if selected_total > 0 else None,
++                "selected_score_max": float(selected_scores.max().detach().cpu()) if selected_total > 0 else None,
++                "candidate_tokens_total": int(cand.numel()),
++                "candidate_ratio": float(cand.numel() / max(H * W, 1)),
++            },
+         }
+ 
+         return compact_feature, compact_meta
+@@ -1360,8 +1380,18 @@ class ARCEFixedComm:
+             action = action_override
+             action_source = "override"
+         else:
+-            action = self.action_policy.select(channel_profile=channel_profile)
+-            action_source = str(self.policy_name)
++            # For a fair fixed baseline, YAML fixed_action must override
++            # the default FixedARCEPolicy state-action table.
++            fixed_action_cfg = None
++            if str(self.policy_name).strip().lower() == "fixed":
++                fixed_action_cfg = self.arce_cfg_raw.get("fixed_action", None)
++
++            if isinstance(fixed_action_cfg, dict) and int(fixed_action_cfg.get("send", 1)) == 1:
++                action = fixed_action_cfg
++                action_source = "fixed_action"
++            else:
++                action = self.action_policy.select(channel_profile=channel_profile)
++                action_source = str(self.policy_name)
+ 
+         action = normalize_runtime_action(action)
+         action_dict = runtime_action_as_dict(action)
+diff --git a/opencood/models/fuse_modules/where2comm_arce_fuse.py b/opencood/models/fuse_modules/where2comm_arce_fuse.py
+index ee5381b..bb11a4d 100644
+--- a/opencood/models/fuse_modules/where2comm_arce_fuse.py
++++ b/opencood/models/fuse_modules/where2comm_arce_fuse.py
+@@ -186,6 +186,22 @@ class Where2commArce(nn.Module):
+             x_arce, comm_info = out, {"enabled": True, "warning": "unexpected_arce_return"}
+         return x_arce, comm_info
+ 
++    @staticmethod
++    def _attach_arce_feature_delta(arce_info: Optional[Dict[str, Any]], x_after: torch.Tensor, x_before: torch.Tensor) -> Dict[str, Any]:
++        if arce_info is None:
++            arce_info = {}
++        elif not isinstance(arce_info, dict):
++            arce_info = {"raw_arce_info": arce_info}
++
++        with torch.no_grad():
++            delta = (x_after.detach() - x_before.detach()).abs()
++            arce_info["arce_feature_delta"] = {
++                "max_abs": float(delta.max().detach().cpu()),
++                "mean_abs": float(delta.mean().detach().cpu()),
++                "nz_ratio": float((delta > 1e-6).float().mean().detach().cpu()),
++            }
++        return arce_info
++
+     def forward(self, x, psm_single, record_len, pairwise_t_matrix, backbone=None, data_dict=None, frame_id=None):
+         _, C, H, W = x.shape
+         B = pairwise_t_matrix.shape[0]
+@@ -206,13 +222,16 @@ class Where2commArce(nn.Module):
+                         communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
+                             batch_confidence_maps, B, return_raw=True
+                         )
+-                        message_scores = _confidence_maps
++                        # candidate region = Where2Comm binary raw mask; score = confidence inside valid region
++                        message_scores = _confidence_maps * raw_masks
+                         if x.shape[-1] != communication_masks.shape[-1] or x.shape[-2] != communication_masks.shape[-2]:
+                             communication_masks = F.interpolate(communication_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
+                             raw_masks = F.interpolate(raw_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
+                             message_scores = F.interpolate(message_scores, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
+                     x = x * communication_masks
++                    x_before_arce = x.detach().clone()
+                     x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
++                    arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
+ 
+                 batch_node_features = self.regroup(x, record_len)
+                 x_fuse = []
+@@ -241,10 +260,13 @@ class Where2commArce(nn.Module):
+                 communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
+                     batch_confidence_maps, B, return_raw=True
+                 )
+-                message_scores = _confidence_maps
++                # candidate region = Where2Comm binary raw mask; score = confidence inside valid region
++                message_scores = _confidence_maps * raw_masks
+                 x = x * communication_masks
+ 
++            x_before_arce = x.detach().clone()
+             x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
++            arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
+             batch_node_features = self.regroup(x, record_len)
+             x_fuse = []
+             for b in range(B):

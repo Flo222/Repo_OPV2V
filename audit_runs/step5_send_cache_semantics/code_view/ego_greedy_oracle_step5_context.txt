@@ -1,0 +1,313 @@
+===== FILE: opencood/comm/arce/policies/ego_greedy_oracle.py =====
+00001: """Final diversity-aware greedy knapsack oracle for C2MAB-ARCE."""
+00002: 
+00003: from __future__ import annotations
+00004: 
+00005: from dataclasses import dataclass
+00006: from typing import Any, Dict, List, Optional, Sequence
+00007: 
+00008: try:
+00009:     import torch
+00010: except Exception:  # pragma: no cover
+00011:     torch = None
+00012: 
+00013: 
+00014: @dataclass
+00015: class CAVProposal:
+00016:     ego_id: Any
+00017:     sender_id: Any
+00018:     action: Any
+00019:     action_id: str
+00020:     context: Any
+00021:     ucb: float
+00022:     mean: float
+00023:     bonus: float
+00024:     cost_bytes: float
+00025:     record: Dict[str, Any]
+00026:     mask: Optional[Any] = None
+00027:     complementarity: float = 0.0
+00028: 
+00029:     def as_dict(self) -> Dict[str, Any]:
+00030:         action_dict = self.action.as_dict() if hasattr(self.action, "as_dict") else str(self.action)
+00031:         ctx_dict = self.context.as_dict() if hasattr(self.context, "as_dict") else self.context
+00032:         return {
+00033:             "ego_id": str(self.ego_id),
+00034:             "sender_id": str(self.sender_id),
+00035:             "action_id": self.action_id,
+00036:             "action": action_dict,
+00037:             "context": ctx_dict,
+00038:             "ucb": float(self.ucb),
+00039:             "mean": float(self.mean),
+00040:             "bonus": float(self.bonus),
+00041:             "cost_bytes": float(self.cost_bytes),
+00042:             "complementarity": float(self.complementarity),
+00043:             "record": self.record,
+00044:         }
+00045: 
+00046: 
+00047: def _to_bool_mask(mask: Any):
+00048:     if mask is None or torch is None:
+00049:         return None
+00050:     if not torch.is_tensor(mask):
+00051:         try:
+00052:             mask = torch.as_tensor(mask)
+00053:         except Exception:
+00054:             return None
+00055:     return mask.detach().bool().flatten().cpu()
+00056: 
+00057: 
+00058: def _overlap_ratio(mask_i: Any, mask_selected: Any) -> float:
+00059:     mi = _to_bool_mask(mask_i)
+00060:     ms = _to_bool_mask(mask_selected)
+00061:     if mi is None or ms is None or mi.numel() == 0 or ms.numel() == 0:
+00062:         return 0.0
+00063:     n = min(mi.numel(), ms.numel())
+00064:     mi = mi[:n]
+00065:     ms = ms[:n]
+00066:     denom = float(mi.sum().item())
+00067:     if denom <= 0.0:
+00068:         return 0.0
+00069:     return float((mi & ms).sum().item() / max(denom, 1.0))
+00070: 
+00071: 
+00072: def _union_mask(mask_a: Any, mask_b: Any):
+00073:     ma = _to_bool_mask(mask_a)
+00074:     mb = _to_bool_mask(mask_b)
+00075:     if ma is None:
+00076:         return mb
+00077:     if mb is None:
+00078:         return ma
+00079:     n = min(ma.numel(), mb.numel())
+00080:     out = ma.clone()
+00081:     out[:n] = ma[:n] | mb[:n]
+00082:     return out
+00083: 
+00084: 
+00085: class EgoGreedyKnapsackOracle:
+00086:     def __init__(
+00087:         self,
+00088:         eps_cost: float = 1.0,
+00089:         lambda_comp: float = 0.5,
+00090:         lambda_red: float = 0.5,
+00091:         diversity_aware: bool = True,
+00092:         cost_alpha: float = 0.25,
+00093:         quant_quality_prior=None,
+00094:     ):
+00095:         self.eps_cost = float(eps_cost)
+00096:         self.lambda_comp = float(lambda_comp)
+00097:         self.lambda_red = float(lambda_red)
+00098:         self.diversity_aware = bool(diversity_aware)
+00099: 
+00100:         # Cost smoothing and fidelity prior.
+00101:         # Pure gain/cost strongly favors the cheapest action at cold start,
+00102:         # causing all actions to collapse to INT4. We use gain/cost^alpha
+00103:         # and multiply a quantization fidelity prior to balance perception
+00104:         # quality and communication cost.
+00105:         self.cost_alpha = float(cost_alpha)
+00106:         self.cost_alpha = max(0.0, min(1.0, self.cost_alpha))
+00107:         default_prior = {
+00108:             "fp32": 1.00,
+00109:             "fp16": 0.97,
+00110:             "int8": 0.85,
+00111:             "int4": 0.55,
+00112:         }
+00113:         if isinstance(quant_quality_prior, dict):
+00114:             default_prior.update({str(k).lower(): float(v) for k, v in quant_quality_prior.items()})
+00115:         self.quant_quality_prior = default_prior
+00116: 
+00117:         # Bandit warm-up exploration.
+00118:         # This is NOT a hand-crafted bad/medium/good -> quant rule.
+00119:         # It only guarantees that each quantization arm gets several online
+00120:         # reward samples; after warm-up, selection is driven by learned UCB.
+00121:         self.explore_warmup_pulls_per_quant = 6
+00122:         self.explore_bonus = 1.0
+00123:         self.explore_warmup_pulls_per_rho = 4
+00124:         self.explore_warmup_pulls_per_cache = 4
+00125:         self._quant_select_counts = {
+00126:             "bad": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+00127:             "medium": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+00128:             "good": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+00129:             "unknown": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+00130:         }
+00131:         self._rho_select_counts = {
+00132:             "bad": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+00133:             "medium": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+00134:             "good": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+00135:             "unknown": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+00136:         }
+00137:         self._cache_select_counts = {
+00138:             "bad": {"cache0": 0, "cache1": 0},
+00139:             "medium": {"cache0": 0, "cache1": 0},
+00140:             "good": {"cache0": 0, "cache1": 0},
+00141:             "unknown": {"cache0": 0, "cache1": 0},
+00142:         }
+00143: 
+00144:     def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
+00145:         """Greedy knapsack over sender-action proposals; one action per sender at most."""
+00146:         candidates: List[CAVProposal] = []
+00147:         for p in proposals:
+00148:             try:
+00149:                 cost = float(p.cost_bytes)
+00150:             except Exception:
+00151:                 continue
+00152:             if cost <= 0.0:
+00153:                 continue
+00154:             candidates.append(p)
+00155: 
+00156:         remaining = float(budget_bytes)
+00157:         selected: List[CAVProposal] = []
+00158:         selected_sender_ids = set()
+00159:         selected_union_mask = None
+00160:         ranked_history: List[Dict[str, Any]] = []
+00161:         first_round_candidates: List[Dict[str, Any]] = []
+00162: 
+00163:         while True:
+00164:             best = None
+00165:             best_info = None
+00166:             round_candidates: List[Dict[str, Any]] = []
+00167:             for p in candidates:
+00168:                 sid = str(p.sender_id)
+00169:                 if sid in selected_sender_ids:
+00170:                     continue
+00171:                 if float(p.cost_bytes) > remaining:
+00172:                     continue
+00173: 
+00174:                 comp = float(getattr(p, "complementarity", 0.0))
+00175:                 if self.diversity_aware:
+00176:                     red = _overlap_ratio(p.mask, selected_union_mask)
+00177:                     gain = float(p.ucb) * (1.0 + self.lambda_comp * comp) * (1.0 - self.lambda_red * red)
+00178:                 else:
+00179:                     red = 0.0
+00180:                     gain = float(p.ucb)
+00181: 
+00182:                 action_obj = getattr(p, "action", None)
+00183:                 q = str(getattr(action_obj, "quant_mode", "")).lower()
+00184:                 if not q:
+00185:                     aid = str(getattr(p, "action_id", "")).lower()
+00186:                     for _q in ("fp32", "fp16", "int8", "int4"):
+00187:                         if _q in aid:
+00188:                             q = _q
+00189:                             break
+00190: 
+00191:                 # Learned-UCB oracle.
+00192:                 # Do NOT manually force bad/medium/good to specific quant modes here.
+00193:                 # The proposal score is dominated by the learned bandit UCB.
+00194:                 # A light cost penalty is kept only to respect communication efficiency.
+00195:                 record = getattr(p, "record", {}) or {}
+00196:                 state_name = str(record.get("channel_state", "medium")).lower()
+00197: 
+00198:                 total_budget = max(float(budget_bytes), self.eps_cost)
+00199:                 cost_norm = min(max(float(p.cost_bytes) / total_budget, 0.0), 1.0)
+00200: 
+00201:                 # Small cost penalty: avoids wasting budget but does not hard-code quant choices.
+00202:                 oracle_cost_lambda = 0.12
+00203:                 base_ratio = float(gain) / (1.0 + oracle_cost_lambda * cost_norm)
+00204: 
+00205:                 # Warm-up exploration bonus for under-sampled quant arms.
+00206:                 # Once each quant mode has enough selected samples, this term becomes 0.
+00207:                 if state_name not in self._quant_select_counts:
+00208:                     state_name_for_count = "unknown"
+00209:                 else:
+00210:                     state_name_for_count = state_name
+00211: 
+00212:                 aid_for_parse = str(getattr(p, "action_id", "")).lower()
+00213:                 if "rho0p5" in aid_for_parse or "rho0.5" in aid_for_parse:
+00214:                     rho_key = "rho0p5"
+00215:                 elif "rho0p25" in aid_for_parse or "rho0.25" in aid_for_parse:
+00216:                     rho_key = "rho0p25"
+00217:                 else:
+00218:                     rho_key = "rho0"
+00219: 
+00220:                 cache_key = "cache1" if "cache1" in aid_for_parse else "cache0"
+00221: 
+00222:                 q_count = int(self._quant_select_counts[state_name_for_count].get(q, 0))
+00223:                 rho_count = int(self._rho_select_counts[state_name_for_count].get(rho_key, 0))
+00224:                 cache_count = int(self._cache_select_counts[state_name_for_count].get(cache_key, 0))
+00225: 
+00226:                 q_gap = max(0, int(self.explore_warmup_pulls_per_quant) - q_count)
+00227:                 rho_gap = max(0, int(self.explore_warmup_pulls_per_rho) - rho_count)
+00228:                 cache_gap = max(0, int(self.explore_warmup_pulls_per_cache) - cache_count)
+00229: 
+00230:                 # Component warm-up:
+00231:                 # explore quant, redundancy, and cache components under each state.
+00232:                 # This is exploration only; reward still decides which components remain useful.
+00233:                 exploration_bonus = (
+00234:                     0.60 * float(q_gap > 0)
+00235:                     + 0.25 * float(rho_gap > 0)
+00236:                     + 0.15 * float(cache_gap > 0)
+00237:                 ) * float(self.explore_bonus)
+00238: 
+00239:                 ratio = float(base_ratio + exploration_bonus)
+00240: 
+00241:                 info = {
+00242:                     "ratio": float(ratio),
+00243:                     "sender_id": sid,
+00244:                     "action_id": p.action_id,
+00245:                     "ucb": float(p.ucb),
+00246:                     "gain": float(gain),
+00247:                     "learned_ucb_cost_penalty": True,
+00248:                     "channel_state": str(state_name),
+00249:                     "quant_mode": q,
+00250:                     "rho_key": str(rho_key),
+00251:                     "cache_key": str(cache_key),
+00252:                     "exploration_bonus": float(exploration_bonus),
+00253:                     "cost_norm": float(cost_norm),
+00254:                     "oracle_cost_lambda": float(oracle_cost_lambda),
+00255:                     "cost_bytes": float(p.cost_bytes),
+00256:                     "complementarity": float(comp),
+00257:                     "overlap_with_selected": float(red),
+00258:                     "remaining_budget_before_select": float(remaining),
+00259:                 }
+00260:                 round_candidates.append(info)
+00261:                 if best is None or ratio > best_info["ratio"]:
+00262:                     best = p
+00263:                     best_info = info
+00264: 
+00265:             if not first_round_candidates and round_candidates:
+00266:                 first_round_candidates = sorted(
+00267:                     round_candidates,
+00268:                     key=lambda x: x["ratio"],
+00269:                     reverse=True,
+00270:                 )[:50]
+00271: 
+00272:             if best is None:
+00273:                 break
+00274: 
+00275:             selected.append(best)
+00276: 
+00277:             # Update warm-up exploration count for the selected quant arm.
+00278:             try:
+00279:                 _qsel = str((best_info or {}).get("quant_mode", "unknown")).lower()
+00280:                 _ssel = str((best_info or {}).get("channel_state", "unknown")).lower()
+00281:                 if _ssel not in self._quant_select_counts:
+00282:                     _ssel = "unknown"
+00283:                 if _qsel in self._quant_select_counts[_ssel]:
+00284:                     self._quant_select_counts[_ssel][_qsel] += 1
+00285:             except Exception:
+00286:                 pass
+00287:             selected_sender_ids.add(str(best.sender_id))
+00288:             remaining -= float(best.cost_bytes)
+00289:             selected_union_mask = _union_mask(selected_union_mask, best.mask)
+00290:             ranked_history.append(best_info)
+00291: 
+00292:         unique_sender_ids = sorted({str(p.sender_id) for p in candidates})
+00293:         return {
+00294:             "selected": selected,
+00295:             "selected_sender_ids": [str(p.sender_id) for p in selected],
+00296:             "selected_action_ids": [p.action_id for p in selected],
+00297:             "budget_bytes": float(budget_bytes),
+00298:             "used_budget_bytes": float(float(budget_bytes) - remaining),
+00299:             "remaining_budget_bytes": float(remaining),
+00300:             "num_candidates": len(candidates),
+00301:             "num_unique_senders": len(unique_sender_ids),
+00302:             "unique_sender_ids": unique_sender_ids,
+00303:             "num_selected": len(selected),
+00304:             "lambda_comp": float(self.lambda_comp),
+00305:             "lambda_red": float(self.lambda_red),
+00306:             "diversity_aware": bool(self.diversity_aware),
+00307:             "ranked": ranked_history,
+00308:             "first_round_candidates": first_round_candidates,
+00309:         }
+00310: 
+00311: 
+00312: __all__ = ["CAVProposal", "EgoGreedyKnapsackOracle"]

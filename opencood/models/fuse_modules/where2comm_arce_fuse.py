@@ -186,6 +186,22 @@ class Where2commArce(nn.Module):
             x_arce, comm_info = out, {"enabled": True, "warning": "unexpected_arce_return"}
         return x_arce, comm_info
 
+    @staticmethod
+    def _attach_arce_feature_delta(arce_info: Optional[Dict[str, Any]], x_after: torch.Tensor, x_before: torch.Tensor) -> Dict[str, Any]:
+        if arce_info is None:
+            arce_info = {}
+        elif not isinstance(arce_info, dict):
+            arce_info = {"raw_arce_info": arce_info}
+
+        with torch.no_grad():
+            delta = (x_after.detach() - x_before.detach()).abs()
+            arce_info["arce_feature_delta"] = {
+                "max_abs": float(delta.max().detach().cpu()),
+                "mean_abs": float(delta.mean().detach().cpu()),
+                "nz_ratio": float((delta > 1e-6).float().mean().detach().cpu()),
+            }
+        return arce_info
+
     def forward(self, x, psm_single, record_len, pairwise_t_matrix, backbone=None, data_dict=None, frame_id=None):
         _, C, H, W = x.shape
         B = pairwise_t_matrix.shape[0]
@@ -206,13 +222,16 @@ class Where2commArce(nn.Module):
                         communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
                             batch_confidence_maps, B, return_raw=True
                         )
-                        message_scores = _confidence_maps
+                        # candidate region = Where2Comm binary raw mask; score = confidence inside valid region
+                        message_scores = _confidence_maps * raw_masks
                         if x.shape[-1] != communication_masks.shape[-1] or x.shape[-2] != communication_masks.shape[-2]:
                             communication_masks = F.interpolate(communication_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
                             raw_masks = F.interpolate(raw_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
                             message_scores = F.interpolate(message_scores, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
                     x = x * communication_masks
+                    x_before_arce = x.detach().clone()
                     x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
+                    arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
 
                 batch_node_features = self.regroup(x, record_len)
                 x_fuse = []
@@ -241,10 +260,13 @@ class Where2commArce(nn.Module):
                 communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
                     batch_confidence_maps, B, return_raw=True
                 )
-                message_scores = _confidence_maps
+                # candidate region = Where2Comm binary raw mask; score = confidence inside valid region
+                message_scores = _confidence_maps * raw_masks
                 x = x * communication_masks
 
+            x_before_arce = x.detach().clone()
             x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
+            arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
             batch_node_features = self.regroup(x, record_len)
             x_fuse = []
             for b in range(B):

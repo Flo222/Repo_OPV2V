@@ -1,0 +1,5 @@
+model_dir	core_method	samples	epoch	root_dir	validate_dir	score_th	w2c_th	AP30/AP50/AP70
+opencood/logs/test_opv2v_where2comm_markov_fp32	point_pillar_where2comm_arce	2170	20	/home/server/v2x_projects/OPV2V/opv2v_data_dumping/train	/home/server/v2x_projects/OPV2V/opv2v_data_dumping/test	0.2	0.01	0.823/0.809/0.655
+opencood/logs/main_opv2v_where2comm_grace_full	point_pillar_where2comm_arce	2170	20	/home/server/v2x_projects/OPV2V/opv2v_data_dumping/train	/home/server/v2x_projects/OPV2V/opv2v_data_dumping/test	0.2	0.01	0.792/0.778/0.610
+opencood/logs/main_opv2v_where2comm_channel	point_pillar_where2comm_arce	1980	20	/home/server/v2x_projects/OPV2V/opv2v_data_dumping/train	/home/server/v2x_projects/OPV2V/opv2v_data_dumping/validate	0.2	0.01	0.650/0.630/0.490
+opencood/logs/point_pillar_where2comm_2026_06_09_12_48_25	point_pillar_where2comm	1980	20	opv2v_data_dumping/train	opv2v_data_dumping/validate	0.2	0.01	0.850/0.830/0.690

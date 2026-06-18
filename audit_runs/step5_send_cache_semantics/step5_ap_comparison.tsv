@@ -1,0 +1,4 @@
+method	AP@0.3	AP@0.5	AP@0.7	log
+Strict_FP32_rho0_cache0_after_step5	0.781	0.767	0.585	opencood/logs/where2comm_markov_trueloss_fp32_rho0_cache0/inference_step5_fp32_rho0_cache0_0617_084241.log
+GRACE_current_after_step5	0.793	0.779	0.610	opencood/logs/main_opv2v_where2comm_grace_full/inference_step5_grace_current_0617_084520.log
+Delta_GRACE_minus_Strict	0.012	0.012	0.025	-
