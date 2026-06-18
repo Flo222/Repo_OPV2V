@@ -1,0 +1,50 @@
+{
+  "csv_path": "audit_runs/step7_reward_ap_alignment/reward_ap_corr_500_after_cache_and_fec_gating.csv",
+  "target_col": "frame_ap70",
+  "features": [
+    "mean_conf",
+    "sum_conf",
+    "n_pred",
+    "reward_sum",
+    "reward_mean",
+    "reward_count",
+    "q_eff_mean",
+    "cost_norm_mean",
+    "quant_loss_mean",
+    "fec_gain_mean",
+    "cache_term_mean"
+  ],
+  "results": {
+    "mean_conf_baseline": {
+      "pearson": 0.5212935058778944,
+      "spearman": 0.5002762411049644,
+      "rmse": 0.25141768105800233,
+      "mae": 0.21758582691698097
+    },
+    "ridge_ap_proxy": {
+      "pearson": 0.66984873293609,
+      "spearman": 0.6552602210408841,
+      "rmse": 0.12598030511224595,
+      "mae": 0.0977913531548171
+    },
+    "random_forest_ap_proxy": {
+      "pearson": 0.7267443876923035,
+      "spearman": 0.7133463093852376,
+      "rmse": 0.11679155309243319,
+      "mae": 0.09014183832595841
+    }
+  },
+  "rf_importance": {
+    "mean_conf": 0.42841328831368075,
+    "sum_conf": 0.09463671749150633,
+    "n_pred": 0.06122980017350206,
+    "reward_sum": 0.03089944084246495,
+    "reward_mean": 0.05842642030367653,
+    "reward_count": 0.1870201102205432,
+    "q_eff_mean": 0.10558677785100826,
+    "cost_norm_mean": 0.0,
+    "quant_loss_mean": 0.011596437538207032,
+    "fec_gain_mean": 0.0072545267997397665,
+    "cache_term_mean": 0.014936480465671165
+  }
+}

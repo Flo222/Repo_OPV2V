@@ -359,7 +359,7 @@ class CosDHMarkovByteChannel(nn.Module):
                 if local_idx == 0 and not self.impair_ego:
                     continue
 
-                link_key = "b{}_cav{}_s{}".format(b, local_idx, int(scale_idx))
+                link_key = f"b{b}_cav{local_idx}"
                 session = self._get_or_create_session(link_key, x.device)
 
                 cur_msg = out[global_idx]
@@ -381,10 +381,6 @@ class CosDHMarkovByteChannel(nn.Module):
                     num_scales=num_scales,
                 )
 
-                if impaired_msg.shape != out[global_idx].shape:
-                    # Delay cache may contain an old feature from another scale.
-                    # In that case the cached message is invalid for this scale.
-                    impaired_msg = torch.zeros_like(out[global_idx])
                 out[global_idx] = impaired_msg
 
                 info = {
@@ -416,7 +412,7 @@ class CosDHMarkovByteChannel(nn.Module):
                             stat["sent_units"],
                             stat["selected_cells"],
                             stat["remaining_budget_bytes_after"],
-                            stat.get("initial_budget_bytes", stat.get("budget_bytes", 0)),
+                            stat["initial_budget_bytes"],
                         )
                     )
 

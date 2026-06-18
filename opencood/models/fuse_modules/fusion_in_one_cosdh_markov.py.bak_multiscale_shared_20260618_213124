@@ -475,7 +475,7 @@ class Where2comm(nn.Module):
         split_x = torch.tensor_split(x, cum_sum_len[:-1].cpu())
         return split_x
 
-    def forward(self, x, psm_single, record_len, normalized_affine_matrix, req_mask=None, scale_idx=0, num_scales=1, apply_markov=True):
+    def forward(self, x, psm_single, record_len, normalized_affine_matrix, req_mask=None):
         """
         Fusion forwarding.
 
@@ -531,20 +531,16 @@ class Where2comm(nn.Module):
                     mode='bilinear', align_corners=False)
             warp_x = warp_x * communication_masks
 
-            if apply_markov:
-                # CoSDH-Markov byte-stream channel:
-                # apply bandwidth limit, Bernoulli packet loss and delay
-                # to CoSDH-selected raw-float message only.
-                warp_x, cosdh_markov_info = self.cosdh_markov_channel(
-                    warp_x,
-                    record_len=record_len,
-                    communication_mask=communication_masks,
-                    frame_id=None,
-                )
-                self.cosdh_markov_info = cosdh_markov_info
-            else:
-                cosdh_markov_info = {'enabled': False, 'reason': 'non_primary_scale', 'scale_idx': scale_idx}
-                self.cosdh_markov_info = cosdh_markov_info
+            # CoSDH-Markov byte-stream channel:
+            # apply bandwidth limit, Bernoulli packet loss and delay
+            # to CoSDH-selected raw-float message only.
+            warp_x, cosdh_markov_info = self.cosdh_markov_channel(
+                warp_x,
+                record_len=record_len,
+                communication_mask=communication_masks,
+                frame_id=None,
+            )
+            self.cosdh_markov_info = cosdh_markov_info
 
         
         x_out = self.fuse_modules(warp_x, record_len,

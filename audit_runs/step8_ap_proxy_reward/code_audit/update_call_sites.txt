@@ -1,0 +1,9 @@
+opencood/models/point_pillar_where2comm_arce.py:266:            and hasattr(self.arce_comm, "update_with_proxy_reward")
+opencood/models/point_pillar_where2comm_arce.py:283:                arce_reward_update = self.arce_comm.update_with_proxy_reward(
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:275:            and hasattr(self.arce_comm, "update_with_proxy_reward")
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:292:                arce_reward_update = self.arce_comm.update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py:1952:    def update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_comp_fec_cache_reward:1836:    def update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_fix_pdfcontext_complementarity:1882:    def update_with_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py.bak_pass_quant_reward:1833:    def update_with_proxy_reward(
+opencood/logs/main_opv2v_where2comm_grace_full/channel_aware_qra_snapshot_0616_130135/arce_c2mab_comm.py:1833:    def update_with_proxy_reward(

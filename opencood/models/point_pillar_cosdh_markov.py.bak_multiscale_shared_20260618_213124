@@ -9,7 +9,6 @@ from opencood.models.sub_modules.base_bev_backbone_cosdh import BaseBEVBackbone
 from opencood.models.sub_modules.downsample_conv import DownsampleConv
 from opencood.models.sub_modules.naive_compress_cosdh import NaiveCompressor
 from opencood.models.fuse_modules.fusion_in_one_cosdh_markov import Where2comm
-from opencood.models.comm_modules.cosdh_markov_byte_channel import CosDHMarkovByteChannel
 from opencood.utils.transformation_utils_cosdh import normalize_pairwise_tfm
 
 
@@ -44,12 +43,9 @@ class PointPillarCosdhMarkov(nn.Module):
         # Pass CoSDH-Markov byte-stream channel config into CoSDH fusion.
         if 'where2comm' in args:
             args['where2comm']['cosdh_markov'] = args.get('cosdh_markov', {})
-        self.cosdh_markov_channel = CosDHMarkovByteChannel(args.get('cosdh_markov', {}))
         self.fusion_net = nn.ModuleList()
         for i in range(len(args['base_bev_backbone']['layer_nums'])):
-            fuse_module = Where2comm(args['where2comm'], dim=args['feat_dim'][i])
-            fuse_module.cosdh_markov_channel = self.cosdh_markov_channel
-            self.fusion_net.append(fuse_module)
+            self.fusion_net.append(Where2comm(args['where2comm'], dim=args['feat_dim'][i]))
         
         if 'k_ratio' in args['where2comm']['communication']:
             print(f"k_ratio: {args['where2comm']['communication']['k_ratio']}")
@@ -199,23 +195,13 @@ class PointPillarCosdhMarkov(nn.Module):
         # multiscale fusion
         feature_list = self.backbone.get_multiscale_feature(spatial_features)
         fused_feature_list = []
-        if hasattr(self.cosdh_markov_channel, 'start_frame'):
-            self.cosdh_markov_channel.start_frame()
-        num_fusion_scales = len(self.fusion_net)
         
         for i, fuse_module in enumerate(self.fusion_net):
             feature_i = feature_list[i]
             if self.compression:
                 feature_i = self.naive_compressor_list[i](feature_i, use_fp16=not self.training)
-            x_out, _ = fuse_module(
-                feature_i,
-                psm_single,
-                record_len,
-                normalized_affine_matrix,
-                req_mask,
-                scale_idx=i,
-                num_scales=num_fusion_scales,
-            )
+            x_out, _ = fuse_module(feature_i, psm_single,
+                                                record_len, normalized_affine_matrix, req_mask,)
 
             fused_feature_list.append(x_out)
         fused_feature = self.backbone.decode_multiscale_feature(fused_feature_list)

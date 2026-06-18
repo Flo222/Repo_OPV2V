@@ -1,0 +1,200 @@
+opencood/models/point_pillar_coalign.py:4:# This file only contains CoAlign's multiscale intermediate feature fusion.
+opencood/models/point_pillar_coalign.py:20:from opencood.models.fuse_modules.coalign_fuse import Att_w_Warp, normalize_pairwise_tfm
+opencood/models/point_pillar_coalign.py:39:             # If proj_first = True, no actual warping is performed
+opencood/models/point_pillar_coalign.py:77:        normalized_affine_matrix = normalize_pairwise_tfm(data_dict['pairwise_t_matrix'], H0, W0, self.voxel_size[0])
+opencood/models/point_pillar_coalign.py:93:            fused_feature_list.append(fuse_module(feature_list[i], record_len, normalized_affine_matrix))
+opencood/models/point_pillar_coalign.py:100:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_coalign.py:101:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_coalign.py:103:        output_dict = {'psm': psm,
+opencood/models/point_pillar_coalign.py:104:                       'rm': rm}
+opencood/models/point_pillar_where2comm_arce.py:230:        psm_single = self.cls_head(spatial_features_2d)
+opencood/models/point_pillar_where2comm_arce.py:237:            fused_feature, communication_rates, arce_info = self.fusion_net(
+opencood/models/point_pillar_where2comm_arce.py:239:                psm_single,
+opencood/models/point_pillar_where2comm_arce.py:249:            fused_feature, communication_rates, arce_info = self.fusion_net(
+opencood/models/point_pillar_where2comm_arce.py:251:                psm_single,
+opencood/models/point_pillar_where2comm_arce.py:258:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_where2comm_arce.py:259:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_where2comm_arce.py:261:        arce_reward_update = None
+opencood/models/point_pillar_where2comm_arce.py:266:            and hasattr(self.arce_comm, "update_with_proxy_reward")
+opencood/models/point_pillar_where2comm_arce.py:271:                # psm shape is usually [B, A, H, W]. We first map logits to
+opencood/models/point_pillar_where2comm_arce.py:276:                        torch.sigmoid(psm)
+opencood/models/point_pillar_where2comm_arce.py:283:                arce_reward_update = self.arce_comm.update_with_proxy_reward(
+opencood/models/point_pillar_where2comm_arce.py:287:                arce_reward_update = {
+opencood/models/point_pillar_where2comm_arce.py:289:                    "error": "{}: {}".format(type(exc).__name__, exc),
+opencood/models/point_pillar_where2comm_arce.py:293:        # arce_info so existing recursive debug scripts can find it.
+opencood/models/point_pillar_where2comm_arce.py:294:        if arce_reward_update is not None:
+opencood/models/point_pillar_where2comm_arce.py:295:            if isinstance(arce_info, dict):
+opencood/models/point_pillar_where2comm_arce.py:296:                arce_info = dict(arce_info)
+opencood/models/point_pillar_where2comm_arce.py:297:                arce_info["reward_update"] = arce_reward_update
+opencood/models/point_pillar_where2comm_arce.py:298:            elif isinstance(arce_info, list):
+opencood/models/point_pillar_where2comm_arce.py:299:                arce_info = list(arce_info)
+opencood/models/point_pillar_where2comm_arce.py:300:                arce_info.append({"reward_update": arce_reward_update})
+opencood/models/point_pillar_where2comm_arce.py:302:        output_dict = {"psm": psm, "rm": rm, "com": communication_rates}
+opencood/models/point_pillar_where2comm_arce.py:305:            "arce": arce_info,
+opencood/models/point_pillar_where2comm_arce.py:307:            "arce_reward_update": arce_reward_update,
+opencood/models/point_pillar_cobevt.py:110:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_cobevt.py:111:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_cobevt.py:113:        output_dict = {'psm': psm,
+opencood/models/point_pillar_cobevt.py:114:                       'rm': rm}
+opencood/models/point_pillar.py:48:        psm = self.cls_head(spatial_features_2d)
+opencood/models/point_pillar.py:49:        rm = self.reg_head(spatial_features_2d)
+opencood/models/point_pillar.py:51:        output_dict = {'psm': psm,
+opencood/models/point_pillar.py:52:                       'rm': rm}
+opencood/models/point_pillar_rocooper.py:11:    -> RoCooper communication impairment
+opencood/models/point_pillar_rocooper.py:69:    Forward input data_dict is the normal OpenCOOD intermediate-fusion batch:
+opencood/models/point_pillar_rocooper.py:78:            "psm": classification prediction map,
+opencood/models/point_pillar_rocooper.py:79:            "rm": regression prediction map,
+opencood/models/point_pillar_rocooper.py:82:            "psm_single": single-agent score map before fusion
+opencood/models/point_pillar_rocooper.py:141:        # 4. RoCooper communication impairment module
+opencood/models/point_pillar_rocooper.py:158:        # psm: classification score map
+opencood/models/point_pillar_rocooper.py:159:        # rm : box regression map
+opencood/models/point_pillar_rocooper.py:206:        # Safe default used by most OpenCOOD PointPillar intermediate configs.
+opencood/models/point_pillar_rocooper.py:404:                "Please use OpenCOOD IntermediateFusionDataset."
+opencood/models/point_pillar_rocooper.py:449:            psm:
+opencood/models/point_pillar_rocooper.py:452:            rm:
+opencood/models/point_pillar_rocooper.py:492:        # modules use psm_single as an importance or confidence hint.
+opencood/models/point_pillar_rocooper.py:493:        psm_single = self.cls_head(spatial_features_2d)
+opencood/models/point_pillar_rocooper.py:502:        # 4. RoCooper communication impairment
+opencood/models/point_pillar_rocooper.py:529:        #         psm_single=psm_single,
+opencood/models/point_pillar_rocooper.py:538:            psm_single=psm_single,
+opencood/models/point_pillar_rocooper.py:546:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_rocooper.py:547:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_rocooper.py:550:            "psm": psm,
+opencood/models/point_pillar_rocooper.py:551:            "rm": rm,
+opencood/models/point_pillar_rocooper.py:552:            "psm_single": psm_single,
+opencood/models/point_pillar_fcooper.py:103:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_fcooper.py:104:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_fcooper.py:106:        output_dict = {'psm': psm,
+opencood/models/point_pillar_fcooper.py:107:                       'rm': rm}
+opencood/models/point_pillar_transformer.py:10:from opencood.models.fuse_modules.v2xvit_basic import V2XTransformer
+opencood/models/point_pillar_transformer.py:13:class PointPillarTransformer(nn.Module):
+opencood/models/point_pillar_transformer.py:15:        super(PointPillarTransformer, self).__init__()
+opencood/models/point_pillar_transformer.py:36:        self.fusion_net = V2XTransformer(args['transformer'])
+opencood/models/point_pillar_transformer.py:110:        regroup_feature = regroup_feature.permute(0, 1, 3, 4, 2)
+opencood/models/point_pillar_transformer.py:111:        # transformer fusion
+opencood/models/point_pillar_transformer.py:114:        fused_feature = fused_feature.permute(0, 3, 1, 2)
+opencood/models/point_pillar_transformer.py:116:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_transformer.py:117:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_transformer.py:119:        output_dict = {'psm': psm,
+opencood/models/point_pillar_transformer.py:120:                       'rm': rm}
+opencood/models/comm_modules/cosdh_markov_byte_channel.py:402:                        "cells recv/sent/selected={}/{}/{} budget_bytes {}/{}".format(
+opencood/models/comm_modules/cosdh_markov_byte_channel.py.bak_keyerror_initial_budget:402:                        "cells recv/sent/selected={}/{}/{} budget_bytes {}/{}".format(
+opencood/models/comm_modules/cosdh_markov_impair.py:11:    CoSDH-Markov impairment baseline.
+opencood/models/comm_modules/cosdh_markov_impair.py:26:        score_map: optional confidence map, e.g. psm_single.
+opencood/models/comm_modules/cosdh_markov_impair.py:132:        Convert psm/confidence map to patch-level scores.
+opencood/models/comm_modules/where2comm_cosdh.py:72:                K = int(H * W * random.uniform(0, 1))
+opencood/models/comm_modules/cosdh_markov_byte_channel.py.bak_multiscale_shared_20260618_213124:308:                link_key = "b{}_cav{}".format(b, local_idx)
+opencood/models/comm_modules/cosdh_markov_byte_channel.py.bak_multiscale_shared_20260618_213124:351:                        "cells recv/sent/selected={}/{}/{} packets budget/total={}/{} cell_bytes={}".format(
+opencood/models/comm_modules/cosdh_markov_byte_channel.py.bak_slow:152:        # Normalize each row defensively.
+opencood/models/comm_modules/cosdh_markov_byte_channel.py.bak_slow:171:    def _normalize_comm_mask(
+opencood/models/comm_modules/cosdh_markov_byte_channel.py.bak_slow:271:        """Serialize selected raw-float values and apply packet-level impairment."""
+opencood/models/comm_modules/cosdh_markov_byte_channel.py.bak_slow:364:                cur_mask = self._normalize_comm_mask(
+opencood/models/point_pillar_cosdh.py:12:from opencood.utils.transformation_utils_cosdh import normalize_pairwise_tfm
+opencood/models/point_pillar_cosdh.py:144:        # for intermediate-late fusion, get the single detection results
+opencood/models/point_pillar_cosdh.py:160:            psm = self.cls_head(spatial_features_2d)
+opencood/models/point_pillar_cosdh.py:161:            rm = self.reg_head(spatial_features_2d)
+opencood/models/point_pillar_cosdh.py:163:            output_dict = {'cls_preds': psm,
+opencood/models/point_pillar_cosdh.py:164:                        'reg_preds': rm}
+opencood/models/point_pillar_cosdh.py:179:        # calculate pairwise affine transformation matrix
+opencood/models/point_pillar_cosdh.py:181:        normalized_affine_matrix = normalize_pairwise_tfm(
+opencood/models/point_pillar_cosdh.py:190:        psm_single = self.cls_head(spatial_features_2d_single)
+opencood/models/point_pillar_cosdh.py:200:            x_out, _ = fuse_module(feature_i, psm_single,
+opencood/models/point_pillar_cosdh.py:201:                                                record_len, normalized_affine_matrix, req_mask,)
+opencood/models/point_pillar_cosdh.py:209:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_cosdh.py:210:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_cosdh.py:212:        output_dict = {'cls_preds': psm,
+opencood/models/point_pillar_cosdh.py:213:                       'reg_preds': rm}
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:239:        psm_single = self.cls_head(spatial_features_2d)
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:246:            fused_feature, communication_rates, arce_info = self.fusion_net(
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:248:                psm_single,
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:258:            fused_feature, communication_rates, arce_info = self.fusion_net(
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:260:                psm_single,
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:267:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:268:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:270:        arce_reward_update = None
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:275:            and hasattr(self.arce_comm, "update_with_proxy_reward")
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:280:                # psm shape is usually [B, A, H, W]. We first map logits to
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:285:                        torch.sigmoid(psm)
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:292:                arce_reward_update = self.arce_comm.update_with_proxy_reward(
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:296:                arce_reward_update = {
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:298:                    "error": "{}: {}".format(type(exc).__name__, exc),
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:302:        # arce_info so existing recursive debug scripts can find it.
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:303:        if arce_reward_update is not None:
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:304:            if isinstance(arce_info, dict):
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:305:                arce_info = dict(arce_info)
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:306:                arce_info["reward_update"] = arce_reward_update
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:307:            elif isinstance(arce_info, list):
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:308:                arce_info = list(arce_info)
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:309:                arce_info.append({"reward_update": arce_reward_update})
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:311:        output_dict = {"psm": psm, "rm": rm, "com": communication_rates}
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:314:            "arce": arce_info,
+opencood/models/point_pillar_where2comm_arce_v2xreal.py:316:            "arce_reward_update": arce_reward_update,
+opencood/models/point_pillar_intermediate.py:15:class PointPillarIntermediate(nn.Module):
+opencood/models/point_pillar_intermediate.py:17:        super(PointPillarIntermediate, self).__init__()
+opencood/models/point_pillar_intermediate.py:50:        psm = self.cls_head(spatial_features_2d)
+opencood/models/point_pillar_intermediate.py:51:        rm = self.reg_head(spatial_features_2d)
+opencood/models/point_pillar_intermediate.py:53:        output_dict = {'psm': psm,
+opencood/models/point_pillar_intermediate.py:54:                       'rm': rm}
+opencood/models/point_pillar_cosdh_markov.py:13:from opencood.utils.transformation_utils_cosdh import normalize_pairwise_tfm
+opencood/models/point_pillar_cosdh_markov.py:151:        # for intermediate-late fusion, get the single detection results
+opencood/models/point_pillar_cosdh_markov.py:167:            psm = self.cls_head(spatial_features_2d)
+opencood/models/point_pillar_cosdh_markov.py:168:            rm = self.reg_head(spatial_features_2d)
+opencood/models/point_pillar_cosdh_markov.py:170:            output_dict = {'cls_preds': psm,
+opencood/models/point_pillar_cosdh_markov.py:171:                        'reg_preds': rm}
+opencood/models/point_pillar_cosdh_markov.py:186:        # calculate pairwise affine transformation matrix
+opencood/models/point_pillar_cosdh_markov.py:188:        normalized_affine_matrix = normalize_pairwise_tfm(
+opencood/models/point_pillar_cosdh_markov.py:197:        psm_single = self.cls_head(spatial_features_2d_single)
+opencood/models/point_pillar_cosdh_markov.py:212:                psm_single,
+opencood/models/point_pillar_cosdh_markov.py:214:                normalized_affine_matrix,
+opencood/models/point_pillar_cosdh_markov.py:226:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_cosdh_markov.py:227:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_cosdh_markov.py:229:        output_dict = {'cls_preds': psm,
+opencood/models/point_pillar_cosdh_markov.py:230:                       'reg_preds': rm}
+opencood/models/voxel_net.py:19:                 batch_norm=True):
+opencood/models/voxel_net.py:23:        if batch_norm:
+opencood/models/voxel_net.py:24:            self.bn = nn.BatchNorm2d(out_channels)
+opencood/models/voxel_net.py:42:    def __init__(self, in_channels, out_channels, k, s, p, batch_norm=True):
+opencood/models/voxel_net.py:46:        if batch_norm:
+opencood/models/voxel_net.py:47:            self.bn = nn.BatchNorm3d(out_channels)
+opencood/models/voxel_net.py:66:        self.bn = nn.BatchNorm1d(cout)
+opencood/models/voxel_net.py:153:                                      nn.BatchNorm2d(256))
+opencood/models/voxel_net.py:155:                                      nn.BatchNorm2d(256))
+opencood/models/voxel_net.py:157:                                      nn.BatchNorm2d(256))
+opencood/models/voxel_net.py:160:                                 activation=False, batch_norm=False)
+opencood/models/voxel_net.py:162:                               activation=False, batch_norm=False)
+opencood/models/voxel_net.py:229:        psm, rm = self.rpn(vwfs.view(self.N, -1, self.H, self.W))
+opencood/models/voxel_net.py:231:        output_dict = {'psm': psm,
+opencood/models/voxel_net.py:232:                       'rm': rm}
+opencood/models/point_pillar_transformer_opv2v.py:10:from opencood.models.fuse_modules.v2xvit_basic import V2XTransformer
+opencood/models/point_pillar_transformer_opv2v.py:13:class PointPillarTransformerOpv2v(nn.Module):
+opencood/models/point_pillar_transformer_opv2v.py:17:    Difference from point_pillar_transformer.py:
+opencood/models/point_pillar_transformer_opv2v.py:26:        super(PointPillarTransformerOpv2v, self).__init__()
+opencood/models/point_pillar_transformer_opv2v.py:50:        self.fusion_net = V2XTransformer(args['transformer'])
+opencood/models/point_pillar_transformer_opv2v.py:96:        For OPV2V intermediate fusion, features/points are already aligned
+opencood/models/point_pillar_transformer_opv2v.py:226:        regroup_feature = regroup_feature.permute(0, 1, 3, 4, 2)
+opencood/models/point_pillar_transformer_opv2v.py:235:        fused_feature = fused_feature.permute(0, 3, 1, 2)
+opencood/models/point_pillar_transformer_opv2v.py:237:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_transformer_opv2v.py:238:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_transformer_opv2v.py:241:            'psm': psm,
+opencood/models/point_pillar_transformer_opv2v.py:242:            'rm': rm
+opencood/models/point_pillar_transformer_opv2v.py:249:PointPillarTransformerOPV2V = PointPillarTransformerOpv2v
+opencood/models/point_pillar_transformer_opv2v.py:250:PointPillarTransformerOpv2V = PointPillarTransformerOpv2v
+opencood/models/second_intermediate.py:15:class SecondIntermediate(nn.Module):
+opencood/models/second_intermediate.py:17:        super(SecondIntermediate, self).__init__()
+opencood/models/second_intermediate.py:56:        psm = self.cls_head(spatial_features_2d)
+opencood/models/second_intermediate.py:57:        rm = self.reg_head(spatial_features_2d)
+opencood/models/second_intermediate.py:59:        output_dict = {'psm': psm,
+opencood/models/second_intermediate.py:60:                       'rm': rm}
+opencood/models/point_pillar_v2vnet.py:103:        psm = self.cls_head(fused_feature)
+opencood/models/point_pillar_v2vnet.py:104:        rm = self.reg_head(fused_feature)
+opencood/models/point_pillar_v2vnet.py:106:        output_dict = {'psm': psm,
+opencood/models/point_pillar_v2vnet.py:107:                       'rm': rm}
+opencood/models/second.py:53:        psm = self.cls_head(spatial_features_2d)
+opencood/models/second.py:54:        rm = self.reg_head(spatial_features_2d)
+opencood/models/second.py:56:        output_dict = {'psm': psm,
+opencood/models/second.py:57:                       'rm': rm}
+opencood/models/pixor_intermediate.py:14:class BackBoneIntermediate(BackBone):
+opencood/models/pixor_intermediate.py:17:        super(BackBoneIntermediate, self).__init__(block,
+opencood/models/pixor_intermediate.py:36:class PIXORIntermediate(nn.Module):
+opencood/models/pixor_intermediate.py:57:        super(PIXORIntermediate, self).__init__()
+opencood/models/pixor_intermediate.py:60:        self.backbone = BackBoneIntermediate(Bottleneck, [3, 6, 6, 3],

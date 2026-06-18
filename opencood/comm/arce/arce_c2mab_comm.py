@@ -1782,8 +1782,15 @@ class ARCEC2MABComm:
             )
             link_violation = bool(tx_bytes > reward_budget + 1e-6)
 
+            # Step 7: use conservative FEC reward.
+            # Reward the fraction of total selected source packets recovered by FEC,
+            # not merely the fraction of lost packets recovered.
+            # This avoids over-rewarding FEC when only a few packets were lost.
             try:
-                _fec_gain_for_reward = float(fec_recovered) / max(float(missing_by_loss), 1.0)
+                if float(selected_src) > 0.0:
+                    _fec_gain_for_reward = float(fec_recovered) / max(float(selected_src), 1.0)
+                else:
+                    _fec_gain_for_reward = 0.0
             except Exception:
                 _fec_gain_for_reward = 0.0
             _fec_gain_for_reward = max(0.0, min(1.0, _fec_gain_for_reward))
