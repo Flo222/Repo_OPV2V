@@ -954,3 +954,164 @@ def box_decode(
     ret.append(rg)
 
     return torch.cat(ret, dim=-1)
+
+def project_world_objects_corner(object_dict, output_dict, lidar_pose,
+                                 lidar_range, order):
+    """
+    CoopDiff compatibility:
+    Project world-coordinate objects to reference lidar coordinate and
+    return their 3D corners instead of center-format boxes.
+    """
+    for object_id, object_content in object_dict.items():
+        location = object_content['location']
+        rotation = object_content['angle']
+        center = object_content['center']
+        extent = object_content['extent']
+
+        object_pose = [
+            location[0] + center[0],
+            location[1] + center[1],
+            location[2] + center[2],
+            rotation[0],
+            rotation[1],
+            rotation[2]
+        ]
+
+        object2lidar = x1_to_x2(object_pose, lidar_pose)
+
+        # shape: (3, 8)
+        bbx = create_bbx(extent).T
+
+        # homogeneous coordinates, shape: (4, 8)
+        bbx = np.r_[bbx, [np.ones(bbx.shape[1])]]
+
+        # shape: (1, 8, 3)
+        bbx_lidar = np.dot(object2lidar, bbx).T
+        bbx_lidar = np.expand_dims(bbx_lidar[:, :3], 0)
+
+        # filter by range using center representation first
+        bbx_center = corner_to_center(bbx_lidar, order=order)
+        bbx_center = mask_boxes_outside_range_numpy(
+            bbx_center,
+            lidar_range,
+            order
+        )
+
+        if bbx_center.shape[0] > 0:
+            bbx_corner = boxes_to_corners_3d(bbx_center, order)
+            output_dict.update({object_id: bbx_corner})
+
+
+def get_points_outside_rotated_box_3d(p, box_corner):
+    """
+    CoopDiff compatibility:
+    Get points outside a rotated 3D bounding box.
+
+    Parameters
+    ----------
+    p : np.ndarray
+        Points, shape (N, 3) or larger. Only xyz columns are used for the test.
+    box_corner : np.ndarray
+        Box corners, shape (8, 3) or (1, 8, 3).
+
+    Returns
+    -------
+    p_outside_box : np.ndarray
+        Points outside the box, preserving original point dimensions.
+    """
+    if box_corner.ndim == 3:
+        box_corner = box_corner[0]
+
+    xyz = p[:, :3]
+
+    edge1 = box_corner[1, :] - box_corner[0, :]
+    edge2 = box_corner[3, :] - box_corner[0, :]
+    edge3 = box_corner[4, :] - box_corner[0, :]
+
+    p_rel = xyz - box_corner[0, :].reshape(1, -1)
+
+    l1 = get_projection_length_for_vector_projection(p_rel, edge1)
+    l2 = get_projection_length_for_vector_projection(p_rel, edge2)
+    l3 = get_projection_length_for_vector_projection(p_rel, edge3)
+
+    inside_1 = np.logical_and(l1 >= 0, l1 <= 1)
+    inside_2 = np.logical_and(l2 >= 0, l2 <= 1)
+    inside_3 = np.logical_and(l3 >= 0, l3 <= 1)
+
+    inside_mask = np.logical_and(np.logical_and(inside_1, inside_2), inside_3)
+    outside_mask = np.logical_not(inside_mask)
+
+    return p[outside_mask]
+
+def is_point_inside_any_box(points, boxes_corners):
+    """
+    CoopDiff compatibility:
+    Return a point-box inside mask.
+
+    Parameters
+    ----------
+    points : np.ndarray
+        Usually shape (N, 1, 3) or (N, 3).
+    boxes_corners : np.ndarray
+        Shape (M, 8, 3) or (8, 3).
+
+    Returns
+    -------
+    inside_mask : np.ndarray
+        Boolean array with shape (N, M).
+        inside_mask[i, j] = True means point i is inside box j.
+    """
+    points = np.asarray(points)
+    boxes_corners = np.asarray(boxes_corners)
+
+    if points.size == 0:
+        return np.zeros((0, 0), dtype=bool)
+
+    # CoopDiff often passes expanded_points with shape (N, 1, 3).
+    # We only need one xyz per point.
+    if points.ndim == 3:
+        pts = points[:, 0, :3]
+    else:
+        pts = points.reshape(-1, points.shape[-1])[:, :3]
+
+    num_points = pts.shape[0]
+
+    if boxes_corners.size == 0:
+        return np.zeros((num_points, 0), dtype=bool)
+
+    if boxes_corners.ndim == 2:
+        boxes_corners = boxes_corners[None, :, :]
+
+    boxes = boxes_corners[:, :, :3]
+    num_boxes = boxes.shape[0]
+
+    inside_mask = np.zeros((num_points, num_boxes), dtype=bool)
+    eps = 1e-8
+
+    for j, box in enumerate(boxes):
+        # OpenCOOD corner convention:
+        # edge 0->1, 0->3, 0->4 correspond to box local axes.
+        c0 = box[0]
+        edge1 = box[1] - c0
+        edge2 = box[3] - c0
+        edge3 = box[4] - c0
+
+        e1_norm = np.dot(edge1, edge1) + eps
+        e2_norm = np.dot(edge2, edge2) + eps
+        e3_norm = np.dot(edge3, edge3) + eps
+
+        rel = pts - c0.reshape(1, 3)
+
+        proj1 = np.dot(rel, edge1) / e1_norm
+        proj2 = np.dot(rel, edge2) / e2_norm
+        proj3 = np.dot(rel, edge3) / e3_norm
+
+        inside = (
+            (proj1 >= 0.0) & (proj1 <= 1.0) &
+            (proj2 >= 0.0) & (proj2 <= 1.0) &
+            (proj3 >= 0.0) & (proj3 <= 1.0)
+        )
+
+        inside_mask[:, j] = inside
+
+    return inside_mask

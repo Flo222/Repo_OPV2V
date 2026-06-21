@@ -3,29 +3,74 @@
 # License: TDG-Attribution-NonCommercial-NoDistrib
 
 """
-Transform points to voxels using sparse conv library
+Transform points to voxels using sparse conv library.
+
+This version keeps the original OpenCOOD behavior and adds CoopDiff's
+``preprocess_paint`` path. It also avoids importing ``cumm`` at module import
+time so spconv v1 environments will not fail before the v1 branch is selected.
 """
 import sys
 
 import numpy as np
 import torch
-from cumm import tensorview as tv
+
 from opencood.data_utils.pre_processor.base_preprocessor import \
     BasePreprocessor
 
 
 class SpVoxelPreprocessor(BasePreprocessor):
     def __init__(self, preprocess_params, train):
-        super(SpVoxelPreprocessor, self).__init__(preprocess_params,
-                                                  train)
+        super(SpVoxelPreprocessor, self).__init__(preprocess_params, train)
+
         self.spconv = 1
+        self._tv = None
+        VoxelGenerator = None
+        last_error = None
+
+        # spconv v1.x
         try:
-            # spconv v1.x
             from spconv.utils import VoxelGeneratorV2 as VoxelGenerator
-        except:
-            # spconv v2.x
-            from spconv.utils import Point2VoxelCPU3d as VoxelGenerator
-            self.spconv = 2
+            self.spconv = 1
+        except Exception as err:
+            last_error = err
+
+        # Some spconv v1 builds expose VoxelGenerator instead of VoxelGeneratorV2.
+        if VoxelGenerator is None:
+            try:
+                from spconv.utils import VoxelGenerator as VoxelGenerator
+                self.spconv = 1
+            except Exception as err:
+                last_error = err
+
+        # spconv v2.x used by many OpenCOOD environments.
+        if VoxelGenerator is None:
+            try:
+                from spconv.utils import Point2VoxelCPU3d as VoxelGenerator
+                from cumm import tensorview as tv
+                self._tv = tv
+                self.spconv = 2
+            except Exception as err:
+                last_error = err
+
+        # Newer spconv v2 package layout.
+        if VoxelGenerator is None:
+            try:
+                from spconv.pytorch.utils import PointToVoxel as VoxelGenerator
+                from cumm import tensorview as tv
+                self._tv = tv
+                self.spconv = 2
+            except Exception as err:
+                last_error = err
+
+        if VoxelGenerator is None:
+            raise ImportError(
+                "spconv is required by SpVoxelPreprocessor but cannot be imported. "
+                "Install the spconv build matching your CUDA/PyTorch version, e.g. "
+                "`pip install spconv-cu113` for CUDA 11.3, or `pip install spconv-cu114` "
+                "for CUDA 11.4. If your OpenCOOD environment is CUDA 11.1, use "
+                "`pip install spconv-cu111`."
+            ) from last_error
+
         self.lidar_range = self.params['cav_lidar_range']
         self.voxel_size = self.params['args']['voxel_size']
         self.max_points_per_voxel = self.params['args']['max_points_per_voxel']
@@ -47,6 +92,8 @@ class SpVoxelPreprocessor(BasePreprocessor):
                 max_num_points=self.max_points_per_voxel,
                 max_voxels=self.max_voxels
             )
+            # spconv v1 generator infers feature dimension from the input array.
+            self.voxel_generator_paint = self.voxel_generator
         else:
             self.voxel_generator = VoxelGenerator(
                 vsize_xyz=self.voxel_size,
@@ -55,14 +102,25 @@ class SpVoxelPreprocessor(BasePreprocessor):
                 num_point_features=4,
                 max_num_voxels=self.max_voxels
             )
+            # CoopDiff uses painted lidar with 5 point features.
+            self.voxel_generator_paint = VoxelGenerator(
+                vsize_xyz=self.voxel_size,
+                coors_range_xyz=self.lidar_range,
+                max_num_points_per_voxel=self.max_points_per_voxel,
+                num_point_features=5,
+                max_num_voxels=self.max_voxels
+            )
 
-    def preprocess(self, pcd_np):
-        data_dict = {}
+    def _point_to_voxel(self, generator, pcd_np):
+        """Run the selected spconv voxel generator and normalize output."""
+        pcd_np = np.ascontiguousarray(pcd_np)
+
         if self.spconv == 1:
-            voxel_output = self.voxel_generator.generate(pcd_np)
+            voxel_output = generator.generate(pcd_np)
         else:
-            pcd_tv = tv.from_numpy(pcd_np)
-            voxel_output = self.voxel_generator.point_to_voxel(pcd_tv)
+            pcd_tv = self._tv.from_numpy(pcd_np)
+            voxel_output = generator.point_to_voxel(pcd_tv)
+
         if isinstance(voxel_output, dict):
             voxels, coordinates, num_points = \
                 voxel_output['voxels'], voxel_output['coordinates'], \
@@ -75,11 +133,26 @@ class SpVoxelPreprocessor(BasePreprocessor):
             coordinates = coordinates.numpy()
             num_points = num_points.numpy()
 
-        data_dict['voxel_features'] = voxels
-        data_dict['voxel_coords'] = coordinates
-        data_dict['voxel_num_points'] = num_points
+        return {
+            'voxel_features': voxels,
+            'voxel_coords': coordinates,
+            'voxel_num_points': num_points
+        }
 
-        return data_dict
+    def preprocess(self, pcd_np):
+        return self._point_to_voxel(self.voxel_generator, pcd_np)
+
+    def preprocess_paint(self, pcd_np):
+        """
+        CoopDiff painted-lidar preprocessing.
+
+        Expected input shape is [N, 5]. If [N, 4] is passed accidentally,
+        append a zero-valued paint channel instead of crashing immediately.
+        """
+        if pcd_np.shape[1] == 4:
+            pad = np.zeros((pcd_np.shape[0], 1), dtype=pcd_np.dtype)
+            pcd_np = np.concatenate([pcd_np, pad], axis=1)
+        return self._point_to_voxel(self.voxel_generator_paint, pcd_np)
 
     def collate_batch(self, batch):
         """

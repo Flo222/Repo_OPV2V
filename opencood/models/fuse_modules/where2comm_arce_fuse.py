@@ -148,6 +148,7 @@ class Where2commArce(nn.Module):
         record_len: torch.Tensor,
         data_dict: Optional[Dict[str, Any]],
         frame_id: Optional[int],
+        local_cav_confidences: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         if self.arce_comm is None:
             return x, {"enabled": False, "reason": "arce_comm_is_none"}
@@ -166,6 +167,7 @@ class Where2commArce(nn.Module):
                 update_cache=True,
                 return_records=True,
                 message_masks=message_masks,
+                local_cav_confidences=local_cav_confidences,
             )
         except TypeError:
             # Backward compatibility with older ARCE implementations that do not
@@ -202,7 +204,7 @@ class Where2commArce(nn.Module):
             }
         return arce_info
 
-    def forward(self, x, psm_single, record_len, pairwise_t_matrix, backbone=None, data_dict=None, frame_id=None):
+    def forward(self, x, psm_single, record_len, pairwise_t_matrix, backbone=None, data_dict=None, frame_id=None, local_cav_confidences=None):
         _, C, H, W = x.shape
         B = pairwise_t_matrix.shape[0]
         arce_info: Dict[str, Any] = {"enabled": self.arce_comm is not None, "records": []}
@@ -230,7 +232,15 @@ class Where2commArce(nn.Module):
                             message_scores = F.interpolate(message_scores, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
                     x = x * communication_masks
                     x_before_arce = x.detach().clone()
-                    x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
+                    x, arce_info = self._maybe_arce_comm(
+                        x,
+                        communication_masks,
+                        message_scores,
+                        record_len,
+                        data_dict,
+                        frame_id,
+                        local_cav_confidences=local_cav_confidences,
+                    )
                     arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
 
                 batch_node_features = self.regroup(x, record_len)
@@ -265,7 +275,15 @@ class Where2commArce(nn.Module):
                 x = x * communication_masks
 
             x_before_arce = x.detach().clone()
-            x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
+            x, arce_info = self._maybe_arce_comm(
+                x,
+                communication_masks,
+                message_scores,
+                record_len,
+                data_dict,
+                frame_id,
+                local_cav_confidences=local_cav_confidences,
+            )
             arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
             batch_node_features = self.regroup(x, record_len)
             x_fuse = []

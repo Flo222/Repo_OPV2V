@@ -1,8 +1,7 @@
 {
-  "model_dir": "opencood/logs/main_opv2v_where2comm_grace_full",
-  "dataset_csv": "audit_runs/step8_ap_proxy_reward/dense_ap_proxy_dataset_500.csv",
-  "target_col": "frame_ap70",
-  "feature_cols": [
+  "model_type": "RandomForestRegressor",
+  "target": "frame_ap70",
+  "feature_names": [
     "dense_mean_conf",
     "dense_max_conf",
     "dense_sum_conf",
@@ -11,51 +10,19 @@
     "dense_count_gt_05",
     "dense_count_gt_07",
     "dense_top10_mean",
-    "dense_top50_mean",
-    "reward_count",
-    "q_eff_mean",
-    "quant_loss_mean",
-    "fec_gain_mean",
-    "cache_term_mean",
-    "cost_norm_mean"
+    "dense_top50_mean"
   ],
   "num_rows": 500,
-  "cv_results": {
-    "dense_mean_baseline": {
-      "pearson": 0.13352038979044578,
-      "spearman": 0.07196390385561542,
-      "rmse": 0.7078388719408684,
-      "mae": 0.6878039698825413
-    },
-    "ridge_dense_ap_proxy": {
-      "pearson": 0.4796232359304834,
-      "spearman": 0.44188515954063823,
-      "rmse": 0.14688191964941155,
-      "mae": 0.11898271509584903
-    },
-    "random_forest_dense_ap_proxy": {
-      "pearson": 0.5792522682864142,
-      "spearman": 0.5535505982023928,
-      "rmse": 0.13651808845549848,
-      "mae": 0.11171503725227075
-    }
-  },
-  "feature_importance": {
-    "dense_mean_conf": 0.09261341308585944,
-    "dense_max_conf": 0.34230641380362803,
-    "dense_sum_conf": 0.0994037505457981,
-    "dense_std_conf": 0.07571104127760635,
-    "dense_count_gt_03": 0.04304825574301004,
-    "dense_count_gt_05": 0.012455645114358139,
-    "dense_count_gt_07": 0.014503257715561617,
-    "dense_top10_mean": 0.175626400208694,
-    "dense_top50_mean": 0.14433182250548426,
-    "reward_count": 0.0,
-    "q_eff_mean": 0.0,
-    "quant_loss_mean": 0.0,
-    "fec_gain_mean": 0.0,
-    "cache_term_mean": 0.0,
-    "cost_norm_mean": 0.0
-  },
-  "model_path": "audit_runs/step8_ap_proxy_reward/ap_proxy_dense_rf.pkl"
+  "num_train": 400,
+  "num_test": 100,
+  "train_pearson": 0.9219171278163093,
+  "train_spearman": 0.9292863705398158,
+  "test_pearson": 0.5900614528961976,
+  "test_spearman": 0.5371737173717371,
+  "dense_mean_baseline_test_pearson": 0.05413029140278241,
+  "dense_mean_baseline_test_spearman": -0.040996099609960986,
+  "model_dir": "opencood/logs/main_opv2v_where2comm_grace_full",
+  "yaml_path": "opencood/logs/main_opv2v_where2comm_grace_full/config.yaml",
+  "max_samples": 500,
+  "iou_thr": 0.7
 }

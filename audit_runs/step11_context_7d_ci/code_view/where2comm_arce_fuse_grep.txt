@@ -1,0 +1,47 @@
+1:"""Where2comm fusion with ARCE/C2MAB message transmission hook.
+4:    Where2comm confidence mask -> masked message -> ARCE/C2MAB -> AttentionFusion
+7:attention fusion unchanged. ARCE only modifies non-ego communicated messages
+49:    def forward(self, batch_confidence_maps, B, return_raw: bool = False):
+50:        _, _, H, W = batch_confidence_maps[0].shape
+51:        communication_masks = []
+52:        raw_communication_masks = []
+53:        confidence_maps_out = []
+57:            ori_communication_maps, _ = batch_confidence_maps[b].sigmoid().max(dim=1, keepdim=True)
+81:            confidence_maps_out.append(communication_maps.detach())
+82:            raw_communication_masks.append(raw_mask)
+87:            communication_masks.append(communication_mask)
+91:        communication_masks = torch.cat(communication_masks, dim=0)
+92:        raw_communication_masks = torch.cat(raw_communication_masks, dim=0)
+93:        confidence_maps = torch.cat(confidence_maps_out, dim=0)
+96:            return communication_masks, communication_rates, raw_communication_masks, confidence_maps
+97:        return communication_masks, communication_rates
+105:    def forward(self, x):
+113:class Where2commArce(nn.Module):
+143:    def _maybe_arce_comm(
+146:        communication_masks: torch.Tensor,
+155:        # The transmitted message is already masked by Where2comm. The mask is
+158:        message_masks = raw_masks if raw_masks is not None else communication_masks
+168:                message_masks=message_masks,
+172:            # accept message_masks yet.
+205:    def forward(self, x, psm_single, record_len, pairwise_t_matrix, backbone=None, data_dict=None, frame_id=None):
+217:                        communication_masks = torch.ones((x.shape[0], 1, x.shape[-2], x.shape[-1]), dtype=x.dtype, device=x.device)
+218:                        raw_masks = communication_masks.clone()
+219:                        message_scores = raw_masks
+221:                        batch_confidence_maps = self.regroup(psm_single, record_len)
+222:                        communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
+223:                            batch_confidence_maps, B, return_raw=True
+226:                        message_scores = _confidence_maps * raw_masks
+227:                        if x.shape[-1] != communication_masks.shape[-1] or x.shape[-2] != communication_masks.shape[-2]:
+228:                            communication_masks = F.interpolate(communication_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
+230:                            message_scores = F.interpolate(message_scores, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
+231:                    x = x * communication_masks
+233:                    x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)
+255:                communication_masks = torch.ones((x.shape[0], 1, x.shape[-2], x.shape[-1]), dtype=x.dtype, device=x.device)
+256:                raw_masks = communication_masks.clone()
+257:                message_scores = raw_masks
+259:                batch_confidence_maps = self.regroup(psm_single, record_len)
+260:                communication_masks, communication_rates, raw_masks, _confidence_maps = self.naive_communication(
+261:                    batch_confidence_maps, B, return_raw=True
+264:                message_scores = _confidence_maps * raw_masks
+265:                x = x * communication_masks
+268:            x, arce_info = self._maybe_arce_comm(x, communication_masks, message_scores, record_len, data_dict, frame_id)

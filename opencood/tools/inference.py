@@ -75,12 +75,19 @@ def main():
     print('Loading Model from checkpoint')
     saved_path = opt.model_dir
     _, model = train_utils.load_saved_model(saved_path, model)
+
+    # CoopDiff gates the diffusion/student branch by current_epoch.
+    # Checkpoints do not store this value, so force inference to use the
+    # post-warmup branch.
+    if hasattr(model, 'update_epoch'):
+        model.update_epoch(999)
+
     model.eval()
 
     # Create the dictionary for evaluation.
     # also store the confidence score for each prediction
-    result_stat = {0.3: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
-                   0.5: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
+    result_stat = {0.3: {'tp': [], 'fp': [], 'gt': 0, 'score': []},
+                   0.5: {'tp': [], 'fp': [], 'gt': 0, 'score': []},
                    0.7: {'tp': [], 'fp': [], 'gt': 0, 'score': []}}
 
     if opt.show_sequence:

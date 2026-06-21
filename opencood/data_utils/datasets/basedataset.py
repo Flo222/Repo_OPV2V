@@ -424,9 +424,17 @@ class BaseDataset(Dataset):
                 cur_ego_pose_flag
             )
 
-            data[cav_id]['lidar_np'] = pcd_utils.pcd_to_np(
+            lidar_np = pcd_utils.pcd_to_np(
                 cav_content[timestamp_key_delay]['lidar']
             )
+
+            # CoopDiff teacher/student 需要 clean lidar 作为干净监督
+            data[cav_id]['lidar_np_clean'] = lidar_np.copy()
+            data[cav_id]['transformation_matrix_clean'] = \
+                data[cav_id]['params']['gt_transformation_matrix']
+
+            # 默认仍然使用原始点云；后续 corruptions 再在这里显式加
+            data[cav_id]['lidar_np'] = lidar_np
 
         return data
 

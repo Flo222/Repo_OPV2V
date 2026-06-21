@@ -50,7 +50,6 @@ from __future__ import annotations
 
 import copy
 import math
-import math
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
@@ -74,156 +73,26 @@ from opencood.comm.arce.policies.reward import (
     effective_receive_quality,
 )
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
-from opencood.comm.arce.policies.complementarity import ego_complementarity
+from opencood.comm.arce.c2mab_local_confidence import get_cav_confidence
 
 
-CHANNEL_STATE_ID_TO_NAME = {
-    -1: "ego_or_padding",
-    0: "good",
-    1: "medium",
-    2: "bad",
-}
+from opencood.comm.arce.c2mab_common import (
+    CHANNEL_STATE_ID_TO_NAME,
+    DEFAULT_CHANNEL_PROFILES,
+    QUANT_RATIO_TO_FP32,
+    extract_arce_cfg as _extract_arce_cfg,
+    as_list_record_len as _as_list_record_len,
+    safe_get_nested as _safe_get_nested,
+    profile_scalar as _profile_scalar,
+    normalize_state_name as _normalize_state_name,
+)
 
-
-DEFAULT_CHANNEL_PROFILES = {
-    "good": {
-        "state_name": "good",
-        "bandwidth_mbps": 27.0,
-        "loss_rate": 0.05,
-        "plr": 0.05,
-        "delay_ms": 10.0,
-        "fixed_delay_ms": 10.0,
-        "temporal_source": "current",
-    },
-    "medium": {
-        "state_name": "medium",
-        "bandwidth_mbps": 5.0,
-        "loss_rate": 0.20,
-        "plr": 0.20,
-        "delay_ms": 50.0,
-        "fixed_delay_ms": 50.0,
-        "temporal_source": "current",
-    },
-    "bad": {
-        "state_name": "bad",
-        "bandwidth_mbps": 1.0,
-        "loss_rate": 0.35,
-        "plr": 0.35,
-        "delay_ms": 100.0,
-        "fixed_delay_ms": 100.0,
-        "temporal_source": "previous_frame",
-    },
-}
-
-
-DEFAULT_TRANSITION_MATRIX = [
-    [0.85, 0.13, 0.02],
-    [0.10, 0.80, 0.10],
-    [0.03, 0.17, 0.80],
-]
-
-
-QUANT_RATIO_TO_FP32 = {
-    "fp32": 1.0,
-    "fp16": 0.5,
-    "int8": 0.25,
-    "int4": 0.125,
-}
-
-
-def _extract_arce_cfg(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    cfg = cfg or {}
-    if "arce" in cfg and isinstance(cfg["arce"], dict):
-        return cfg["arce"]
-    return cfg
-
-
-def _as_list_record_len(record_len: Any) -> List[int]:
-    if torch.is_tensor(record_len):
-        return [int(x) for x in record_len.detach().cpu().flatten().tolist()]
-    if isinstance(record_len, (list, tuple)):
-        return [int(x) for x in record_len]
-    return [int(record_len)]
-
-
-def _safe_get_nested(d: Any, keys: Sequence[str], default: Any = None) -> Any:
-    cur = d
-    for k in keys:
-        if isinstance(cur, dict) and k in cur:
-            cur = cur[k]
-        else:
-            return default
-    return cur
-
-
-def _profile_scalar(value: Any, default: float = 0.0) -> float:
-    """
-    Convert scalar / range-style channel profile values to float.
-    The final YAML may use values such as:
-        delay_ms: [15, 25]
-        bandwidth_mbps: 27
-    C2MAB context needs a scalar, so list/tuple values are converted
-    to their numeric mean.
-    """
-    if value is None:
-        return float(default)
-
-    if isinstance(value, (int, float)):
-        return float(value)
-
-    if isinstance(value, (list, tuple)):
-        nums = []
-        for v in value:
-            try:
-                nums.append(float(v))
-            except Exception:
-                pass
-        if nums:
-            return float(sum(nums) / len(nums))
-        return float(default)
-
-    if isinstance(value, dict):
-        for keys in (
-            ("mean",),
-            ("value",),
-            ("default",),
-            ("min", "max"),
-            ("low", "high"),
-        ):
-            vals = []
-            ok = True
-            for k in keys:
-                if k not in value:
-                    ok = False
-                    break
-                try:
-                    vals.append(float(value[k]))
-                except Exception:
-                    ok = False
-                    break
-            if ok and vals:
-                return float(sum(vals) / len(vals))
-        return float(default)
-
-    try:
-        return float(value)
-    except Exception:
-        return float(default)
-
-
-def _normalize_state_name(state_name: Any) -> str:
-    state_name = str(state_name).strip().lower()
-    if state_name == "mid":
-        return "medium"
-    if state_name in ("good", "medium", "bad", "ego_or_padding"):
-        return state_name
-    return "medium"
-
-
-def _canonical_action_attr(action: Any, name: str, default: Any = None) -> Any:
-    if isinstance(action, dict):
-        return action.get(name, default)
-    return getattr(action, name, default)
+from opencood.comm.arce.c2mab_complementarity import (
+    mask_to_bool_2d,
+    mask_to_float_2d,
+    mask_complementarity,
+    confidence_advantage_complementarity,
+)
 
 
 class ARCEC2MABComm:
@@ -430,6 +299,7 @@ class ARCEC2MABComm:
         # Context / C2MAB
         # ------------------------------------------------------------------
         context_cfg = self.arce_cfg.get("context", {})
+        self.include_cav_confidence = bool(context_cfg.get("include_cav_confidence", True))
         self.context_builder = PDFContextBuilder(
             b_max_mbps=float(context_cfg.get("b_max_mbps", 27.0)),
             stale_max_ms=float(
@@ -439,10 +309,26 @@ class ARCEC2MABComm:
                 )
             ),
             confidence_threshold=float(context_cfg.get("confidence_threshold", 0.3)),
+            include_cav_confidence=self.include_cav_confidence,
         )
 
         c2mab_cfg = self.arce_cfg.get("c2mab", {})
-        self.context_dim = int(c2mab_cfg.get("context_dim", 6))
+        default_context_dim = 7 if bool(self.include_cav_confidence) else 6
+        requested_context_dim = int(c2mab_cfg.get("context_dim", default_context_dim))
+
+        # Safety guard:
+        # If C_i is enabled, PDFContextBuilder emits 7D context. LinUCB must
+        # also be initialized with d=7 even if an old config still says
+        # context_dim: 6.
+        if bool(self.include_cav_confidence) and requested_context_dim != 7:
+            self.context_dim_override_reason = (
+                "include_cav_confidence=True requires context_dim=7; "
+                "old config requested {}".format(requested_context_dim)
+            )
+            self.context_dim = 7
+        else:
+            self.context_dim_override_reason = None
+            self.context_dim = requested_context_dim
         self.lambda_reg = float(c2mab_cfg.get("lambda_reg", 1.0))
         self.discount = float(c2mab_cfg.get("discount", 0.97))
         self.beta = float(c2mab_cfg.get("beta", 1.0))
@@ -1010,74 +896,17 @@ class ARCEC2MABComm:
     # ------------------------------------------------------------------
     # mask complementarity utilities
     # ------------------------------------------------------------------
+    # Thin wrappers kept for backward compatibility with existing call sites.
+    # Actual implementation lives in c2mab_complementarity.py.
+
     def _mask_to_bool_2d(self, mask):
-        """Convert Where2comm message/confidence mask to a 2D boolean mask."""
-        if mask is None:
-            return None
-
-        import torch
-
-        if not torch.is_tensor(mask):
-            return None
-
-        m = mask.detach()
-
-        # Common Where2comm mask shapes may include singleton batch/channel dims.
-        while m.dim() > 2:
-            if m.shape[0] == 1:
-                m = m[0]
-            else:
-                # Aggregate channel-like dimension.
-                m = m.float().max(dim=0)[0]
-
-        if m.dim() != 2:
-            return None
-
-        return (m > 0)
+        return mask_to_bool_2d(mask)
 
     def _mask_complementarity(self, sender_mask, ego_mask) -> float:
-        """
-        Comp(i, ego) = |M_i ∩ not(M_ego)| / |M_i|.
-        """
-        sm = self._mask_to_bool_2d(sender_mask)
-        em = self._mask_to_bool_2d(ego_mask)
-
-        if sm is None or em is None:
-            return 0.0
-
-        if tuple(sm.shape) != tuple(em.shape):
-            return 0.0
-
-        denom = float(sm.sum().item())
-        if denom <= 0:
-            return 0.0
-
-        novel = float((sm & (~em)).sum().item())
-        return float(novel / denom)
-
+        return mask_complementarity(sender_mask, ego_mask)
 
     def _mask_to_float_2d(self, mask):
-        """Convert mask/confidence map to a 2D float tensor."""
-        if mask is None:
-            return None
-
-        if not torch.is_tensor(mask):
-            return None
-
-        m = mask.detach().float()
-
-        # Remove singleton dimensions first.
-        while m.dim() > 2:
-            if m.shape[0] == 1:
-                m = m[0]
-            else:
-                # Aggregate channel-like dimension.
-                m = m.max(dim=0)[0]
-
-        if m.dim() != 2:
-            return None
-
-        return m
+        return mask_to_float_2d(mask)
 
     def _confidence_advantage_complementarity(
         self,
@@ -1085,92 +914,11 @@ class ARCEC2MABComm:
         ego_score,
         threshold: float = 0.05,
     ):
-        """
-        Confidence-aware complementarity for Where2comm.
-
-        The original binary-mask formula is:
-            |M_i ∩ not(M_ego)| / |M_i|
-
-        In practice, Where2comm's communication mask can be all-one when the
-        threshold is too low, making binary complementarity always zero.
-        This function instead uses the confidence-map advantage:
-
-            Comp(i, ego) =
-                sum_{u in M_i} max(C_i(u) - C_ego(u), 0)
-                / (sum_{u in M_i} C_i(u) + eps)
-
-        where M_i is the sender's active/high-confidence region.
-
-        This is not a debug fallback. It directly measures where the sender is
-        more confident than ego over the sender's own candidate communication
-        regions, which matches the intended "new useful information" semantics.
-        """
-        ss = self._mask_to_float_2d(sender_score)
-        es = self._mask_to_float_2d(ego_score)
-
-        stats = {
-            "mode": "confidence_advantage",
-            "sender_valid": False,
-            "ego_valid": False,
-            "sender_mean": 0.0,
-            "ego_mean": 0.0,
-            "sender_max": 0.0,
-            "ego_max": 0.0,
-            "sender_active_ratio": 0.0,
-            "advantage_sum": 0.0,
-            "sender_weight_sum": 0.0,
-        }
-
-        if ss is None or es is None:
-            return 0.0, None, stats
-
-        if tuple(ss.shape) != tuple(es.shape):
-            stats["shape_mismatch"] = {
-                "sender_shape": tuple(int(x) for x in ss.shape),
-                "ego_shape": tuple(int(x) for x in es.shape),
-            }
-            return 0.0, None, stats
-
-        stats["sender_valid"] = True
-        stats["ego_valid"] = True
-        stats["sender_mean"] = float(ss.mean().item())
-        stats["ego_mean"] = float(es.mean().item())
-        stats["sender_max"] = float(ss.max().item())
-        stats["ego_max"] = float(es.max().item())
-
-        thr = float(threshold)
-
-        # Sender active region. Prefer the configured Where2comm threshold.
-        sender_active = ss > thr
-
-        # If threshold makes the active set empty, fall back to sender-above-mean.
-        # This fallback only defines the candidate region M_i; the comp score
-        # still depends on confidence advantage C_i - C_ego.
-        if int(sender_active.sum().item()) <= 0:
-            sender_active = ss > float(ss.mean().item())
-
-        if int(sender_active.sum().item()) <= 0:
-            return 0.0, sender_active, stats
-
-        advantage = torch.clamp(ss - es, min=0.0) * sender_active.float()
-        sender_weight = ss * sender_active.float()
-
-        advantage_sum = float(advantage.sum().item())
-        sender_weight_sum = float(sender_weight.sum().item())
-        active_ratio = float(sender_active.float().mean().item())
-
-        stats["sender_active_ratio"] = active_ratio
-        stats["advantage_sum"] = advantage_sum
-        stats["sender_weight_sum"] = sender_weight_sum
-
-        if sender_weight_sum <= 1e-12:
-            comp = 0.0
-        else:
-            comp = advantage_sum / max(sender_weight_sum, 1e-12)
-
-        comp = max(0.0, min(1.0, float(comp)))
-        return comp, sender_active, stats
-
+        return confidence_advantage_complementarity(
+            sender_score,
+            ego_score,
+            threshold=threshold,
+        )
 
     def communicate_agent_features(
         self,
@@ -1182,6 +930,8 @@ class ARCEC2MABComm:
         update_cache: bool = True,
         return_records: bool = True,
         message_masks: Optional[torch.Tensor] = None,
+    
+        local_cav_confidences: Optional[torch.Tensor] = None,
     ):
         """
         Communicate one batch item's features [N, C, H, W].
@@ -1346,9 +1096,22 @@ class ARCEC2MABComm:
             # than other context dimensions in [0,1]. We map it to [0,1] using
             # a saturating transform rather than a hard-coded linear multiplier.
             comp_raw = float(comp_i_ego)
-            comp_tau = float(self.arce_cfg.get("complementarity_tau", 5e-5))
-            comp_tau = max(comp_tau, 1e-12)
-            comp_norm = 1.0 - math.exp(-max(0.0, comp_raw) / comp_tau)
+            # Step 8: complementarity_raw is already designed as a normalized
+            # confidence-advantage ratio in [0, 1].  The old exponential mapping
+            #   1 - exp(-comp_raw / tau)
+            # with a fixed tau=5e-5 easily saturates or collapses the feature.
+            # Therefore, use clipped raw complementarity by default.
+            #
+            # Optional legacy mode:
+            #   arce.complementarity_norm: exp_tau
+            #   arce.complementarity_tau: <float>
+            comp_norm_mode = str(self.arce_cfg.get("complementarity_norm", "raw_clip")).lower()
+            if comp_norm_mode in ("exp", "exp_tau", "legacy_exp"):
+                comp_tau = float(self.arce_cfg.get("complementarity_tau", 5e-5))
+                comp_tau = max(comp_tau, 1e-12)
+                comp_norm = 1.0 - math.exp(-max(0.0, comp_raw) / comp_tau)
+            else:
+                comp_norm = max(0.0, min(1.0, float(comp_raw)))
             comp_norm = max(0.0, min(1.0, float(comp_norm)))
 
             context = self.context_builder.build(
@@ -1357,6 +1120,7 @@ class ARCEC2MABComm:
                 ego_confidence=ego_conf,
                 cache_quality=cache_q,
                 complementarity=comp_norm,
+                cav_confidence=get_cav_confidence(local_cav_confidences, sender_idx, default=0.0),
             )
 
             feasible = []
@@ -1552,6 +1316,7 @@ class ARCEC2MABComm:
                             ego_confidence=float(ego_conf),
                             cache_quality=float(cache_q),
                             complementarity=0.0,
+                            cav_confidence=get_cav_confidence(local_cav_confidences, sender_idx, default=0.0),
                         )
                         rec["pdf_action"] = action.as_dict()
                         rec["context_vector"] = context.vector.tolist()
@@ -1905,6 +1670,8 @@ class ARCEC2MABComm:
         update_cache: bool = True,
         return_records: bool = True,
         message_masks: Optional[torch.Tensor] = None,
+    
+        local_cav_confidences: Optional[torch.Tensor] = None,
     ):
         """
         Communicate OpenCOOD flattened features [sum(record_len), C, H, W].
@@ -1936,6 +1703,8 @@ class ARCEC2MABComm:
                 update_cache=update_cache,
                 return_records=True,
                 message_masks=group_masks,
+            
+                local_cav_confidences=local_cav_confidences,
             )
 
             outputs.append(out_group)
@@ -2007,7 +1776,23 @@ class ARCEC2MABComm:
             policy = self.get_policy(item["ego_id"], item["sender_id"])
             _policy_t_before = int(getattr(policy, "t", -1))
             _context_vector = item["context_vector"]
-            policy.update(item["action_id"], _context_vector, reward)
+            # Step 9: pass channel profile into CW-D-LinUCB so feedback
+            # weighting can use physical link quality instead of silently
+            # falling back to w=1.
+            _channel_profile = item.get("channel_profile", None)
+            if not isinstance(_channel_profile, dict):
+                _q_recv_for_weight = float(item.get("q_recv", item.get("q_eff", 1.0)))
+                _q_recv_for_weight = max(0.0, min(1.0, _q_recv_for_weight))
+                _channel_profile = {
+                    "loss_rate": float(1.0 - _q_recv_for_weight),
+                }
+
+            _feedback_weight = policy.update(
+                item["action_id"],
+                _context_vector,
+                reward,
+                channel_profile=_channel_profile,
+            )
             _policy_t_after = int(getattr(policy, "t", -1))
 
             info["policy_update_debug"] = {
@@ -2017,6 +1802,8 @@ class ARCEC2MABComm:
                 "policy_t_before": int(_policy_t_before),
                 "policy_t_after": int(_policy_t_after),
                 "policy_t_delta": int(_policy_t_after - _policy_t_before),
+                "feedback_weight": float(_feedback_weight),
+                "channel_profile": dict(_channel_profile),
             }
 
             info.update(

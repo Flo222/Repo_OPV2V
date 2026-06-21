@@ -540,6 +540,8 @@ class Where2comm(nn.Module):
                     record_len=record_len,
                     communication_mask=communication_masks,
                     frame_id=None,
+                    scale_idx=scale_idx,
+                    num_scales=num_scales,
                 )
                 self.cosdh_markov_info = cosdh_markov_info
             else:

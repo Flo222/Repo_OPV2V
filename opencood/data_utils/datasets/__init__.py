@@ -7,6 +7,7 @@ from opencood.data_utils.datasets.early_fusion_dataset import EarlyFusionDataset
 from opencood.data_utils.datasets.intermediate_fusion_dataset import IntermediateFusionDataset
 from opencood.data_utils.datasets.intermediate_fusion_dataset_v2 import IntermediateFusionDatasetV2
 from opencood.data_utils.datasets.intermediate_fusion_dataset_v2xreal import IntermediateFusionDatasetV2XReal
+from opencood.data_utils.datasets.intermediate_fusion_dataset_coopdiff import IntermediateFusionDatasetCoopdiff
 
 __all__ = {
     'LateFusionDataset': LateFusionDataset,
@@ -14,6 +15,7 @@ __all__ = {
     'IntermediateFusionDataset': IntermediateFusionDataset,
     'IntermediateFusionDatasetV2': IntermediateFusionDatasetV2,
     'IntermediateFusionDatasetV2XReal': IntermediateFusionDatasetV2XReal,
+    'IntermediateFusionDatasetCoopdiff': IntermediateFusionDatasetCoopdiff
 }
 
 # Keep OPV2V original global range. V2X-Real uses V2XREAL_GT_RANGE inside its own dataset file.

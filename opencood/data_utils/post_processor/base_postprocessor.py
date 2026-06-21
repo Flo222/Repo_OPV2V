@@ -145,3 +145,34 @@ class BasePostprocessor(object):
             object_ids.append(object_id)
 
         return object_np, mask, object_ids
+
+    def generate_object_corner(self, cav_contents, reference_lidar_pose):
+        """
+        CoopDiff compatibility:
+        Generate object 3D box corners in the reference lidar coordinate.
+
+        Returns
+        -------
+        output_dict : dict
+            key: object id
+            value: object box corners, shape usually (1, 8, 3)
+        """
+        from opencood.data_utils.datasets import GT_RANGE
+
+        tmp_object_dict = {}
+        for cav_content in cav_contents:
+            tmp_object_dict.update(cav_content['params']['vehicles'])
+
+        output_dict = {}
+        filter_range = self.params['anchor_args']['cav_lidar_range'] \
+            if self.train else GT_RANGE
+
+        box_utils.project_world_objects_corner(
+            tmp_object_dict,
+            output_dict,
+            reference_lidar_pose,
+            filter_range,
+            self.params['order']
+        )
+        return output_dict
+

@@ -1,0 +1,76 @@
+{
+  "model_has_ap_proxy_enabled_attr": true,
+  "model_ap_proxy_error": null,
+  "rows": [
+    {
+      "idx": 0,
+      "ap_proxy_enabled": true,
+      "ap_proxy_used": true,
+      "ap_proxy_error": null,
+      "collab_confidence_source": "dense_ap_proxy",
+      "collab_confidence": 0.7210896138132047,
+      "ego_ap_proxy_used": true,
+      "ego_confidence_source": "dense_ap_proxy",
+      "ego_confidence": 0.7655311584204604,
+      "ap_proxy_delta": -0.04444154460725569,
+      "num_updated": 1,
+      "mean_reward": 0.08339842853678109
+    },
+    {
+      "idx": 1,
+      "ap_proxy_enabled": true,
+      "ap_proxy_used": true,
+      "ap_proxy_error": null,
+      "collab_confidence_source": "dense_ap_proxy",
+      "collab_confidence": 0.778557026789808,
+      "ego_ap_proxy_used": true,
+      "ego_confidence_source": "dense_ap_proxy",
+      "ego_confidence": 0.7717035253785314,
+      "ap_proxy_delta": 0.006853501411276608,
+      "num_updated": 1,
+      "mean_reward": 0.1484494124062308
+    },
+    {
+      "idx": 2,
+      "ap_proxy_enabled": true,
+      "ap_proxy_used": true,
+      "ap_proxy_error": null,
+      "collab_confidence_source": "dense_ap_proxy",
+      "collab_confidence": 0.6163576341995636,
+      "ego_ap_proxy_used": true,
+      "ego_confidence_source": "dense_ap_proxy",
+      "ego_confidence": 0.7580926217726236,
+      "ap_proxy_delta": -0.14173498757306002,
+      "num_updated": 1,
+      "mean_reward": 0.0066623988897487885
+    },
+    {
+      "idx": 3,
+      "ap_proxy_enabled": true,
+      "ap_proxy_used": true,
+      "ap_proxy_error": null,
+      "collab_confidence_source": "dense_ap_proxy",
+      "collab_confidence": 0.7992377257172859,
+      "ego_ap_proxy_used": true,
+      "ego_confidence_source": "dense_ap_proxy",
+      "ego_confidence": 0.7922968244222116,
+      "ap_proxy_delta": 0.006940901295074298,
+      "num_updated": 1,
+      "mean_reward": 0.10713404956284198
+    },
+    {
+      "idx": 4,
+      "ap_proxy_enabled": true,
+      "ap_proxy_used": true,
+      "ap_proxy_error": null,
+      "collab_confidence_source": "dense_ap_proxy",
+      "collab_confidence": 0.7694457232072381,
+      "ego_ap_proxy_used": true,
+      "ego_confidence_source": "dense_ap_proxy",
+      "ego_confidence": 0.7691619600918908,
+      "ap_proxy_delta": 0.00028376311534739074,
+      "num_updated": 1,
+      "mean_reward": 0.11912368673975116
+    }
+  ]
+}

@@ -25,7 +25,8 @@ class CosDHMarkovByteChannel(nn.Module):
     Key alignment with V2X-ViT-Markov / Where2comm-Markov:
       - One Markov state is sampled per ego<-CAV link per frame.
       - One bandwidth budget is shared by all CoSDH scales for the same link
-        within that frame.
+        within that frame. The session key excludes scale_idx; only delay cache
+        is scale-specific because feature shapes differ across scales.
       - All CoSDH scales may communicate, but they consume the same link budget
         instead of each scale getting an independent full bandwidth budget.
 
@@ -359,7 +360,7 @@ class CosDHMarkovByteChannel(nn.Module):
                 if local_idx == 0 and not self.impair_ego:
                     continue
 
-                link_key = "b{}_cav{}_s{}".format(b, local_idx, int(scale_idx))
+                link_key = "b{}_cav{}".format(b, local_idx)
                 session = self._get_or_create_session(link_key, x.device)
 
                 cur_msg = out[global_idx]

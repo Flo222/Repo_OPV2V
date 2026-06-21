@@ -16,7 +16,6 @@ import opencood.hypes_yaml.yaml_utils as yaml_utils
 from opencood.tools import train_utils
 from opencood.tools import multi_gpu_utils
 from opencood.data_utils.datasets import build_dataset
-from opencood.tools import train_utils
 
 
 def train_parser():
@@ -31,6 +30,35 @@ def train_parser():
                         help='url used to set up distributed training')
     opt = parser.parse_args()
     return opt
+
+
+def add_coopdiff_auxiliary_losses(output_dict, final_loss, criterion,
+                                  label_dict, late_loss_weight=10.0):
+    """Add CoopDiff auxiliary losses when they are returned by the model.
+
+    Existing OpenCOOD models are unaffected because they normally only return
+    psm/rm/dm keys. CoopDiff student/teacher variants may additionally return
+    late_loss, diff_grad_loss, psm_singe/rm_singe, and reg_loss.
+    """
+    if not isinstance(output_dict, dict):
+        return final_loss
+
+    if 'late_loss' in output_dict:
+        final_loss = final_loss + late_loss_weight * output_dict['late_loss']
+
+    if 'diff_grad_loss' in output_dict:
+        final_loss = final_loss + output_dict['diff_grad_loss']
+
+    if 'psm_singe' in output_dict and 'rm_singe' in output_dict:
+        single_output_dict = dict(output_dict)
+        single_output_dict['psm'] = output_dict['psm_singe']
+        single_output_dict['rm'] = output_dict['rm_singe']
+        final_loss = final_loss + criterion(single_output_dict, label_dict)
+
+    if 'reg_loss' in output_dict:
+        final_loss = final_loss + output_dict['reg_loss']
+
+    return final_loss
 
 
 def main():
@@ -120,11 +148,17 @@ def main():
     if opt.half:
         scaler = torch.cuda.amp.GradScaler()
 
+    late_loss_weight = hypes.get('train_params', {}).get('late_loss_weight', 10.0)
+
     print('Training start')
     epoches = hypes['train_params']['epoches']
     # used to help schedule learning rate
 
     for epoch in range(init_epoch, max(epoches, init_epoch)):
+        # CoopDiff switches training/inference behavior by epoch.
+        if hasattr(model_without_ddp, 'update_epoch'):
+            model_without_ddp.update_epoch(epoch)
+
         if hypes['lr_scheduler']['core_method'] != 'cosineannealwarm':
             scheduler.step(epoch)
         if hypes['lr_scheduler']['core_method'] == 'cosineannealwarm':
@@ -157,12 +191,17 @@ def main():
                 # second argument is always your label dictionary.
                 final_loss = criterion(ouput_dict,
                                        batch_data['ego']['label_dict'])
+                final_loss = add_coopdiff_auxiliary_losses(
+                    ouput_dict, final_loss, criterion,
+                    batch_data['ego']['label_dict'], late_loss_weight)
             else:
                 with torch.cuda.amp.autocast():
                     ouput_dict = model(batch_data['ego'])
                     final_loss = criterion(ouput_dict,
                                            batch_data['ego']['label_dict'])
-
+                    final_loss = add_coopdiff_auxiliary_losses(
+                        ouput_dict, final_loss, criterion,
+                        batch_data['ego']['label_dict'], late_loss_weight)
 
             criterion.logging(epoch, i, len(train_loader), writer, pbar=pbar2)
             pbar2.update(1)
@@ -194,6 +233,9 @@ def main():
 
                     final_loss = criterion(ouput_dict,
                                            batch_data['ego']['label_dict'])
+                    final_loss = add_coopdiff_auxiliary_losses(
+                        ouput_dict, final_loss, criterion,
+                        batch_data['ego']['label_dict'], late_loss_weight)
                     valid_ave_loss.append(final_loss.item())
             valid_ave_loss = statistics.mean(valid_ave_loss)
             print('At epoch %d, the validation loss is %f' % (epoch,
