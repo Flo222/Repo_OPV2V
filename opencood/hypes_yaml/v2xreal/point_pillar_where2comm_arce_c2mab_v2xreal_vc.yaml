@@ -1,22 +1,24 @@
 name: point_pillar_where2comm_arce_c2mab_v2xreal_vc
 root_dir: /data/v2xreal/train
 validate_dir: /data/v2xreal/validate
+dataset_mode: vc
 wild_setting:
-  seed: 20
   async: false
   async_mode: sim
   async_overhead: 100
+  seed: 20
   loc_err: false
   xyz_std: 0.2
   ryp_std: 0.2
   data_size: 1.06
   transmission_speed: 27
   backbone_delay: 10
+  frame_interval_ms: 100
   channel_state_markov:
     enabled: true
     scope: link
     initial_state: medium
-    states:
+    states: &id003
     - good
     - medium
     - bad
@@ -53,65 +55,7 @@ wild_setting:
         loss_rate: 0.35
         delay_ms: 100.0
         plr: 0.35
-channel_state_markov:
-  enabled: true
-  scope: link
-  initial_state: medium
-  init_state: medium
-  states:
-  - good
-  - medium
-  - bad
-  transition_matrix:
-    good:
-      good: 0.85
-      medium: 0.13
-      bad: 0.02
-    medium:
-      good: 0.1
-      medium: 0.8
-      bad: 0.1
-    bad:
-      good: 0.03
-      medium: 0.17
-      bad: 0.8
-  transition_matrix_list:
-  - - 0.85
-    - 0.13
-    - 0.02
-  - - 0.1
-    - 0.8
-    - 0.1
-  - - 0.03
-    - 0.17
-    - 0.8
-  delay_ms:
-    good: 10.0
-    medium: 50.0
-    bad: 100.0
-  profiles:
-    good:
-      bandwidth_mbps: 27.0
-      loss_rate: 0.05
-      plr: 0.05
-      delay_ms: 10.0
-      fixed_delay_ms: 10.0
-      temporal_source: current
-    medium:
-      bandwidth_mbps: 5.0
-      loss_rate: 0.2
-      plr: 0.2
-      delay_ms: 50.0
-      fixed_delay_ms: 50.0
-      temporal_source: current
-    bad:
-      bandwidth_mbps: 1.0
-      loss_rate: 0.35
-      plr: 0.35
-      delay_ms: 100.0
-      fixed_delay_ms: 100.0
-      temporal_source: previous_frame
-seed: 2026
+    seed: 2026
 yaml_parser: load_point_pillar_params
 train_params:
   batch_size: 1
@@ -126,20 +70,13 @@ fusion:
 preprocess:
   core_method: SpVoxelPreprocessor
   args:
-    voxel_size: &id002
+    voxel_size:
     - 0.4
     - 0.4
     - 30
     max_points_per_voxel: 32
-    max_voxel_train: 32000
-    max_voxel_test: 70000
-    cav_lidar_range:
-    - -140.8
-    - -38.4
-    - -3
-    - 140.8
-    - 38.4
-    - 1
+    max_voxel_train: 64000
+    max_voxel_test: 640000
   cav_lidar_range: &id001
   - -102.4
   - -38.4
@@ -148,6 +85,49 @@ preprocess:
   - 38.4
   - 15
   num_class: 3
+  anchor_generator_config: &id002
+  - class_name: vehicle
+    anchor_sizes:
+    - - 3.9
+      - 1.6
+      - 1.56
+    anchor_rotations:
+    - 0
+    - 1.57
+    anchor_bottom_heights:
+    - -1.78
+    align_center: true
+    feature_map_stride: 2
+    matched_threshold: 0.6
+    unmatched_threshold: 0.45
+  - class_name: pedestrian
+    anchor_sizes:
+    - - 0.8
+      - 0.6
+      - 1.73
+    anchor_rotations:
+    - 0
+    - 1.57
+    anchor_bottom_heights:
+    - -0.6
+    align_center: true
+    feature_map_stride: 2
+    matched_threshold: 0.5
+    unmatched_threshold: 0.35
+  - class_name: truck
+    anchor_sizes:
+    - - 8
+      - 3
+      - 3
+    anchor_rotations:
+    - 0
+    - 1.57
+    anchor_bottom_heights:
+    - -1.78
+    align_center: true
+    feature_map_stride: 2
+    matched_threshold: 0.6
+    unmatched_threshold: 0.45
 data_augment:
 - NAME: random_world_flip
   ALONG_AXIS_LIST:
@@ -165,49 +145,7 @@ postprocess:
   anchor_args:
     cav_lidar_range: *id001
     num: 2
-    anchor_generator_config:
-    - class_name: vehicle
-      anchor_sizes:
-      - - 3.9
-        - 1.6
-        - 1.56
-      anchor_rotations:
-      - 0
-      - 1.57
-      anchor_bottom_heights:
-      - -1.78
-      align_center: true
-      feature_map_stride: 2
-      matched_threshold: 0.6
-      unmatched_threshold: 0.45
-    - class_name: pedestrian
-      anchor_sizes:
-      - - 0.8
-        - 0.6
-        - 1.73
-      anchor_rotations:
-      - 0
-      - 1.57
-      anchor_bottom_heights:
-      - -0.6
-      align_center: true
-      feature_map_stride: 2
-      matched_threshold: 0.5
-      unmatched_threshold: 0.35
-    - class_name: truck
-      anchor_sizes:
-      - - 8
-        - 3
-        - 3
-      anchor_rotations:
-      - 0
-      - 1.57
-      anchor_bottom_heights:
-      - -1.78
-      align_center: true
-      feature_map_stride: 2
-      matched_threshold: 0.6
-      unmatched_threshold: 0.45
+    anchor_generator_config: *id002
   target_args:
     score_threshold: 0.2
   order: hwl
@@ -216,11 +154,22 @@ postprocess:
 model:
   core_method: point_pillar_where2comm_arce_v2xreal
   args:
-    voxel_size: *id002
-    lidar_range: *id001
+    voxel_size:
+    - 0.4
+    - 0.4
+    - 30
+    lidar_range:
+    - -102.4
+    - -38.4
+    - -15
+    - 102.4
+    - 38.4
+    - 15
     anchor_number: 2
+    anchor_num: 2
     head_dim: 256
     max_cav: 4
+    num_class: 3
     compression: 0
     backbone_fix: false
     pillar_vfe:
@@ -232,7 +181,7 @@ model:
     point_pillar_scatter:
       num_features: 64
     base_bev_backbone:
-      layer_nums: &id003
+      layer_nums:
       - 3
       - 5
       - 8
@@ -240,7 +189,7 @@ model:
       - 2
       - 2
       - 2
-      num_filters: &id004
+      num_filters:
       - 64
       - 128
       - 256
@@ -256,7 +205,7 @@ model:
       kernal_size:
       - 3
       stride:
-      - 2
+      - 1
       padding:
       - 1
       dim:
@@ -267,12 +216,18 @@ model:
       voxel_size:
       - 0.4
       - 0.4
-      - 4
+      - 30
       downsample_rate: 4
       in_channels: 256
       multi_scale: true
-      layer_nums: *id003
-      num_filters: *id004
+      layer_nums:
+      - 3
+      - 5
+      - 8
+      num_filters:
+      - 64
+      - 128
+      - 256
       communication:
         round: 1
         threshold: 0.01
@@ -321,15 +276,16 @@ model:
         xor_group_size: 4
         decode_overhead: 0.0
       context:
-        dim: 6
+        dim: 7
         use_complementarity: false
         normalize_bandwidth_by_mbps: 27.0
         normalize_delay_by_ms: 100.0
         b_max_mbps: 27.0
         stale_max_ms: 100.0
         confidence_threshold: 0.3
+        include_cav_confidence: true
       c2mab:
-        context_dim: 6
+        context_dim: 7
         ridge_lambda: 1.0
         lambda_reg: 1.0
         discount: 0.97
@@ -364,10 +320,7 @@ model:
         initial_state: medium
         init_state: medium
         seed: 2026
-        states:
-        - good
-        - medium
-        - bad
+        states: *id003
         transition_matrix:
         - - 0.85
           - 0.13
@@ -392,24 +345,18 @@ model:
           good:
             bandwidth_mbps: 27.0
             loss_rate: 0.05
-            plr: 0.05
             delay_ms: 10.0
-            fixed_delay_ms: 10.0
-            temporal_source: current
+            plr: 0.05
           medium:
             bandwidth_mbps: 5.0
             loss_rate: 0.2
-            plr: 0.2
             delay_ms: 50.0
-            fixed_delay_ms: 50.0
-            temporal_source: current
+            plr: 0.2
           bad:
             bandwidth_mbps: 1.0
             loss_rate: 0.35
-            plr: 0.35
             delay_ms: 100.0
-            fixed_delay_ms: 100.0
-            temporal_source: previous_frame
+            plr: 0.35
       delay:
         policy_by_state:
           good: current
@@ -466,10 +413,7 @@ model:
         - 0.25
         - 0.5
         parity_rule: ceil_source_packets_times_rho
-      recovery:
-        temporal_cache: true
-        spatial_interpolation: true
-        zero_fill: true
+      recovery: arce
       temporal_fusion:
         enabled: true
         beta: 5.0
@@ -498,8 +442,33 @@ model:
           loss_rate: 0.35
           delay_ms: 100.0
           plr: 0.35
-    anchor_num: 2
-    num_class: 3
+      recovery_priority: &id004
+      - temporal_cache
+      - spatial_interpolation
+      - zero_fill
+      fixed_policy:
+        enabled: true
+        recovery: arce
+        recovery_priority: *id004
+        profiles:
+          good:
+            quant_mode: fp16
+            fec_type: none
+            redundancy_ratio: 0.0
+            xor_group_size: 4
+            decode_overhead: 0.0
+          medium:
+            quant_mode: int8
+            fec_type: xor
+            redundancy_ratio: 0.25
+            xor_group_size: 4
+            decode_overhead: 0.0
+          bad:
+            quant_mode: int4
+            fec_type: raptor_sim
+            redundancy_ratio: 0.5
+            xor_group_size: 4
+            decode_overhead: 0.0
 loss:
   core_method: point_pillar_loss_v2xreal
   args:
@@ -508,14 +477,13 @@ loss:
     num_class: 3
 optimizer:
   core_method: Adam
-  lr: 2e-4
+  lr: 0.001
   args:
     eps: 1e-10
-    weight_decay: 1e-2
+    weight_decay: 1e-4
 lr_scheduler:
-  core_method: cosineannealwarm
-  epoches: 50
-  warmup_lr: 2e-5
-  warmup_epoches: 10
-  lr_min: 5e-6
-dataset_mode: vc
+  core_method: multistep
+  gamma: 0.1
+  step_size:
+  - 15
+  - 50

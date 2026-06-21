@@ -148,7 +148,22 @@ class BasePostprocessor(object):
         object_ids = []
 
         for i, (object_id, object_bbx) in enumerate(output_dict.items()):
-            object_np[i] = object_bbx[0, :]
+            # V2X-Real label format is 8-dim:
+            # [x, y, z, h, w, l, yaw, class_id].
+            # box_utils.project_world_objects only returns 7-dim box center,
+            # so the class id needs to be appended here.
+            if object_bbx.shape[-1] >= 8:
+                object_np[i] = object_bbx[0, :8]
+            else:
+                object_np[i, :7] = object_bbx[0, :7]
+
+                cls_id = 1
+                if object_id in tmp_object_dict and 'obj_type' in tmp_object_dict[object_id]:
+                    cls_id = tmp_object_dict[object_id]['obj_type']
+                    if isinstance(cls_id, (list, tuple, np.ndarray)):
+                        cls_id = cls_id[0]
+                object_np[i, 7] = int(cls_id)
+
             mask[i] = 1
             object_ids.append(object_id)
 

@@ -16,8 +16,6 @@ from typing import Any, Dict, Iterable, Optional, Sequence
 
 import numpy as np
 
-from opencood.comm.arce.policies.feedback_corruption import channel_corruption_weight
-
 
 @dataclass
 class LinUCBScore:
@@ -41,19 +39,13 @@ def channel_quality_weight(
     alpha: float = 1.0,
     floor: float = 0.05,
 ) -> float:
-    """Return feedback weight w from explicit corruption C.
-
-    C_{t,i} is derived from channel indicators, mainly packet loss rate:
-        C_{t,i} = clip(loss_rate, 0, 1)
-        w_{t,i} = exp(-alpha * C_{t,i})
-    """
-    w, _info = channel_corruption_weight(
-        loss_rate=loss_rate,
-        rsrp_dbm=rsrp_dbm,
-        alpha=alpha,
-        floor=floor,
-    )
-    return float(w)
+    if loss_rate is not None:
+        w = math.exp(-float(alpha) * max(0.0, float(loss_rate)))
+    elif rsrp_dbm is not None:
+        w = 1.0 / (1.0 + math.exp(-(float(rsrp_dbm) + 100.0) / 10.0))
+    else:
+        w = 1.0
+    return float(max(float(floor), min(1.0, w)))
 
 
 class DiscountedLinUCB:
@@ -110,15 +102,8 @@ class DiscountedLinUCB:
         }
 
         self.t = 0
-        self.last_feedback_weight = {
+        self.last_feedback_weight: Dict[str, float] = {
             a: 1.0 for a in self.action_ids
-        }
-        self.last_feedback_corruption_C = {
-            a: 0.0 for a in self.action_ids
-        }
-        self.last_feedback_corruption_info = {
-            a: {"feedback_corruption_C": 0.0, "corruption_source": "init"}
-            for a in self.action_ids
         }
 
     def _context(self, context: Any) -> np.ndarray:
@@ -176,44 +161,23 @@ class DiscountedLinUCB:
         c: np.ndarray,
         channel_profile: Optional[Dict[str, Any]] = None,
     ) -> float:
-        """Compute feedback weight w_{t,i} and store explicit corruption C."""
         if self.feedback_weight_mode == "none":
-            self.last_feedback_corruption_C[action_id] = 0.0
-            self.last_feedback_corruption_info[action_id] = {
-                "feedback_corruption_C": 0.0,
-                "corruption_source": "none",
-                "feedback_weight": 1.0,
-                "feedback_weight_formula": "none",
-            }
             return 1.0
 
         if self.feedback_weight_mode == "channel_quality":
             channel_profile = channel_profile or {}
-            w, info = channel_corruption_weight(
+            return channel_quality_weight(
                 loss_rate=channel_profile.get("loss_rate"),
                 rsrp_dbm=channel_profile.get("rsrp_dbm"),
                 alpha=self.feedback_weight_alpha,
                 floor=self.feedback_weight_floor,
             )
-            self.last_feedback_corruption_C[action_id] = float(
-                info.get("feedback_corruption_C", 0.0)
-            )
-            self.last_feedback_corruption_info[action_id] = dict(info)
-            return float(w)
 
-        # mode == "statistical": faithful CW-C2UCB, w = min(1, alpha/||c||_{A^-1})
+        # statistical mode: w = min(1, alpha / ||c||_{A^-1})
         A_inv = np.linalg.inv(self.A[action_id])
         norm = float(np.sqrt(max(float(c @ A_inv @ c), 1e-12)))
         w = self.statistical_weight_alpha / max(norm, 1e-12)
-        w = float(max(self.feedback_weight_floor, min(1.0, w)))
-        self.last_feedback_corruption_C[action_id] = 0.0
-        self.last_feedback_corruption_info[action_id] = {
-            "feedback_corruption_C": 0.0,
-            "corruption_source": "statistical_weight",
-            "feedback_weight": float(w),
-            "feedback_weight_formula": "min(1, alpha / ||context||_{A^-1})",
-        }
-        return float(w)
+        return float(max(self.feedback_weight_floor, min(1.0, w)))
 
     def update(
         self,

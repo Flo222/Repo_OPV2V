@@ -1,0 +1,41 @@
+opencood/comm/arce/arce_c2mab_comm.py:72:    c2mab_link_proxy_reward,
+opencood/comm/arce/arce_c2mab_comm.py:452:        self.pending_reward = RewardBuffer()
+opencood/comm/arce/arce_c2mab_comm.py:493:        self.pending_reward = RewardBuffer()
+opencood/comm/arce/arce_c2mab_comm.py:1326:                        self.pending_reward.add(
+opencood/comm/arce/arce_c2mab_comm.py:1583:            self.pending_reward.add(
+opencood/comm/arce/arce_c2mab_comm.py:1737:        pending = self.pending_reward.pop_all()
+opencood/comm/arce/arce_c2mab_comm.py:1747:        reward_infos = []
+opencood/comm/arce/arce_c2mab_comm.py:1752:            reward, info = c2mab_link_proxy_reward(
+opencood/comm/arce/arce_c2mab_comm.py:1753:                delta_confidence=delta_conf,
+opencood/comm/arce/arce_c2mab_comm.py:1827:            reward_infos.append(info)
+opencood/comm/arce/arce_c2mab_comm.py:1834:            "delta_confidence": float(delta_conf),
+opencood/comm/arce/arce_c2mab_comm.py:1837:                sum(x["reward"] for x in reward_infos) / max(len(reward_infos), 1)
+opencood/comm/arce/arce_c2mab_comm.py:1839:            "link_rewards": reward_infos,
+opencood/comm/arce/policies/__init__.py:7:from opencood.comm.arce.policies.reward import mean_detection_confidence, pdf_proxy_reward, RewardBuffer
+opencood/comm/arce/policies/reward.py:47:def c2mab_link_proxy_reward(
+opencood/comm/arce/policies/reward.py:48:    delta_confidence: float,
+opencood/comm/arce/policies/reward.py:109:        w * float(delta_confidence)
+opencood/comm/arce/policies/reward.py:121:        "delta_confidence": float(delta_confidence),
+opencood/comm/arce/policies/reward.py:149:def pdf_proxy_reward(
+opencood/comm/arce/policies/reward.py:161:    c2mab_link_proxy_reward().
+opencood/comm/arce/policies/reward.py:169:        "delta_confidence": float(delta_conf),
+opencood/comm/arce/policies/reward.py:199:    "c2mab_link_proxy_reward",
+opencood/comm/arce/policies/reward.py:200:    "pdf_proxy_reward",
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:47:def c2mab_link_proxy_reward(
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:48:    delta_confidence: float,
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:91:        w * float(delta_confidence)
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:101:        "delta_confidence": float(delta_confidence),
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:122:def pdf_proxy_reward(
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:134:    c2mab_link_proxy_reward().
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:142:        "delta_confidence": float(delta_conf),
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:172:    "c2mab_link_proxy_reward",
+opencood/comm/arce/policies/reward.py.bak_fec_cache_reward:173:    "pdf_proxy_reward",
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:47:def c2mab_link_proxy_reward(
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:48:    delta_confidence: float,
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:74:        w * float(delta_confidence)
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:82:        "delta_confidence": float(delta_confidence),
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:98:def pdf_proxy_reward(
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:110:    c2mab_link_proxy_reward().
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:118:        "delta_confidence": float(delta_conf),
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:148:    "c2mab_link_proxy_reward",
+opencood/comm/arce/policies/reward.py.bak_quant_quality_reward:149:    "pdf_proxy_reward",

@@ -103,7 +103,7 @@ class EgoGreedyKnapsackOracle:
         diversity_aware: bool = True,
         cost_alpha: float = 0.25,
         quant_quality_prior=None,
-        min_marginal_coverage: float = 0.001,
+        min_marginal_coverage: float = 0.005,
     ):
         self.eps_cost = float(eps_cost)
         self.lambda_comp = float(lambda_comp)

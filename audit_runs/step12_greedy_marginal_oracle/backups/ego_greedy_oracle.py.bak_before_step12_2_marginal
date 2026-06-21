@@ -24,7 +24,6 @@ class CAVProposal:
     cost_bytes: float
     record: Dict[str, Any]
     mask: Optional[Any] = None
-    ego_mask: Optional[Any] = None
     complementarity: float = 0.0
 
     def as_dict(self) -> Dict[str, Any]:
@@ -70,17 +69,6 @@ def _overlap_ratio(mask_i: Any, mask_selected: Any) -> float:
     return float((mi & ms).sum().item() / max(denom, 1.0))
 
 
-def _marginal_coverage_ratio(mask_i: Any, mask_selected: Any) -> float:
-    """Fraction of CAV i's valid mask not yet covered by ego/selected CAVs.
-
-    This is the dynamic super-arm marginal utility used by the oracle.
-    Static CAV-ego complementarity stays in the context and is learned by
-    D-LinUCB, rather than being manually multiplied into oracle gain.
-    """
-    overlap = _overlap_ratio(mask_i, mask_selected)
-    return float(max(0.0, min(1.0, 1.0 - overlap)))
-
-
 def _union_mask(mask_a: Any, mask_b: Any):
     ma = _to_bool_mask(mask_a)
     mb = _to_bool_mask(mask_b)
@@ -103,13 +91,11 @@ class EgoGreedyKnapsackOracle:
         diversity_aware: bool = True,
         cost_alpha: float = 0.25,
         quant_quality_prior=None,
-        min_marginal_coverage: float = 0.001,
     ):
         self.eps_cost = float(eps_cost)
         self.lambda_comp = float(lambda_comp)
         self.lambda_red = float(lambda_red)
         self.diversity_aware = bool(diversity_aware)
-        self.min_marginal_coverage = max(0.0, min(1.0, float(min_marginal_coverage)))
 
         # Cost smoothing and fidelity prior.
         # Pure gain/cost strongly favors the cheapest action at cold start,
@@ -170,16 +156,7 @@ class EgoGreedyKnapsackOracle:
         remaining = float(budget_bytes)
         selected: List[CAVProposal] = []
         selected_sender_ids = set()
-
-        # Step 12.4:
-        # Dynamic marginal coverage must be measured against ego coverage plus
-        # already selected CAVs. Otherwise the first selected CAV always gets
-        # marginal_coverage ~= 1 and CAV-ego redundancy is not penalized.
         selected_union_mask = None
-        for _p in candidates:
-            selected_union_mask = _union_mask(selected_union_mask, getattr(_p, "ego_mask", None))
-
-        ego_mask_initialized = selected_union_mask is not None
         ranked_history: List[Dict[str, Any]] = []
         first_round_candidates: List[Dict[str, Any]] = []
 
@@ -197,20 +174,10 @@ class EgoGreedyKnapsackOracle:
                 comp = float(getattr(p, "complementarity", 0.0))
                 if self.diversity_aware:
                     red = _overlap_ratio(p.mask, selected_union_mask)
-                    marginal_coverage = _marginal_coverage_ratio(p.mask, selected_union_mask)
-                    # Step 12:
-                    # Oracle uses dynamic marginal coverage only. Static
-                    # CAV-ego complementarity is already part of the context
-                    # and should be learned by D-LinUCB, not manually multiplied
-                    # here again.
-                    gain = max(float(p.ucb), 0.0) * float(marginal_coverage)
+                    gain = float(p.ucb) * (1.0 + self.lambda_comp * comp) * (1.0 - self.lambda_red * red)
                 else:
                     red = 0.0
-                    marginal_coverage = 1.0
-                    gain = max(float(p.ucb), 0.0)
-
-                if self.diversity_aware and float(marginal_coverage) < float(self.min_marginal_coverage):
-                    continue
+                    gain = float(p.ucb)
 
                 action_obj = getattr(p, "action", None)
                 q = str(getattr(action_obj, "quant_mode", "")).lower()
@@ -269,8 +236,6 @@ class EgoGreedyKnapsackOracle:
                     + 0.15 * float(cache_gap > 0)
                 ) * float(self.explore_bonus)
 
-                # Exploration should not select spatially redundant CAVs.
-                exploration_bonus = float(exploration_bonus) * float(marginal_coverage)
                 ratio = float(base_ratio + exploration_bonus)
 
                 info = {
@@ -279,10 +244,6 @@ class EgoGreedyKnapsackOracle:
                     "action_id": p.action_id,
                     "ucb": float(p.ucb),
                     "gain": float(gain),
-                    "base_ucb": float(p.ucb),
-                    "marginal_coverage": float(marginal_coverage),
-                    "gain_formula": "max(ucb,0)*marginal_coverage",
-                    "static_complementarity_context_only": True,
                     "learned_ucb_cost_penalty": True,
                     "channel_state": str(state_name),
                     "quant_mode": q,
@@ -295,7 +256,6 @@ class EgoGreedyKnapsackOracle:
                     "complementarity": float(comp),
                     "overlap_with_selected": float(red),
                     "remaining_budget_before_select": float(remaining),
-                    "ego_mask_initialized": bool(ego_mask_initialized),
                 }
                 round_candidates.append(info)
                 if best is None or ratio > best_info["ratio"]:
@@ -355,7 +315,6 @@ class EgoGreedyKnapsackOracle:
             "lambda_comp": float(self.lambda_comp),
             "lambda_red": float(self.lambda_red),
             "diversity_aware": bool(self.diversity_aware),
-            "min_marginal_coverage": float(self.min_marginal_coverage),
             "ranked": ranked_history,
             "first_round_candidates": first_round_candidates,
         }

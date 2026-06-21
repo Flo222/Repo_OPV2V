@@ -11,34 +11,6 @@ import torch
 
 from opencood.utils.common_utils import torch_tensor_to_numpy
 
-def _is_v2xreal_dataset(dataset):
-    """Return True for V2X-Real dataset classes."""
-    name = dataset.__class__.__name__.lower()
-    module = dataset.__class__.__module__.lower()
-    return "v2xreal" in name or "v2xreal" in module
-
-
-def _post_process_compatible(batch_data, output_dict, dataset):
-    """
-    OPV2V post_process returns:
-        pred_box_tensor, pred_score, gt_box_tensor
-
-    V2X-Real post_process returns:
-        pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor
-
-    Keep OPV2V behavior unchanged, but allow V2X-Real inference to receive
-    the class labels required for multi-class evaluation.
-    """
-    ret = dataset.post_process(batch_data, output_dict)
-
-    if isinstance(ret, (tuple, list)) and len(ret) == 4:
-        if _is_v2xreal_dataset(dataset):
-            return ret
-        return ret[:3]
-
-    return ret
-
-
 
 def inference_late_fusion(batch_data, model, dataset):
     """
@@ -62,7 +34,11 @@ def inference_late_fusion(batch_data, model, dataset):
     for cav_id, cav_content in batch_data.items():
         output_dict[cav_id] = model(cav_content)
 
-    return _post_process_compatible(batch_data, output_dict, dataset)
+    pred_box_tensor, pred_score, gt_box_tensor = \
+        dataset.post_process(batch_data,
+                             output_dict)
+
+    return pred_box_tensor, pred_score, gt_box_tensor
 
 
 def inference_early_fusion(batch_data, model, dataset):
@@ -87,7 +63,11 @@ def inference_early_fusion(batch_data, model, dataset):
 
     output_dict['ego'] = model(cav_content)
 
-    return _post_process_compatible(batch_data, output_dict, dataset)
+    pred_box_tensor, pred_score, gt_box_tensor = \
+        dataset.post_process(batch_data,
+                             output_dict)
+
+    return pred_box_tensor, pred_score, gt_box_tensor
 
 
 def inference_intermediate_fusion(batch_data, model, dataset):

@@ -103,13 +103,11 @@ class EgoGreedyKnapsackOracle:
         diversity_aware: bool = True,
         cost_alpha: float = 0.25,
         quant_quality_prior=None,
-        min_marginal_coverage: float = 0.001,
     ):
         self.eps_cost = float(eps_cost)
         self.lambda_comp = float(lambda_comp)
         self.lambda_red = float(lambda_red)
         self.diversity_aware = bool(diversity_aware)
-        self.min_marginal_coverage = max(0.0, min(1.0, float(min_marginal_coverage)))
 
         # Cost smoothing and fidelity prior.
         # Pure gain/cost strongly favors the cheapest action at cold start,
@@ -208,9 +206,6 @@ class EgoGreedyKnapsackOracle:
                     red = 0.0
                     marginal_coverage = 1.0
                     gain = max(float(p.ucb), 0.0)
-
-                if self.diversity_aware and float(marginal_coverage) < float(self.min_marginal_coverage):
-                    continue
 
                 action_obj = getattr(p, "action", None)
                 q = str(getattr(action_obj, "quant_mode", "")).lower()
@@ -355,7 +350,6 @@ class EgoGreedyKnapsackOracle:
             "lambda_comp": float(self.lambda_comp),
             "lambda_red": float(self.lambda_red),
             "diversity_aware": bool(self.diversity_aware),
-            "min_marginal_coverage": float(self.min_marginal_coverage),
             "ranked": ranked_history,
             "first_round_candidates": first_round_candidates,
         }

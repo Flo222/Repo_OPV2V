@@ -69,9 +69,9 @@ from opencood.comm.arce.policies.ego_greedy_oracle import (
 )
 from opencood.comm.arce.policies.reward import (
     RewardBuffer,
+    c2mab_link_proxy_reward,
     effective_receive_quality,
 )
-from opencood.comm.arce.policies.ap_gain_reward import c2mab_ap_gain_reward
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 from opencood.comm.arce.c2mab_local_confidence import get_cav_confidence
 
@@ -1264,7 +1264,6 @@ class ARCEC2MABComm:
                             "sender_include_low_cost": bool(self.sender_include_low_cost),
                         },
                         mask=sender_mask_for_oracle,
-                        ego_mask=self._mask_to_bool_2d(ego_mask),
                         complementarity=float(comp_i_ego),
                     )
                 )
@@ -1749,20 +1748,28 @@ class ARCEC2MABComm:
         for item, raw_w in zip(pending, raw_ws):
             w = float(raw_w) / max(sw, 1e-12)
 
-            reward, info = c2mab_ap_gain_reward(
-                ap_proxy_gain=delta_conf,
+            reward, info = c2mab_link_proxy_reward(
+                delta_confidence=delta_conf,
                 contribution_weight=w,
+                q_eff=float(item.get("q_eff", 0.0)),
                 cost_bytes=float(item.get("cost_bytes", 0.0)),
-                budget_bytes=float(
+                link_budget_bytes=float(
                     item.get("link_budget_bytes", budget_bytes or 1.0)
                 ),
                 delay_ms=float(item.get("delay_ms", 0.0)),
                 budget_violation=bool(item.get("budget_violation", False)),
                 quant_mode=str(item.get("quant_mode", "fp32")),
-                lambda_cost=float(getattr(self, "reward_lambda_cost", 0.10)),
-                lambda_delay=float(getattr(self, "reward_lambda_delay", 0.05)),
-                lambda_quant=float(getattr(self, "reward_lambda_quant", 0.05)),
-                lambda_violate=float(getattr(self, "reward_lambda_violate", 1.0)),
+                redundancy_ratio=float(item.get("redundancy_ratio", 0.0)),
+                cache_enabled=bool(item.get("cache_enabled", 0)),
+                cache_quality=float(item.get("cache_quality", 0.0)),
+                fec_gain=float(item.get("fec_gain", 0.0)),
+                alpha_q=self.reward_alpha_q,
+                alpha_c=self.reward_alpha_c,
+                alpha_d=self.reward_alpha_d,
+                alpha_v=self.reward_alpha_v,
+                alpha_m=self.reward_alpha_m,
+                alpha_r=self.reward_alpha_r,
+                alpha_t=self.reward_alpha_t,
                 stale_max_ms=self.reward_stale_max_ms,
             )
 
@@ -1788,14 +1795,6 @@ class ARCEC2MABComm:
             )
             _policy_t_after = int(getattr(policy, "t", -1))
 
-            _corruption_info = {}
-            if hasattr(policy, "last_feedback_corruption_info"):
-                _corruption_info = dict(
-                    policy.last_feedback_corruption_info.get(
-                        item["action_id"], {}
-                    )
-                )
-
             info["policy_update_debug"] = {
                 "action_id": str(item["action_id"]),
                 "reward": float(reward),
@@ -1804,10 +1803,6 @@ class ARCEC2MABComm:
                 "policy_t_after": int(_policy_t_after),
                 "policy_t_delta": int(_policy_t_after - _policy_t_before),
                 "feedback_weight": float(_feedback_weight),
-                "feedback_corruption_C": float(
-                    _corruption_info.get("feedback_corruption_C", 0.0)
-                ),
-                "feedback_corruption_info": dict(_corruption_info),
                 "channel_profile": dict(_channel_profile),
             }
 
@@ -1824,6 +1819,7 @@ class ARCEC2MABComm:
             info["redundancy_ratio"] = float(item.get("redundancy_ratio", 0.0))
             info["cache_enabled"] = float(item.get("cache_enabled", 0))
             info["cache_quality"] = float(item.get("cache_quality", 0.0))
+            info["fec_gain"] = float(item.get("fec_gain", 0.0))
             info["complementarity_raw"] = float(item.get("complementarity_raw", 0.0))
             info["complementarity_normalized"] = float(item.get("complementarity_normalized", 0.0))
 

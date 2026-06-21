@@ -338,29 +338,14 @@ class IntermediateFusionDatasetV2XReal(basedataset.BaseDataset):
         # Check if filtered LiDAR points are not void
         void_lidar = True if lidar_np.shape[0] < 1 else False
 
-        # filter out the augmented bbx that is out of range.
-        # V2X-Real boxes are 8-dim center boxes:
-        # [x, y, z, h, w, l, yaw, class_id].
-        # box_utils.mask_boxes_outside_range_numpy expects 7-dim center boxes
-        # or 8-corner boxes, so use only the first 7 dims for range checking,
-        # then keep the original 8-dim boxes after masking.
+        # filter out the augmented bbx that is out of range
         object_bbx_center_valid = object_bbx_center[object_bbx_mask == 1]
-
-        if object_bbx_center_valid.shape[-1] > 7:
-            _, range_mask = box_utils.mask_boxes_outside_range_numpy(
-                object_bbx_center_valid[:, :7],
-                self.params['preprocess']['cav_lidar_range'],
-                self.params['postprocess']['order'],
-                return_mask=True)
-            object_bbx_center_valid = object_bbx_center_valid[range_mask]
-        else:
-            object_bbx_center_valid, range_mask = \
-                box_utils.mask_boxes_outside_range_numpy(
-                    object_bbx_center_valid,
-                    self.params['preprocess']['cav_lidar_range'],
-                    self.params['postprocess']['order'],
-                    return_mask=True)
-
+        object_bbx_center_valid, range_mask = \
+            box_utils.mask_boxes_outside_range_numpy(object_bbx_center_valid,
+                                                     self.params['preprocess'][
+                                                         'cav_lidar_range'],
+                                                     self.params['postprocess'][
+                                                         'order'], return_mask=True)
         object_ids = [int(x) for x in list(np.array(object_ids)[range_mask])]
         processed_lidar = self.pre_processor.preprocess(lidar_np)
 

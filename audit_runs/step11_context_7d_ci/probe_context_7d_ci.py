@@ -9,7 +9,7 @@ from opencood.tools import train_utils
 from opencood.data_utils.datasets import build_dataset
 
 MODEL_DIR = "opencood/logs/main_opv2v_where2comm_grace_full"
-MAX_SAMPLES = 20
+MAX_SAMPLES = 80
 
 def move_to_cuda(x):
     if torch.is_tensor(x):

@@ -78,7 +78,16 @@ def main():
 
     print('Loading Model from checkpoint')
     saved_path = opt.model_dir
-    _, model = train_utils.load_saved_model(saved_path, model, epoch=opt.epoch)
+    if opt.epoch is None:
+        _, model = train_utils.load_saved_model(saved_path, model)
+    else:
+        model_file = os.path.join(saved_path, 'net_epoch%d.pth' % int(opt.epoch))
+        if not os.path.exists(model_file):
+            raise FileNotFoundError(model_file)
+        print('loading epoch %d from %s' % (int(opt.epoch), model_file))
+        checkpoint = torch.load(model_file, map_location='cpu')
+        model.load_state_dict(checkpoint, strict=False)
+        del checkpoint
     model.eval()
 
     # Create the dictionary for evaluation

@@ -209,8 +209,16 @@ class EgoGreedyKnapsackOracle:
                     marginal_coverage = 1.0
                     gain = max(float(p.ucb), 0.0)
 
-                if self.diversity_aware and float(marginal_coverage) < float(self.min_marginal_coverage):
-                    continue
+                # Step 14:
+                # Use a soft marginal-coverage penalty instead of hard filtering.
+                # Hard filtering removes low-marginal CAVs completely and hurts AP;
+                # soft penalty keeps them selectable when UCB/AP-gain is high.
+                marginal_soft_factor = 1.0
+                if self.diversity_aware and float(self.min_marginal_coverage) > 0.0:
+                    marginal_soft_factor = min(
+                        1.0,
+                        max(0.0, float(marginal_coverage)) / float(self.min_marginal_coverage),
+                    )
 
                 action_obj = getattr(p, "action", None)
                 q = str(getattr(action_obj, "quant_mode", "")).lower()
@@ -271,7 +279,7 @@ class EgoGreedyKnapsackOracle:
 
                 # Exploration should not select spatially redundant CAVs.
                 exploration_bonus = float(exploration_bonus) * float(marginal_coverage)
-                ratio = float(base_ratio + exploration_bonus)
+                ratio = float(base_ratio + exploration_bonus) * float(marginal_soft_factor)
 
                 info = {
                     "ratio": float(ratio),
@@ -281,6 +289,7 @@ class EgoGreedyKnapsackOracle:
                     "gain": float(gain),
                     "base_ucb": float(p.ucb),
                     "marginal_coverage": float(marginal_coverage),
+                    "marginal_soft_factor": float(marginal_soft_factor),
                     "gain_formula": "max(ucb,0)*marginal_coverage",
                     "static_complementarity_context_only": True,
                     "learned_ucb_cost_penalty": True,

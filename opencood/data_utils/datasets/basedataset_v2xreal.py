@@ -21,6 +21,7 @@ from opencood.hypes_yaml.yaml_utils import load_yaml
 from opencood.utils.pcd_utils import downsample_lidar_minimum
 from opencood.utils.transformation_utils import x1_to_x2
 from opencood.data_utils import SUPER_CLASS_MAP
+from opencood.comm.channel.markov_state import LinkLevelMarkovChannel
 
 
 class BaseDataset(Dataset):
@@ -101,6 +102,26 @@ class BaseDataset(Dataset):
                 params['wild_setting']['backbone_delay'] \
                     if 'backbone_delay' in params['wild_setting'] else 0
 
+            # Link-level Markov channel state for ARCE/Where2Comm on V2X-Real.
+            # The state is generated per scenario-ego-CAV link and later passed
+            # through IntermediateFusionDatasetV2XReal as channel_state_ids.
+            self.frame_interval_ms = params['wild_setting'].get('frame_interval_ms', 100)
+            markov_cfg = params['wild_setting'].get('channel_state_markov', {})
+            self.use_channel_state_markov = bool(markov_cfg.get('enabled', False))
+            self.channel_state_markov_scope = markov_cfg.get('scope', 'frame')
+
+            if self.use_channel_state_markov:
+                if self.channel_state_markov_scope != 'link':
+                    raise ValueError(
+                        f"Expected link-level Markov, got scope={self.channel_state_markov_scope}"
+                    )
+                self.channel_state_scheduler = LinkLevelMarkovChannel(
+                    markov_cfg,
+                    frame_interval_ms=self.frame_interval_ms
+                )
+            else:
+                self.channel_state_scheduler = None
+
         else:
             self.async_flag = False
             self.async_overhead = 0  # ms
@@ -111,6 +132,10 @@ class BaseDataset(Dataset):
             self.data_size = 0  # Mb (Megabits)
             self.transmission_speed = 27  # Mbps
             self.backbone_delay = 0  # ms
+            self.frame_interval_ms = 100
+            self.use_channel_state_markov = False
+            self.channel_state_markov_scope = 'frame'
+            self.channel_state_scheduler = None
 
         if self.train:
             root_dir = params['root_dir']
@@ -290,17 +315,66 @@ class BaseDataset(Dataset):
             data[cav_id] = OrderedDict()
             data[cav_id]['ego'] = cav_content['ego']
 
-            # calculate delay for this vehicle
-            timestamp_delay = \
-                self.time_delay_calculation(cav_content['ego'])
+            # -------------------------------------------------------------
+            # Link-level Markov channel state and V2X-ViT-style delay
+            # -------------------------------------------------------------
+            if getattr(self, "use_channel_state_markov", False):
+                if cav_content['ego']:
+                    # Ego does not communicate with itself. Keep ego/current frame.
+                    markov_info = {
+                        "channel_state": "ego",
+                        "channel_state_id": -1,
+                        "delay_ms": 0.0,
+                        "delay_slots": 0,
+                    }
+                    link_key = "ego"
+                    timestamp_delay = 0
+                else:
+                    # One deterministic Markov chain per scenario->CAV link.
+                    link_key = "scenario_{}_ego_to_cav_{}".format(
+                        scenario_index, cav_id
+                    )
+                    markov_info = self.channel_state_scheduler.get_info(
+                        link_key=link_key,
+                        frame_idx=timestamp_index
+                    )
+                    timestamp_delay = int(markov_info["delay_slots"])
+            else:
+                # Original V2X-Real/V2X-ViT async path.
+                timestamp_delay = self.time_delay_calculation(cav_content['ego'])
+
+                if cav_content['ego']:
+                    markov_info = {
+                        "channel_state": "ego",
+                        "channel_state_id": -1,
+                        "delay_ms": 0.0,
+                        "delay_slots": 0,
+                    }
+                    link_key = "ego"
+                else:
+                    frame_interval_ms = float(getattr(self, "frame_interval_ms", 100))
+                    markov_info = {
+                        "channel_state": "fixed",
+                        "channel_state_id": -2,
+                        "delay_ms": float(timestamp_delay) * frame_interval_ms,
+                        "delay_slots": int(timestamp_delay),
+                    }
+                    link_key = "fixed_delay"
 
             if timestamp_index - timestamp_delay <= 0:
                 timestamp_delay = timestamp_index
             timestamp_index_delay = max(0, timestamp_index - timestamp_delay)
             timestamp_key_delay = self.return_timestamp_key(scenario_database,
                                                             timestamp_index_delay)
-            # add time delay to vehicle parameters
-            data[cav_id]['time_delay'] = timestamp_delay
+
+            # add time delay / channel state to vehicle parameters
+            data[cav_id]['time_delay'] = int(timestamp_delay)
+            data[cav_id]['channel_state'] = markov_info["channel_state"]
+            data[cav_id]['channel_state_id'] = int(markov_info["channel_state_id"])
+            data[cav_id]['channel_delay_ms'] = float(markov_info["delay_ms"])
+            data[cav_id]['channel_delay_slots'] = int(markov_info["delay_slots"])
+            data[cav_id]['channel_link_key'] = link_key
+
             # load the corresponding data into the dictionary
             data[cav_id]['params'] = self.reform_param(cav_content,
                                                        ego_cav_content,

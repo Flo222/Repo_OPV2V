@@ -1,0 +1,16 @@
+58:def _overlap_ratio(mask_i: Any, mask_selected: Any) -> float:
+85:class EgoGreedyKnapsackOracle:
+89:        lambda_comp: float = 0.5,
+90:        lambda_red: float = 0.5,
+96:        self.lambda_comp = float(lambda_comp)
+97:        self.lambda_red = float(lambda_red)
+121:        self.explore_warmup_pulls_per_quant = 6
+123:        self.explore_warmup_pulls_per_rho = 4
+124:        self.explore_warmup_pulls_per_cache = 4
+144:    def select(self, proposals: Sequence[CAVProposal], budget_bytes: float) -> Dict[str, Any]:
+177:                    gain = float(p.ucb) * (1.0 + self.lambda_comp * comp) * (1.0 - self.lambda_red * red)
+226:                q_gap = max(0, int(self.explore_warmup_pulls_per_quant) - q_count)
+227:                rho_gap = max(0, int(self.explore_warmup_pulls_per_rho) - rho_count)
+228:                cache_gap = max(0, int(self.explore_warmup_pulls_per_cache) - cache_count)
+315:            "lambda_comp": float(self.lambda_comp),
+316:            "lambda_red": float(self.lambda_red),

@@ -10,6 +10,8 @@ try:
 except Exception:  # pragma: no cover
     torch = None
 
+from opencood.comm.arce.policies.marginal_gate import marginal_learned_benefit_gate
+
 
 @dataclass
 class CAVProposal:
@@ -103,13 +105,15 @@ class EgoGreedyKnapsackOracle:
         diversity_aware: bool = True,
         cost_alpha: float = 0.25,
         quant_quality_prior=None,
-        min_marginal_coverage: float = 0.001,
+        min_marginal_coverage: float = 0.01,
+        min_learned_mean: float = 0.0,
     ):
         self.eps_cost = float(eps_cost)
         self.lambda_comp = float(lambda_comp)
         self.lambda_red = float(lambda_red)
         self.diversity_aware = bool(diversity_aware)
         self.min_marginal_coverage = max(0.0, min(1.0, float(min_marginal_coverage)))
+        self.min_learned_mean = float(min_learned_mean)
 
         # Cost smoothing and fidelity prior.
         # Pure gain/cost strongly favors the cheapest action at cold start,
@@ -209,7 +213,16 @@ class EgoGreedyKnapsackOracle:
                     marginal_coverage = 1.0
                     gain = max(float(p.ucb), 0.0)
 
-                if self.diversity_aware and float(marginal_coverage) < float(self.min_marginal_coverage):
+                # Step 14:
+                # Learned marginal gate. Skip only when the candidate is both
+                # spatially low-marginal and has no learned positive reward.
+                gate_skip, gate_info = marginal_learned_benefit_gate(
+                    marginal_coverage=float(marginal_coverage),
+                    learned_mean=float(getattr(p, "mean", 0.0)),
+                    min_marginal_coverage=float(self.min_marginal_coverage),
+                    min_learned_mean=float(self.min_learned_mean),
+                )
+                if self.diversity_aware and bool(gate_skip):
                     continue
 
                 action_obj = getattr(p, "action", None)
@@ -281,6 +294,8 @@ class EgoGreedyKnapsackOracle:
                     "gain": float(gain),
                     "base_ucb": float(p.ucb),
                     "marginal_coverage": float(marginal_coverage),
+                    "learned_mean_for_gate": float(getattr(p, "mean", 0.0)),
+                    "marginal_gate": dict(gate_info),
                     "gain_formula": "max(ucb,0)*marginal_coverage",
                     "static_complementarity_context_only": True,
                     "learned_ucb_cost_penalty": True,
@@ -356,6 +371,7 @@ class EgoGreedyKnapsackOracle:
             "lambda_red": float(self.lambda_red),
             "diversity_aware": bool(self.diversity_aware),
             "min_marginal_coverage": float(self.min_marginal_coverage),
+            "min_learned_mean": float(self.min_learned_mean),
             "ranked": ranked_history,
             "first_round_candidates": first_round_candidates,
         }

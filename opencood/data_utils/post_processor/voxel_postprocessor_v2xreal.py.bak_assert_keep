@@ -434,12 +434,7 @@ class VoxelPostprocessorV2XReal(BasePostprocessor):
         keep_index_1 = box_utils.remove_large_pred_bbx(pred_box3d_tensor)
         keep_index_2 = box_utils.remove_bbx_abnormal_z(pred_box3d_tensor)
         keep_index = torch.logical_and(keep_index_1, keep_index_2)
-
-        # Some predicted boxes can be filtered as too large or abnormal in z.
-        # This is valid during inference, especially for newly trained or migrated models.
-        # Do not assert all boxes are kept; just filter them.
-        if keep_index.sum().item() == 0:
-            return None, None
+        assert keep_index.sum().cpu() == pred_box3d_tensor.shape[0]
 
         pred_box3d_tensor = pred_box3d_tensor[keep_index]
         scores = scores[keep_index]

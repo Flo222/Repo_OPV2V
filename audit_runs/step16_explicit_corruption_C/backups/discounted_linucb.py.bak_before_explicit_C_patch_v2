@@ -110,15 +110,13 @@ class DiscountedLinUCB:
         }
 
         self.t = 0
-        self.last_feedback_weight = {
-            a: 1.0 for a in self.action_ids
-        }
-        self.last_feedback_corruption_C = {
-            a: 0.0 for a in self.action_ids
-        }
-        self.last_feedback_corruption_info = {
+        self.last_feedback_weight: Dict[str, float] = {
+        self.last_feedback_corruption_C: Dict[str, float] = {a: 0.0 for a in self.action_ids}
+        self.last_feedback_corruption_info: Dict[str, Dict[str, Any]] = {
             a: {"feedback_corruption_C": 0.0, "corruption_source": "init"}
             for a in self.action_ids
+        }
+            a: 1.0 for a in self.action_ids
         }
 
     def _context(self, context: Any) -> np.ndarray:
