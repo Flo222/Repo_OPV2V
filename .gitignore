@@ -142,3 +142,4 @@ spconv/
 # temporary DC2MAB patch source
 pdf_dc2mab_patch/
 pdf_dc2mab_patch.zip
+audit_runs/

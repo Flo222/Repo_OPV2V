@@ -1,0 +1,10 @@
+Will remove old audit/temp dirs:
+audit_runs/step19_logic_fix
+audit_runs/step23_execution_record_builder
+audit_runs/step21_reward_pending_builder
+audit_runs/step18_modular_refactor
+audit_runs/step22_superarm_record_builder
+audit_runs/step20_candidate_selector
+
+Will remove unpacked zip temp dir:
+audit_runs/step24_bulk_modular_replace/check_zip

@@ -144,6 +144,7 @@ class PointPillarDiffStu(nn.Module):
         self.weights = [0.2,1,1]
 
         self.current_epoch = 0
+        self.diff_start_epoch = int(args.get('diff_start_epoch', 15))
 
     def update_epoch(self, epoch):
         self.current_epoch = epoch
@@ -159,7 +160,7 @@ class PointPillarDiffStu(nn.Module):
             student_modules.append(self.naive_compressor)
 
         print(f"-------- Update Epoch: {epoch} --------")
-        if epoch < 15:
+        if epoch < self.diff_start_epoch:
             # Phase 1: Train Student Backbone, Freeze Diffuser (Teacher is always frozen)
             for module in student_modules:
                 for p in module.parameters():
@@ -411,7 +412,7 @@ class PointPillarDiffStu(nn.Module):
 
 
             if i == 2:
-                if self.current_epoch >= 15:
+                if self.current_epoch >= self.diff_start_epoch:
                     ##########################################
                     # DiT
                     mask = F.interpolate(object_mask, size=(fea_teacher.shape[2], fea_teacher.shape[3]), mode='bilinear', align_corners=False)

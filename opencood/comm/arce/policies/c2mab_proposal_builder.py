@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import copy
+import math
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from opencood.comm.arce.c2mab_local_confidence import get_cav_confidence
+from opencood.comm.arce.policies.action_space import PDFARCEAction
+from opencood.comm.arce.policies.ego_greedy_oracle import CAVProposal
+from opencood.comm.arce.policies.sender_candidate_selector import build_sender_candidates
+
+
+def build_c2mab_proposals(
+    *,
+    features_shape: Sequence[int],
+    collaborator_indices: Sequence[int],
+    ego_id: Any,
+    ego_index: int,
+    ego_confidence: float,
+    total_budget_bytes: float,
+    per_link_budget_bytes: float,
+    num_collaborators: int,
+    budget_scope: str,
+    budget_source: str,
+    use_channel_profile_budget: bool,
+    link_states: Dict[int, str],
+    link_profiles: Dict[int, Dict[str, Any]],
+    link_budgets: Dict[int, float],
+    actions: Sequence[PDFARCEAction],
+    no_send_action: Optional[PDFARCEAction],
+    arce_cfg: Dict[str, Any],
+    context_builder: Any,
+    local_cav_confidences: Any,
+    message_masks: Any,
+    packet_size_bytes: int,
+    sender_topk_actions: int,
+    sender_force_quant_coverage: bool,
+    sender_include_low_cost: bool,
+    profile_for_state_fn: Callable[[str], Dict[str, Any]],
+    profile_scalar_fn: Callable[[Any, float], float],
+    cache_quality_fn: Callable[[Any, Any], float],
+    estimate_cost_fn: Callable[..., Dict[str, Any]],
+    get_policy_fn: Callable[[Any, Any], Any],
+    mask_to_bool_2d_fn: Callable[[Any], Any],
+    confidence_advantage_complementarity_fn: Callable[..., Tuple[float, Any, Dict[str, Any]]],
+) -> Tuple[List[CAVProposal], Dict[int, PDFARCEAction]]:
+    proposals: List[CAVProposal] = []
+    no_send_candidates: Dict[int, PDFARCEAction] = {}
+
+    for sender_idx in collaborator_indices:
+        state_name = link_states.get(sender_idx, "medium")
+        if state_name == "ego_or_padding":
+            continue
+
+        profile = link_profiles.get(sender_idx, profile_for_state_fn(state_name))
+        link_budget_bytes = float(link_budgets.get(sender_idx, per_link_budget_bytes))
+
+        if use_channel_profile_budget and budget_scope == "global_sum_link":
+            proposal_budget_bytes = float(total_budget_bytes)
+        else:
+            proposal_budget_bytes = float(link_budget_bytes)
+
+        latency_ms = profile_scalar_fn(
+            profile.get("delay_ms", profile.get("fixed_delay_ms", 50.0)),
+            50.0,
+        )
+        cache_q = cache_quality_fn(ego_id, sender_idx)
+
+        comp_i_ego = 0.0
+        comp_source = "none"
+        sender_mask = None
+        ego_mask = None
+        sender_mask_for_oracle = None
+        comp_stats = {
+            "mode": "none",
+            "sender_valid": False,
+            "ego_valid": False,
+        }
+
+        if message_masks is not None:
+            try:
+                mask_threshold = float(
+                    arce_cfg.get("patch_selection", {}).get("mask_threshold", 0.05)
+                )
+                ego_mask = message_masks[int(ego_index)]
+                sender_mask = message_masks[int(sender_idx)]
+
+                comp_i_ego, sender_mask_for_oracle, comp_stats = (
+                    confidence_advantage_complementarity_fn(
+                        sender_mask,
+                        ego_mask,
+                        threshold=mask_threshold,
+                    )
+                )
+                comp_source = "where2comm_confidence_advantage"
+
+                if sender_mask_for_oracle is None:
+                    sender_mask_for_oracle = mask_to_bool_2d_fn(sender_mask)
+
+            except Exception as exc:
+                comp_i_ego = 0.0
+                comp_source = f"fallback_zero:{type(exc).__name__}"
+                sender_mask = None
+                ego_mask = None
+                sender_mask_for_oracle = None
+                comp_stats = {
+                    "mode": "exception",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
+        comp_raw = float(comp_i_ego)
+        comp_norm_mode = str(arce_cfg.get("complementarity_norm", "raw_clip")).lower()
+        if comp_norm_mode in ("exp", "exp_tau", "legacy_exp"):
+            comp_tau = float(arce_cfg.get("complementarity_tau", 5e-5))
+            comp_tau = max(comp_tau, 1e-12)
+            comp_norm = 1.0 - math.exp(-max(0.0, comp_raw) / comp_tau)
+        else:
+            comp_norm = max(0.0, min(1.0, float(comp_raw)))
+        comp_norm = max(0.0, min(1.0, float(comp_norm)))
+
+        context = context_builder.build(
+            channel_profile=profile,
+            latency_ms=latency_ms,
+            ego_confidence=ego_confidence,
+            cache_quality=cache_q,
+            complementarity=comp_norm,
+            cav_confidence=get_cav_confidence(
+                local_cav_confidences,
+                sender_idx,
+                default=0.0,
+            ),
+        )
+
+        feasible = []
+        for action in actions:
+            if getattr(action, "is_no_send", False):
+                continue
+
+            cost_info = estimate_cost_fn(
+                feature_shape=features_shape,
+                action=action,
+                budget_bytes=proposal_budget_bytes,
+            )
+            if not bool(cost_info["feasible"]):
+                continue
+
+            feasible.append(
+                (
+                    action,
+                    float(cost_info["estimated_transmitted_bytes"]),
+                    cost_info,
+                )
+            )
+
+        if not feasible:
+            no_send_candidates[sender_idx] = no_send_action
+            continue
+
+        policy = get_policy_fn(ego_id, sender_idx)
+        scored = []
+        for action, cost_bytes, cost_info in feasible:
+            score = policy.score(action.action_id, context.vector)
+            scored.append((score, action, float(cost_bytes), cost_info))
+
+        sender_candidates = build_sender_candidates(
+            scored=scored,
+            sender_topk_actions=sender_topk_actions,
+            sender_force_quant_coverage=sender_force_quant_coverage,
+            sender_include_low_cost=sender_include_low_cost,
+        )
+
+        for local_rank, (
+            score,
+            cand_action,
+            cand_cost,
+            cand_cost_info,
+            reasons,
+        ) in enumerate(sender_candidates):
+            proposals.append(
+                CAVProposal(
+                    ego_id=ego_id,
+                    sender_id=sender_idx,
+                    action=cand_action,
+                    action_id=cand_action.action_id,
+                    context=context,
+                    ucb=score.ucb,
+                    mean=score.mean,
+                    bonus=score.bonus,
+                    cost_bytes=float(cand_cost),
+                    record={
+                        "channel_state": state_name,
+                        "complementarity": float(comp_i_ego),
+                        "complementarity_source": str(comp_source),
+                        "complementarity_stats": copy.deepcopy(comp_stats),
+                        "channel_profile": profile,
+                        "link_budget_bytes": float(link_budget_bytes),
+                        "proposal_budget_bytes": float(proposal_budget_bytes),
+                        "per_link_budget_bytes": float(per_link_budget_bytes),
+                        "system_budget_bytes": float(total_budget_bytes),
+                        "num_collaborators": int(num_collaborators),
+                        "budget_scope": str(budget_scope),
+                        "budget_source": str(budget_source),
+                        "proposal_cost_model": "byte_stream_quantize_first_with_fec",
+                        "estimated_tx_bytes": float(cand_cost),
+                        "estimated_source_bytes": float(cand_cost_info["source_bytes"]),
+                        "estimated_parity_bytes": float(
+                            cand_cost_info["parity_packets"] * packet_size_bytes
+                        ),
+                        "estimated_metadata_bytes": float(cand_cost_info["metadata_bytes"]),
+                        "estimated_encoded_bytes": float(cand_cost_info["encoded_bytes"]),
+                        "estimated_packet_ratio": float(
+                            cand_cost_info["effective_packet_ratio"]
+                        ),
+                        "num_source_packets": int(cand_cost_info["source_packets"]),
+                        "num_parity_packets": int(cand_cost_info["parity_packets"]),
+                        "num_encoded_packets": int(cand_cost_info["encoded_packets"]),
+                        "max_tx_packets_under_budget": int(
+                            cand_cost_info["max_tx_packets_under_budget"]
+                        ),
+                        "fec_type": str(cand_cost_info["fec_type"]),
+                        "rho": float(cand_cost_info["rho"]),
+                        "packet_size_bytes": int(packet_size_bytes),
+                        "bandwidth_selection": copy.deepcopy(cand_cost_info),
+                        "num_feasible_actions": int(len(feasible)),
+                        "num_sender_candidate_actions": int(len(sender_candidates)),
+                        "complementarity_raw": float(comp_i_ego),
+                        "complementarity_normalized": float(comp_norm),
+                        "sender_candidate_rank": int(local_rank),
+                        "sender_candidate_reasons": sorted(str(x) for x in reasons),
+                        "sender_topk_actions": int(sender_topk_actions),
+                        "sender_force_quant_coverage": bool(sender_force_quant_coverage),
+                        "sender_include_low_cost": bool(sender_include_low_cost),
+                    },
+                    mask=sender_mask_for_oracle,
+                    ego_mask=mask_to_bool_2d_fn(ego_mask),
+                    complementarity=float(comp_i_ego),
+                )
+            )
+
+    return proposals, no_send_candidates
