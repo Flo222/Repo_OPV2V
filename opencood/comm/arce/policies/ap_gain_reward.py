@@ -8,21 +8,13 @@ as penalties, not as positive heuristic rewards.
 from __future__ import annotations
 
 from typing import Dict, Tuple
+from opencood.comm.arce.policies.quant_quality import get_quant_loss
 
 
-_QUANT_QUALITY = {
-    "fp32": 1.00,
-    "fp16": 0.98,
-    "int8": 0.88,
-    "int4": 0.68,
-}
-
-
-def quantization_loss(quant_mode: str) -> float:
+def quantization_loss(quant_mode: str, cfg=None) -> float:
     """Return normalized quantization loss in [0, 1]."""
-    qm = str(quant_mode).lower()
-    quality = float(_QUANT_QUALITY.get(qm, 0.90))
-    return float(max(0.0, min(1.0, 1.0 - quality)))
+    q_loss = get_quant_loss(quant_mode, cfg=cfg)
+    return float(max(0.0, min(1.0, float(q_loss))))
 
 
 def normalized_cost(cost_bytes: float, budget_bytes: float) -> float:
@@ -48,6 +40,7 @@ def c2mab_ap_gain_reward(
     lambda_quant: float = 0.05,
     lambda_violate: float = 1.0,
     stale_max_ms: float = 400.0,
+    quant_quality_cfg=None,
 ) -> Tuple[float, Dict[str, float]]:
     """Compute AP-proxy-gain dominated link reward.
 
@@ -62,7 +55,7 @@ def c2mab_ap_gain_reward(
 
     cost_norm = normalized_cost(cost_bytes, budget_bytes)
     delay_norm = normalized_delay(delay_ms, stale_max_ms=stale_max_ms)
-    q_loss = quantization_loss(quant_mode)
+    q_loss = quantization_loss(quant_mode, cfg=quant_quality_cfg)
     violation = 1.0 if bool(budget_violation) else 0.0
 
     reward = (

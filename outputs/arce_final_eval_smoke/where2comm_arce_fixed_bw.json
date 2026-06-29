@@ -1,0 +1,14 @@
+{
+  "method": "Where2Comm-ARCE-Fixed",
+  "scenario": "Markov",
+  "frame_count": 30,
+  "record_count": 30,
+  "transmitted_link_count": 30,
+  "no_send_count": 0,
+  "BW": 0.062464,
+  "bw_MB_per_frame": 0.062464,
+  "total_tx_MB": 1.87392,
+  "int4_count": 0,
+  "packed_int4_count": 0,
+  "all_int4_packed": null
+}

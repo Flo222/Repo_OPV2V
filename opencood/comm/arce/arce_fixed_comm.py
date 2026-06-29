@@ -407,6 +407,21 @@ class ARCEFixedComm:
             self._get_base_quant_cfg(),
             action.to_quant_config() if hasattr(action, "to_quant_config") else {},
         )
+
+        # IMPORTANT:
+        # INT4 communication should be byte-packed to match the intended
+        # 4-bit communication semantics. Without this, FeatureQuantizer keeps
+        # q_tensor in int8 storage, and ByteStreamPacketizer sends 1 byte/value.
+        try:
+            action_quant_mode = self._get_action_quant_mode(action)
+        except Exception:
+            action_quant_mode = str(quant_cfg.get("mode", "fp32")).strip().lower()
+
+        if str(action_quant_mode).strip().lower() in ("int4", "4bit", "int4_uniform"):
+            quant_cfg["mode"] = "int4"
+            quant_cfg["enabled"] = True
+            quant_cfg["pack_int4"] = True
+
         return FeatureQuantizer({"quantization": quant_cfg})
 
     def _get_action_quant_mode(self, action: Any) -> str:

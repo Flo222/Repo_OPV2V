@@ -38,43 +38,63 @@ def voc_ap(rec, prec):
     return ap, mrec, mpre
 
 
-def caluclate_tp_fp(det_boxes, det_score, gt_boxes, result_stat, iou_thresh):
+def caluclate_tp_fp(det_boxes, det_score, gt_boxes, result_stat,
+                    iou_thresh):
     """
-    Calculate the true positive and false positive numbers of the current
-    frames.
+    Calculate TP/FP for one frame.
 
-    Parameters
-    ----------
-    det_boxes : torch.Tensor
-        The detection bounding box, shape (N, 8, 3) or (N, 4, 2).
-    det_score :torch.Tensor
-        The confidence score for each preditect bounding box.
-    gt_boxes : torch.Tensor
-        The groundtruth bounding box.
-    result_stat: dict
-        A dictionary contains fp, tp and gt number.
-    iou_thresh : float
-        The iou thresh.
+    Robust for mixed CoSDH / V2X-Real cases where det_score may be [N, 1]
+    or may contain more entries than final decoded det_boxes.
     """
-    # fp, tp and gt in the current frame
     fp = []
     tp = []
     gt = gt_boxes.shape[0]
+
     if det_boxes is not None:
-        # convert bounding boxes to numpy array
+        # convert bounding boxes and scores to numpy
         det_boxes = common_utils.torch_tensor_to_numpy(det_boxes)
         det_score = common_utils.torch_tensor_to_numpy(det_score)
         gt_boxes = common_utils.torch_tensor_to_numpy(gt_boxes)
 
-        # sort the prediction bounding box by score
-        score_order_descend = np.argsort(-det_score)
-        det_score = det_score[score_order_descend] # from high to low
+        det_score = np.asarray(det_score).reshape(-1)
+
+        # Number of final decoded boxes. Scores must correspond to these boxes.
+        num_det = int(det_boxes.shape[0])
+
+        # V2X-Real mixed fusion may return score count != box count.
+        # Align to the available final boxes to avoid invalid indexing.
+        if det_score.shape[0] != num_det:
+            if not hasattr(caluclate_tp_fp, "_warned_score_box_mismatch"):
+                print("[eval_utils] warning: det_score length ({}) != det_boxes length ({}). "
+                      "Aligning scores to final boxes for evaluation.".format(
+                          det_score.shape[0], num_det))
+                caluclate_tp_fp._warned_score_box_mismatch = True
+
+            n = min(det_score.shape[0], num_det)
+            det_score = det_score[:n]
+            det_boxes = det_boxes[:n]
+            num_det = n
+
+        if num_det == 0:
+            result_stat[iou_thresh]['gt'] += gt
+            return
+
+        # sort prediction boxes by score
+        score_order_descend = np.argsort(-det_score).reshape(-1)
+        det_score = det_score[score_order_descend]
+
         det_polygon_list = list(common_utils.convert_format(det_boxes))
         gt_polygon_list = list(common_utils.convert_format(gt_boxes))
 
         # match prediction and gt bounding box
         for i in range(score_order_descend.shape[0]):
-            det_polygon = det_polygon_list[score_order_descend[i]]
+            det_idx = int(score_order_descend[i])
+
+            # Extra guard: should not happen after alignment, but keeps eval robust.
+            if det_idx < 0 or det_idx >= len(det_polygon_list):
+                continue
+
+            det_polygon = det_polygon_list[det_idx]
             ious = common_utils.compute_iou(det_polygon, gt_polygon_list)
 
             if len(gt_polygon_list) == 0 or np.max(ious) < iou_thresh:
@@ -89,9 +109,9 @@ def caluclate_tp_fp(det_boxes, det_score, gt_boxes, result_stat, iou_thresh):
             gt_polygon_list.pop(gt_index)
 
         result_stat[iou_thresh]['score'] += det_score.tolist()
+        result_stat[iou_thresh]['fp'] += fp
+        result_stat[iou_thresh]['tp'] += tp
 
-    result_stat[iou_thresh]['fp'] += fp
-    result_stat[iou_thresh]['tp'] += tp
     result_stat[iou_thresh]['gt'] += gt
 
 

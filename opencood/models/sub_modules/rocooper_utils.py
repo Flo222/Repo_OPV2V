@@ -29,8 +29,14 @@ import torch
 import torch.nn.functional as F
 
 
+# OpenCOOD defines the light-weight affine helpers used by several
+# intermediate-fusion modules in coalign_fuse.py.  The previous import from
+# torch_transformation_utils silently failed in this repository, which made
+# RoCooper skip feature alignment and fuse geometrically misaligned CAV
+# features.  Keep the fallback to avoid breaking minimal environments, but
+# prefer the actual implementation.
 try:
-    from opencood.models.sub_modules.torch_transformation_utils import (
+    from opencood.models.fuse_modules.coalign_fuse import (
         warp_affine_simple,
         normalize_pairwise_tfm,
     )
@@ -301,8 +307,9 @@ def align_group_to_ego(
     cav_num: int,
     pairwise_t_matrix: TensorOrNone,
     discrete_ratio: float = 0.4,
-    downsample_rate: int = 1,
+    downsample_rate: int = 4,
     enabled: bool = True,
+    transform_direction: str = "source_to_ego",
 ) -> torch.Tensor:
     """
     Align all CAV feature maps in one scenario to the ego coordinate frame.
@@ -336,6 +343,14 @@ def align_group_to_ego(
 
         enabled:
             Whether to perform alignment.
+
+        transform_direction:
+            Which pairwise transform slice maps CAV features into ego frame.
+            In OpenCOOD IntermediateFusionDataset, pairwise_t_matrix[i, j]
+            is the transform from CAV i to CAV j.  Therefore the default
+            "source_to_ego" uses pairwise_t_matrix[:, 0].  The legacy
+            "ego_to_source" option uses pairwise_t_matrix[0, :] for
+            compatibility/debugging.
 
     Returns:
         aligned_group:
@@ -384,9 +399,21 @@ def align_group_to_ego(
         if cav_num > normalized_tfm.shape[1]:
             cav_num = int(normalized_tfm.shape[1])
 
-        # OpenCOOD convention in many fusion modules:
-        # normalized_tfm[b, 0, i] maps i-th CAV feature to ego frame.
-        ego_matrices = normalized_tfm[batch_idx, 0, :cav_num, :, :]
+        # OpenCOOD IntermediateFusionDataset builds pairwise_t_matrix[i, j]
+        # as the transform from source CAV i to target CAV j:
+        #     T_j^{-1} T_i P_i = P_j
+        # Thus, to warp all CAV features into ego frame (target index 0),
+        # use normalized_tfm[batch_idx, :cav_num, 0].  The previous
+        # normalized_tfm[batch_idx, 0, :cav_num] is the inverse direction and
+        # causes localization-damaging misalignment.
+        direction = str(transform_direction).lower()
+        if direction in ["source_to_ego", "src_to_ego", "cav_to_ego", "to_ego"]:
+            ego_matrices = normalized_tfm[batch_idx, :cav_num, 0, :, :]
+        elif direction in ["ego_to_source", "ego_to_src", "ego_to_cav", "legacy"]:
+            ego_matrices = normalized_tfm[batch_idx, 0, :cav_num, :, :]
+        else:
+            # Safe default for OpenCOOD.
+            ego_matrices = normalized_tfm[batch_idx, :cav_num, 0, :, :]
 
         aligned = warp_affine_simple(
             group[:cav_num],

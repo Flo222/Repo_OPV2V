@@ -27,23 +27,8 @@ def estimate_byte_stream_fec_cost(
     metadata_bytes_per_packet: int,
     raw_feature_bytes_fp32_fn: Callable[[Sequence[int]], float],
     quant_ratio_to_fp32: Dict[str, float],
+    compact_token_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Estimate communication cost for C2MAB proposal ranking.
-
-    Quantization is treated as a rate-distortion operating point under a
-    shared bandwidth budget:
-
-        fp32 -> high fidelity / high budget
-        fp16 -> medium-high fidelity / medium budget
-        int8 -> compressed / low budget
-        int4 -> strongly compressed / very low budget
-
-    The global oracle still enforces:
-        sum(selected.cost_bytes) <= global_budget_bytes
-
-    This function only estimates how many bytes this action would request
-    and how many packets could be transmitted under the assigned budget.
-    """
     if getattr(action, "is_no_send", False):
         return {
             "feasible": True,
@@ -64,12 +49,27 @@ def estimate_byte_stream_fec_cost(
             "packet_size_bytes": int(packet_size_bytes),
             "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
             "proposal_budget_share": 0.0,
-            "cost_model": "allocation_aware_quant_share",
+            "cost_model": "no_send",
+            "compact_estimator": {},
+            "compact_estimator_enabled": False,
+            "compact_estimated_num_tokens": None,
+            "compact_estimated_mask_ratio": None,
         }
 
-    raw_fp32 = raw_feature_bytes_fp32_fn(feature_shape)
     q = str(getattr(action, "quant_mode", "fp32")).strip().lower()
     quant_ratio = float(quant_ratio_to_fp32.get(q, 0.5))
+
+    compact_token_info = compact_token_info or {}
+    compact_enabled = bool(compact_token_info.get("compact_enabled", False))
+    compact_tokens = compact_token_info.get("num_tokens", None)
+
+    if compact_enabled and compact_tokens is not None and len(feature_shape) == 3:
+        channels = int(feature_shape[0])
+        raw_fp32 = float(channels * int(compact_tokens) * 4)
+        cost_model = "compact_sparse_mask_aware"
+    else:
+        raw_fp32 = raw_feature_bytes_fp32_fn(feature_shape)
+        cost_model = "allocation_aware_quant_share"
 
     source_bytes = float(raw_fp32 * quant_ratio)
 
@@ -95,21 +95,10 @@ def estimate_byte_stream_fec_cost(
         proposal_share = 1.0
     else:
         budget = float(max(0.0, budget_bytes))
-
-        # Quantization-aware rate allocation:
-        #   fp32: 1.00
-        #   fp16: 0.50
-        #   int8: 0.25
-        #   int4: 0.125
-        #
-        # Redundancy increases requested budget; final value is clipped by
-        # the assigned budget.
         proposal_share = float(quant_ratio) * float(1.0 + max(rho, 0.0))
         proposal_share = max(0.02, min(1.0, proposal_share))
-
         target_tx_bytes = float(min(encoded_bytes, budget * proposal_share))
 
-        # At least one packet if the action is feasible.
         if target_tx_bytes > 0.0 and target_tx_bytes < packet_unit:
             target_tx_bytes = packet_unit
 
@@ -146,5 +135,16 @@ def estimate_byte_stream_fec_cost(
         "packet_size_bytes": int(packet_size),
         "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
         "proposal_budget_share": float(proposal_share),
-        "cost_model": "allocation_aware_quant_share",
+        "cost_model": str(cost_model),
+        "compact_estimator": dict(compact_token_info),
+        "compact_estimator_enabled": bool(compact_enabled),
+        "compact_estimated_num_tokens": (
+            int(compact_tokens) if compact_enabled and compact_tokens is not None else None
+        ),
+        "compact_estimated_mask_ratio": (
+            float(compact_token_info.get("mask_ratio"))
+            if compact_enabled and compact_token_info.get("mask_ratio") is not None
+            else None
+        ),
     }
+

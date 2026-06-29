@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
+from opencood.comm.arce.policies.quant_quality import merge_quant_quality_prior
 
 try:
     import torch
@@ -124,15 +125,12 @@ class EgoGreedyKnapsackOracle:
         self.cost_alpha = float(cost_alpha)
         self.cost_alpha = max(0.0, min(1.0, self.cost_alpha))
         self.oracle_cost_lambda = max(0.0, float(oracle_cost_lambda))
-        default_prior = {
-            "fp32": 1.00,
-            "fp16": 0.97,
-            "int8": 0.85,
-            "int4": 0.55,
-        }
         if isinstance(quant_quality_prior, dict):
-            default_prior.update({str(k).lower(): float(v) for k, v in quant_quality_prior.items()})
-        self.quant_quality_prior = default_prior
+            self.quant_quality_prior = merge_quant_quality_prior(
+                {"quant_quality_prior": quant_quality_prior}
+            )
+        else:
+            self.quant_quality_prior = merge_quant_quality_prior()
 
         # Bandit warm-up exploration.
         # This is NOT a hand-crafted bad/medium/good -> quant rule.
@@ -143,16 +141,16 @@ class EgoGreedyKnapsackOracle:
         self.explore_warmup_pulls_per_rho = max(0, int(explore_warmup_pulls_per_rho))
         self.explore_warmup_pulls_per_cache = max(0, int(explore_warmup_pulls_per_cache))
         self._quant_select_counts = {
-            "bad": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
-            "medium": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
-            "good": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
-            "unknown": {"fp32": 0, "fp16": 0, "int8": 0, "int4": 0},
+            "bad": {"fp16": 0, "int8": 0, "int4": 0},
+            "medium": {"fp16": 0, "int8": 0, "int4": 0},
+            "good": {"fp16": 0, "int8": 0, "int4": 0},
+            "unknown": {"fp16": 0, "int8": 0, "int4": 0},
         }
         self._rho_select_counts = {
-            "bad": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
-            "medium": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
-            "good": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
-            "unknown": {"rho0": 0, "rho0p25": 0, "rho0p5": 0},
+            "bad": {"rho0": 0, "rho0p10": 0, "rho0p25": 0, "rho0p60": 0},
+            "medium": {"rho0": 0, "rho0p10": 0, "rho0p25": 0, "rho0p60": 0},
+            "good": {"rho0": 0, "rho0p10": 0, "rho0p25": 0, "rho0p60": 0},
+            "unknown": {"rho0": 0, "rho0p10": 0, "rho0p25": 0, "rho0p60": 0},
         }
         self._cache_select_counts = {
             "bad": {"cache0": 0, "cache1": 0},
@@ -249,21 +247,43 @@ class EgoGreedyKnapsackOracle:
                     state_name_for_count = state_name
 
                 aid_for_parse = str(getattr(p, "action_id", "")).lower()
-                if "rho0p5" in aid_for_parse or "rho0.5" in aid_for_parse:
-                    rho_key = "rho0p5"
+                if (
+                    "rho0p60" in aid_for_parse
+                    or "rho0p6" in aid_for_parse
+                    or "rho0.6" in aid_for_parse
+                ):
+                    rho_key = "rho0p60"
                 elif "rho0p25" in aid_for_parse or "rho0.25" in aid_for_parse:
                     rho_key = "rho0p25"
+                elif (
+                    "rho0p10" in aid_for_parse
+                    or "rho0p1" in aid_for_parse
+                    or "rho0.1" in aid_for_parse
+                ):
+                    rho_key = "rho0p10"
+                elif "rho0p5" in aid_for_parse or "rho0.5" in aid_for_parse:
+                    rho_key = "rho0p5_legacy"
                 else:
                     rho_key = "rho0"
 
                 cache_key = "cache1" if "cache1" in aid_for_parse else "cache0"
 
-                q_count = int(self._quant_select_counts[state_name_for_count].get(q, 0))
-                rho_count = int(self._rho_select_counts[state_name_for_count].get(rho_key, 0))
-                cache_count = int(self._cache_select_counts[state_name_for_count].get(cache_key, 0))
+                quant_counts = self._quant_select_counts[state_name_for_count]
+                rho_counts = self._rho_select_counts[state_name_for_count]
+                cache_counts = self._cache_select_counts[state_name_for_count]
 
-                q_gap = max(0, int(self.explore_warmup_pulls_per_quant) - q_count)
-                rho_gap = max(0, int(self.explore_warmup_pulls_per_rho) - rho_count)
+                q_count = int(quant_counts.get(q, 0))
+                rho_count = int(rho_counts.get(rho_key, 0))
+                cache_count = int(cache_counts.get(cache_key, 0))
+
+                q_gap = (
+                    max(0, int(self.explore_warmup_pulls_per_quant) - q_count)
+                    if q in quant_counts else 0
+                )
+                rho_gap = (
+                    max(0, int(self.explore_warmup_pulls_per_rho) - rho_count)
+                    if rho_key in rho_counts else 0
+                )
                 cache_gap = max(0, int(self.explore_warmup_pulls_per_cache) - cache_count)
 
                 # Component warm-up:

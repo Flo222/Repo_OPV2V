@@ -15,38 +15,64 @@ from opencood.utils.camera_utils import indices_to_depth
 from sklearn.metrics import mean_squared_error
 
 def inference_late_fusion(batch_data, model, dataset):
-    """
-    Model inference for late fusion.
+    """Model inference for intermediate-late CoSDH fusion.
 
-    Parameters
-    ----------
-    batch_data : dict
-    model : opencood.object
-    dataset : opencood.LateFusionDataset
-
-    Returns
-    -------
-    pred_box_tensor : torch.Tensor
-        The tensor of prediction bounding box after NMS.
-    gt_box_tensor : torch.Tensor
-        The tensor of gt bounding box.
+    In Markov models, intermediate features are damaged inside the model's
+    CoSDH fusion module.  Non-ego late dense detection messages are damaged
+    here, after each non-ego CAV produces its single-agent output.
     """
     output_dict = OrderedDict()
 
+    try:
+        from opencood.models.comm_modules.cosdh_late_message_channel import \
+            apply_late_markov_to_output_dict
+    except Exception:
+        apply_late_markov_to_output_dict = None
+
+    # Make the order explicit: ego first starts the intermediate Markov frame,
+    # then non-ego late messages share the same channel object with distinct
+    # link keys such as late_641.
+    cav_items = []
+    if 'ego' in batch_data:
+        cav_items.append(('ego', batch_data['ego']))
     for cav_id, cav_content in batch_data.items():
+        if cav_id != 'ego':
+            cav_items.append((cav_id, cav_content))
+
+    for cav_id, cav_content in cav_items:
         cav_content["_ego_flag"] = cav_id == 'ego'
-        output_dict[cav_id] = model(cav_content)
+        cav_content["_comm_link_key"] = str(cav_id)
+
+        cav_output = model(cav_content)
+
+        if cav_id != 'ego' and apply_late_markov_to_output_dict is not None:
+            channel = getattr(model, "cosdh_late_markov_channel", None)
+            if channel is None:
+                channel = getattr(model, "cosdh_markov_channel", None)
+
+            if channel is not None and bool(getattr(channel, "enabled", False)):
+                model_name = model.__class__.__name__.lower()
+                if "v2xreal" in model_name:
+                    verbose_prefix = "CoSDH-Markov-Late-V2XReal"
+                else:
+                    verbose_prefix = "CoSDH-Markov-Late-OPV2V"
+
+                cav_output = apply_late_markov_to_output_dict(
+                    cav_output,
+                    channel,
+                    link_key='late_' + str(cav_id),
+                    verbose_prefix=verbose_prefix,
+                )
+
+        output_dict[cav_id] = cav_output
 
     pred_box_tensor, pred_score, gt_box_tensor = \
-        dataset.post_process(batch_data,
-                             output_dict)
+        dataset.post_process(batch_data, output_dict)
 
-    return_dict = {"pred_box_tensor" : pred_box_tensor, \
-                    "pred_score" : pred_score, \
-                    "gt_box_tensor" : gt_box_tensor}
+    return_dict = {"pred_box_tensor": pred_box_tensor,
+                   "pred_score": pred_score,
+                   "gt_box_tensor": gt_box_tensor}
     return return_dict
-
-
 
 def inference_no_fusion(batch_data, model, dataset, single_gt=False):
     """

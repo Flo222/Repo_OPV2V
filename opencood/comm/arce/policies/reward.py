@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from typing import Any, Dict, Optional, Tuple
+from opencood.comm.arce.policies.quant_quality import get_quant_loss, get_quant_quality
 
 
 def mean_detection_confidence(scores: Any, threshold: float = 0.3, topk: int = 20) -> float:
@@ -65,6 +66,7 @@ def c2mab_link_proxy_reward(
     alpha_r: float = 0.20,
     alpha_t: float = 0.15,
     stale_max_ms: float = 400.0,
+    quant_quality_cfg=None,
 ) -> Tuple[float, Dict[str, float]]:
     """Compute link-level C2MAB reward for one selected CAV-action.
 
@@ -75,17 +77,11 @@ def c2mab_link_proxy_reward(
     """
     w = float(contribution_weight)
     q = max(0.0, min(1.0, float(q_eff)))
-
     qm = str(quant_mode).lower()
-    quant_quality = {
-        "fp32": 1.00,
-        "fp16": 0.98,
-        "int8": 0.88,
-        "int4": 0.68,
-    }.get(qm, 0.90)
+    quant_quality = get_quant_quality(qm, cfg=quant_quality_cfg)
+    quant_loss = get_quant_loss(qm, cfg=quant_quality_cfg)
 
     q_total = q * float(quant_quality)
-    quant_loss = 1.0 - float(quant_quality)
 
     cost_norm = float(cost_bytes) / max(float(link_budget_bytes), 1.0)
     cost_norm = max(0.0, min(float(cost_norm), 1.0))

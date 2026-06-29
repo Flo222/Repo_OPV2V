@@ -60,6 +60,7 @@ def update_pending_rewards(
     reward_lambda_quant: float = 0.05,
     reward_lambda_violate: float = 1.0,
     reward_stale_max_ms: float = 400.0,
+    quant_quality_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Update policies from pending communication records.
 
@@ -118,6 +119,7 @@ def update_pending_rewards(
             lambda_quant=float(reward_lambda_quant),
             lambda_violate=float(reward_lambda_violate),
             stale_max_ms=float(reward_stale_max_ms),
+            quant_quality_cfg=quant_quality_cfg,
         )
 
         policy = get_policy_fn(item["ego_id"], item["sender_id"])

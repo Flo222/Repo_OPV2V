@@ -122,10 +122,20 @@ class RoCooperFusion(nn.Module):
             )
         )
 
+        # The final PointPillar BEV feature used by the detection head is
+        # typically at feature_stride=4 for this OPV2V config.  Using 1 makes
+        # the translation in affine normalization four times too large.
         self.downsample_rate = int(
             alignment_cfg.get(
                 "downsample_rate",
-                self.cfg.get("downsample_rate", 1),
+                self.cfg.get("downsample_rate", 4),
+            )
+        )
+
+        self.transform_direction = str(
+            alignment_cfg.get(
+                "transform_direction",
+                self.rocooper_cfg.get("transform_direction", "source_to_ego"),
             )
         )
 
@@ -349,6 +359,7 @@ class RoCooperFusion(nn.Module):
         batch_idx: int,
         psm_single_group: Optional[torch.Tensor],
         data_dict: Optional[Dict[str, Any]],
+        others_valid_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """
         Call RoCooperAggregator with tolerant signatures.
@@ -360,6 +371,7 @@ class RoCooperFusion(nn.Module):
                 batch_idx=batch_idx,
                 psm_single=psm_single_group,
                 data_dict=data_dict,
+                others_valid_mask=others_valid_mask,
             )
         except TypeError:
             try:
@@ -368,6 +380,7 @@ class RoCooperFusion(nn.Module):
                     others,
                     batch_idx=batch_idx,
                     data_dict=data_dict,
+                    others_valid_mask=others_valid_mask,
                 )
             except TypeError:
                 output = self.aggregator(ego, others)
@@ -446,6 +459,8 @@ class RoCooperFusion(nn.Module):
             "use_augmentor": self.use_augmentor,
             "use_aggregator": self.use_aggregator,
             "use_feature_alignment": self.use_feature_alignment,
+            "alignment_downsample_rate": self.downsample_rate,
+            "alignment_transform_direction": self.transform_direction,
             "fallback_fusion": self.fallback_fusion,
             "batch_size": len(record_len_list),
             "feature_shape": list(features.shape),
@@ -480,10 +495,30 @@ class RoCooperFusion(nn.Module):
                 discrete_ratio=self.discrete_ratio,
                 downsample_rate=self.downsample_rate,
                 enabled=self.use_feature_alignment,
+                transform_direction=self.transform_direction,
             )
 
             ego = group[0]
             others = group[1:]
+
+            # A CAV whose feature map is completely zero after communication
+            # should be treated as missing.  This mask is computed before the
+            # Augmentor so Conv/BN/bias layers cannot hallucinate missing
+            # neighbors into non-zero tensors.
+            if others.numel() > 0 and others.shape[0] > 0:
+                others_valid_mask = (
+                    others.detach().abs().flatten(1).sum(dim=1) > 1e-8
+                )
+            else:
+                others_valid_mask = torch.zeros(
+                    0,
+                    dtype=torch.bool,
+                    device=others.device,
+                )
+
+            scenario_info["num_valid_other_cav_before_augmentor"] = int(
+                others_valid_mask.sum().item()
+            ) if others_valid_mask.numel() > 0 else 0
 
             if others.numel() == 0 or others.shape[0] == 0:
                 fused_features.append(ego)
@@ -510,6 +545,50 @@ class RoCooperFusion(nn.Module):
 
             scenario_info["augmentor"] = augmentor_info
 
+            # Keep fully missing CAVs exactly zero after Augmentor.  This is
+            # essential for hard-drop sanity checks and prevents bias-only
+            # pseudo features from being fused as if they were received data.
+            if others_valid_mask.numel() == others.shape[0]:
+                others = others * others_valid_mask.to(
+                    dtype=others.dtype,
+                    device=others.device,
+                ).view(-1, 1, 1, 1)
+
+            scenario_info["num_valid_other_cav"] = int(
+                others_valid_mask.sum().item()
+            ) if others_valid_mask.numel() > 0 else 0
+
+            # Device fix: make valid mask follow feature tensors.
+            _rocooper_device = None
+            for _name in (
+                    "others_features", "others_feature", "others_feat",
+                    "agent_features", "features", "x",
+                    "spatial_features", "spatial_features_2d",
+                    "ego_feature", "ego_feat"):
+                _obj = locals().get(_name, None)
+                if hasattr(_obj, "device"):
+                    _rocooper_device = _obj.device
+                    break
+                if isinstance(_obj, (list, tuple)):
+                    for _v in _obj:
+                        if hasattr(_v, "device"):
+                            _rocooper_device = _v.device
+                            break
+                    if _rocooper_device is not None:
+                        break
+            if _rocooper_device is not None and hasattr(others_valid_mask, "to"):
+                others_valid_mask = others_valid_mask.to(_rocooper_device)
+
+            if others_valid_mask.numel() > 0 and int(others_valid_mask.sum().detach().cpu().item()) == 0:
+                fused_features.append(ego)
+                scenario_info["fusion_case"] = "ego_only_all_neighbors_missing"
+                scenario_info["aggregator"] = {
+                    "skipped": True,
+                    "reason": "all_neighbor_features_missing",
+                }
+                fusion_info["scenario_info"].append(scenario_info)
+                continue
+
             # ----------------------------------------------------------
             # 2. Aggregator: multi-scale regional cross-learning + fusion
             # ----------------------------------------------------------
@@ -520,6 +599,7 @@ class RoCooperFusion(nn.Module):
                     batch_idx=batch_idx,
                     psm_single_group=psm_single_group,
                     data_dict=data_dict,
+                    others_valid_mask=others_valid_mask,
                 )
 
                 scenario_info["aggregator"] = aggregator_info

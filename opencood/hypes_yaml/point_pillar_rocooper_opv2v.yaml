@@ -1,18 +1,20 @@
 name: point_pillar_rocooper_opv2v
-root_dir: opv2v_data_dumping/train
-validate_dir: opv2v_data_dumping/validate
+root_dir: /home/server2/CoSDH/dataset/OPV2V/train
+validate_dir: /home/server2/CoSDH/dataset/OPV2V/validate
 yaml_parser: load_point_pillar_params
 wild_setting:
   seed: 25
   async: false
   async_mode: sim
-  async_overhead: 100
+  async_overhead: 0
   loc_err: false
   xyz_std: 0.2
   ryp_std: 0.2
   data_size: 1.06
   transmission_speed: 27
-  backbone_delay: 10
+  backbone_delay: 0
+  channel_state_markov:
+    enabled: false
 train_params:
   batch_size: 1
   epoches: 60
@@ -124,7 +126,7 @@ model:
       use_augmentor: true
       use_aggregator: true
       use_block_prioritizer: true
-      selected_block_ratio: 0.6
+      selected_block_ratio: 0.8
       scales:
       - 4
       - 8
@@ -136,6 +138,11 @@ model:
       dropout: 0.1
       use_split_attention: true
       use_self_attention_after_scatter: true
+      alignment:
+        enabled: true
+        discrete_ratio: 0.4
+        downsample_rate: 4
+        transform_direction: source_to_ego
     rocooper_comm:
       enabled: true
       impair_ego: false
@@ -215,6 +222,14 @@ model:
       enabled: true
       in_channels: 256
       hidden_channels: 256
+      output_fusion_mode: gated_residual
+      skip_invalid_others: true
+      use_self_attention_after_scatter: true
+      gated_neighbor_fusion:
+        fusion_mode: mean
+        gate_hidden_ratio: 0.25
+        gate_bias_init: -1.0
+        use_channel_gate: false
       scales:
       - 4
       - 8
@@ -233,19 +248,25 @@ model:
         num_heads: 8
         dim_head: 32
         dropout: 0.1
+        mlp_ratio: 2.0
+        residual_scale: 0.5
         use_relative_position_bias: true
       self_attention:
         enabled: true
         num_heads: 8
         dim_head: 32
         dropout: 0.1
+        mlp_ratio: 2.0
+        residual_scale: 0.25
+        max_tokens_for_attention: 4096
+        fallback_mode: conv
       split_attention:
         enabled: true
         radix: 3
         reduction_factor: 4
     block_prioritizer:
       enabled: true
-      selected_block_ratio: 0.6
+      selected_block_ratio: 0.8
       self_centric_selection: true
       num_experts: 4
       expert_hidden_dim: 128

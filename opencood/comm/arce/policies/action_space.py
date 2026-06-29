@@ -50,13 +50,20 @@ from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 # Final action dimensions
 # ----------------------------------------------------------------------
 
-QUANT_MODES: Tuple[str, ...] = ("fp32", "fp16", "int8", "int4")
-RHO_VALUES: Tuple[float, ...] = (0.0, 0.25, 0.50)
+SUPPORTED_QUANT_MODES: Tuple[str, ...] = ("fp32", "fp16", "int8", "int4")
+ONLINE_QUANT_MODES: Tuple[str, ...] = ("fp16", "int8", "int4")
+QUANT_MODES: Tuple[str, ...] = SUPPORTED_QUANT_MODES
+ONLINE_RHO_VALUES: Tuple[float, ...] = (0.0, 0.10, 0.25, 0.60)
+RHO_VALUES: Tuple[float, ...] = ONLINE_RHO_VALUES
 CACHE_VALUES: Tuple[int, ...] = (0, 1)
 SEND_VALUES: Tuple[int, ...] = (0, 1)
+NO_SEND_ACTION_ID = "send0_none_rho0_cache0_none"
 
 
 QUANT_ALIASES: Dict[str, str] = {
+    "none": "none",
+    "no_send": "none",
+    "nosend": "none",
     "fp32": "fp32",
     "float32": "fp32",
     "torch.float32": "fp32",
@@ -75,6 +82,7 @@ QUANT_ALIASES: Dict[str, str] = {
 
 
 QUANT_BITS: Dict[str, int] = {
+    "none": 0,
     "fp32": 32,
     "fp16": 16,
     "int8": 8,
@@ -133,6 +141,8 @@ class PDFARCEAction:
         int8 -> 0.250
         int4 -> 0.125
         """
+        if self.is_no_send or normalize_pdf_quant_mode(self.quant_mode) == "none":
+            return 0.0
         return float(self.quant_bits) / 32.0
 
     def as_dict(self) -> Dict[str, Any]:
@@ -210,9 +220,16 @@ class PDFARCEAction:
 # ----------------------------------------------------------------------
 
 def _canonical_float_text(x: float) -> str:
-    if abs(float(x)) < 1e-12:
+    x = float(x)
+    if abs(x) < 1e-12:
         return "0"
-    return str(float(x)).replace(".", "p")
+    if abs(x - 0.10) < 1e-12:
+        return "0p10"
+    if abs(x - 0.25) < 1e-12:
+        return "0p25"
+    if abs(x - 0.60) < 1e-12:
+        return "0p60"
+    return str(x).replace(".", "p")
 
 
 def infer_fec_type(rho: float, fec_mode: str = "raptor_sim") -> str:
@@ -242,20 +259,11 @@ def infer_fec_type(rho: float, fec_mode: str = "raptor_sim") -> str:
 
 
 def is_valid_pdf_action_combination(send: int, quant_mode: str, rho: float) -> bool:
-    """
-    Return whether a PDF-level action is valid.
+    """Validate system-supported PDF action fields.
 
-    Final GRACE setting keeps the complete action space:
-        send ∈ {0, 1}
-        quant ∈ {fp32, fp16, int8, int4}
-        rho ∈ {0, 0.25, 0.5}
-
-    Therefore all normalized combinations are valid.
-
-    The actual feasibility under a frame budget is handled later by:
-        estimate_action_cost_bytes(...)
-        feasible_action_costs(...)
-        ARCEC2MABComm._estimate_byte_stream_fec_cost(...)
+    This broad validator intentionally keeps FP32 support for fixed baselines
+    and ARCEFixedComm. Online ARCE-C2MAB uses
+    is_valid_online_pdf_action_combination().
     """
     _ = int(send)
     _ = float(rho)
@@ -263,63 +271,113 @@ def is_valid_pdf_action_combination(send: int, quant_mode: str, rho: float) -> b
     return True
 
 
+def is_valid_online_pdf_action_combination(
+    send: int,
+    quant_mode: str,
+    rho: float,
+    allow_fp32_send: bool = False,
+) -> bool:
+    """Validate online ARCE-C2MAB actions.
+
+    FP32 is still supported by the system, but excluded from online send arms
+    unless allow_fp32_send=True.
+    """
+    send_i = int(send)
+    rho_f = float(rho)
+    q = normalize_pdf_quant_mode(quant_mode)
+
+    if send_i == 0:
+        return q == "none" and abs(rho_f) < 1e-12
+
+    if send_i != 1:
+        return False
+
+    allowed_quant_modes = set(ONLINE_QUANT_MODES)
+    if bool(allow_fp32_send):
+        allowed_quant_modes.add("fp32")
+
+    if q not in allowed_quant_modes:
+        return False
+
+    return any(abs(rho_f - float(x)) < 1e-12 for x in ONLINE_RHO_VALUES)
+
+
+
 def build_pdf_action_space(
     fec_mode: str = "raptor_sim",
     send_values: Sequence[int] = SEND_VALUES,
-    quant_modes: Sequence[str] = QUANT_MODES,
-    redundancy_ratios: Sequence[float] = RHO_VALUES,
+    quant_modes: Sequence[str] = ONLINE_QUANT_MODES,
+    redundancy_ratios: Sequence[float] = ONLINE_RHO_VALUES,
     cache_values: Sequence[int] = CACHE_VALUES,
     channel_state: str = "medium",
     xor_group_size: int = 4,
     decode_overhead: float = 0.0,
+    allow_fp32_send: bool = False,
 ) -> List[PDFARCEAction]:
-    """
-    Build the final 2 x 4 x 3 x 2 = 48 ARCE action space.
+    """Build the online ARCE-C2MAB action space.
 
-    Notes:
-        1. send=0 combinations are retained so that the formal action space
-           remains exactly 48-dimensional.
-        2. ARCEC2MABComm normally skips no-send actions during proposal
-           generation and uses no-send as fallback for unselected CAVs.
-        3. rho > 0 maps to raptor_sim by default.
+    Default size is 25:
+        1 no-send + 3 quant modes x 4 rho values x 2 cache flags.
+
+    FP32 remains available for fixed baselines and ARCEFixedComm, but is
+    excluded from online C2MAB send arms unless allow_fp32_send=True.
     """
     actions: List[PDFARCEAction] = []
 
-    for send in send_values:
-        send_i = int(send)
+    if 0 in [int(x) for x in send_values]:
+        actions.append(PDFARCEAction(
+            action_id=NO_SEND_ACTION_ID,
+            send=0,
+            quant_mode="none",
+            redundancy_ratio=0.0,
+            cache_enabled=0,
+            fec_type="none",
+            xor_group_size=int(xor_group_size),
+            decode_overhead=float(decode_overhead),
+            channel_state=str(channel_state),
+        ))
 
-        for q in quant_modes:
-            q = normalize_pdf_quant_mode(q)
+    if 1 not in [int(x) for x in send_values]:
+        return actions
 
-            for rho in redundancy_ratios:
-                rho_f = float(rho)
+    normalized_quant_modes: List[str] = []
+    for q in quant_modes:
+        qn = normalize_pdf_quant_mode(q)
+        if qn == "none":
+            continue
+        if qn == "fp32" and not bool(allow_fp32_send):
+            continue
+        if qn not in normalized_quant_modes:
+            normalized_quant_modes.append(qn)
 
-                for cache in cache_values:
-                    cache_i = int(cache)
+    for q in normalized_quant_modes:
+        for rho in redundancy_ratios:
+            rho_f = float(rho)
+            for cache in cache_values:
+                cache_i = int(cache)
 
-                    if not is_valid_pdf_action_combination(send_i, q, rho_f):
-                        continue
+                if not is_valid_online_pdf_action_combination(
+                    1,
+                    q,
+                    rho_f,
+                    allow_fp32_send=allow_fp32_send,
+                ):
+                    continue
 
-                    fec_type = infer_fec_type(rho_f, fec_mode) if send_i else "none"
+                fec_type = "none" if abs(rho_f) < 1e-12 else infer_fec_type(rho_f, fec_mode)
+                action_id = f"send1_{q}_rho{_canonical_float_text(rho_f)}_cache{cache_i}_{fec_type}"
 
-                    action_id = (
-                        f"send{send_i}_{q}_rho{_canonical_float_text(rho_f)}"
-                        f"_cache{cache_i}_{fec_type}"
-                    )
-
-                    actions.append(
-                        PDFARCEAction(
-                            action_id=action_id,
-                            send=send_i,
-                            quant_mode=q,
-                            redundancy_ratio=rho_f,
-                            cache_enabled=cache_i,
-                            fec_type=fec_type,
-                            xor_group_size=int(xor_group_size),
-                            decode_overhead=float(decode_overhead),
-                            channel_state=str(channel_state),
-                        )
-                    )
+                actions.append(PDFARCEAction(
+                    action_id=action_id,
+                    send=1,
+                    quant_mode=q,
+                    redundancy_ratio=rho_f,
+                    cache_enabled=cache_i,
+                    fec_type=fec_type,
+                    xor_group_size=int(xor_group_size),
+                    decode_overhead=float(decode_overhead),
+                    channel_state=str(channel_state),
+                ))
 
     return actions
 
@@ -408,6 +466,11 @@ def action_by_id(actions: Sequence[PDFARCEAction]) -> Dict[str, PDFARCEAction]:
 
 __all__ = [
     "PDFARCEAction",
+    "SUPPORTED_QUANT_MODES",
+    "ONLINE_QUANT_MODES",
+    "ONLINE_RHO_VALUES",
+    "NO_SEND_ACTION_ID",
+    "is_valid_online_pdf_action_combination",
     "QUANT_MODES",
     "RHO_VALUES",
     "CACHE_VALUES",

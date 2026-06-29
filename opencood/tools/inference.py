@@ -41,6 +41,8 @@ def test_parser():
                         help='whether to globally sort detections by confidence score.'
                              'If set to True, it is the mainstream AP computing method,'
                              'but would increase the tolerance for FP (False Positives).')
+    parser.add_argument("--max_frames", type=int, default=-1,
+                        help="Maximum number of validation frames to evaluate. -1 means full split.")
     opt = parser.parse_args()
     return opt
 
@@ -108,6 +110,9 @@ def main():
             vis_aabbs_pred.append(o3d.geometry.LineSet())
 
     for i, batch_data in tqdm(enumerate(data_loader)):
+        # ARCE_MAX_FRAMES_PATCH
+        if int(getattr(opt, 'max_frames', -1)) >= 0 and i >= int(getattr(opt, 'max_frames', -1)):
+            break
         # print(i)
         with torch.no_grad():
             batch_data = train_utils.to_device(batch_data, device)

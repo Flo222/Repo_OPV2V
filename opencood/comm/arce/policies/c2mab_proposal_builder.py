@@ -140,6 +140,7 @@ def build_c2mab_proposals(
                 feature_shape=features_shape,
                 action=action,
                 budget_bytes=proposal_budget_bytes,
+                message_mask=sender_mask,
             )
             if not bool(cost_info["feasible"]):
                 continue
@@ -200,7 +201,30 @@ def build_c2mab_proposals(
                         "num_collaborators": int(num_collaborators),
                         "budget_scope": str(budget_scope),
                         "budget_source": str(budget_source),
-                        "proposal_cost_model": "byte_stream_quantize_first_with_fec",
+                        "proposal_cost_model": str(
+                            cand_cost_info.get("cost_model", "byte_stream_quantize_first_with_fec")
+                        ),
+                        "compact_estimator_enabled": bool(
+                            cand_cost_info.get("compact_estimator_enabled", False)
+                        ),
+                        "compact_estimated_num_tokens": cand_cost_info.get(
+                            "compact_estimated_num_tokens", None
+                        ),
+                        "compact_estimated_mask_ratio": cand_cost_info.get(
+                            "compact_estimated_mask_ratio", None
+                        ),
+                        "compact_estimator_budget_policy": cand_cost_info.get(
+                            "compact_estimator_budget_policy", None
+                        ),
+                        "compact_estimator_predicted_allocated_budget_bytes": cand_cost_info.get(
+                            "compact_estimator_predicted_allocated_budget_bytes", None
+                        ),
+                        "compact_estimator": dict(
+                            cand_cost_info.get("compact_estimator", {}) or {}
+                        ),
+                        "compact_estimator_first_pass": dict(
+                            cand_cost_info.get("compact_estimator_first_pass", {}) or {}
+                        ),
                         "estimated_tx_bytes": float(cand_cost),
                         "estimated_source_bytes": float(cand_cost_info["source_bytes"]),
                         "estimated_parity_bytes": float(

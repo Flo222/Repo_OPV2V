@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from opencood.comm.arce.policies.compact_sparse_cost_helper import (
+    estimate_compact_sparse_tokens,
+)
+
 import copy
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -11,16 +15,25 @@ from opencood.comm.arce.policies.action_space import (
     build_pdf_action_space,
     raw_feature_bytes_fp32,
     budget_bytes_from_bandwidth,
+    NO_SEND_ACTION_ID,
 )
 from opencood.comm.arce.policies.context_builder import PDFContextBuilder
 from opencood.comm.arce.policies.c2mab_policy_bank import (
     C2MABPolicyBank,
     C2MABPolicyConfig,
 )
+from opencood.comm.arce.policies.c2mab_executor_config import (
+    build_c2mab_executor_cfg,
+)
+from opencood.comm.arce.policies.c2mab_runtime_summary import (
+    summarize_dc2mab_runtime_records,
+)
+from opencood.comm.arce.policies.c2mab_no_send_executor import (
+    execute_no_send_sender,
+)
 from opencood.comm.arce.policies.c2mab_proposal_builder import build_c2mab_proposals
 from opencood.comm.arce.policies.c2mab_execution_record_builder import (
     build_budget_consistency,
-    build_no_send_system_budget_record,
     enrich_selected_execution_record,
     selected_allocated_budget_bytes,
     selected_transmitted_bytes,
@@ -37,7 +50,6 @@ from opencood.comm.arce.policies.communication_cost_estimator import (
     estimate_byte_stream_fec_cost as cce_estimate_byte_stream_fec_cost,
 )
 from opencood.comm.arce.policies.reward_pending_builder import (
-    build_no_send_pending_reward_item,
     build_selected_pending_reward_item,
 )
 from opencood.comm.arce.policies.superarm_record_builder import build_dc2mab_superarm_record
@@ -49,12 +61,9 @@ from opencood.comm.arce.policies.communication_record_utils import (
 from opencood.comm.arce.policies.channel_budget_manager import (
     budget_source_scope as cbm_budget_source_scope,
     channel_profile_budget_bytes as cbm_channel_profile_budget_bytes,
-    channel_profiles_cfg as cbm_channel_profiles_cfg,
-    extract_channel_state_ids as cbm_extract_channel_state_ids,
     per_link_budget_bytes as cbm_per_link_budget_bytes,
     prepare_link_channel_budget as cbm_prepare_link_channel_budget,
     profile_for_state as cbm_profile_for_state,
-    state_name_for_sender as cbm_state_name_for_sender,
     system_budget_bytes as cbm_system_budget_bytes,
     use_channel_profile_budget as cbm_use_channel_profile_budget,
 )
@@ -75,168 +84,19 @@ from opencood.comm.arce.c2mab_common import (
 
 from opencood.comm.arce.c2mab_complementarity import (
     mask_to_bool_2d,
-    mask_to_float_2d,
-    mask_complementarity,
     confidence_advantage_complementarity,
 )
+from opencood.comm.arce.policies.quant_quality import merge_quant_quality_prior
+
 
 
 class ARCEC2MABComm:
 
     def __init__(self, cfg: Optional[Dict[str, Any]] = None):
-        self.full_cfg = cfg or {}
         self.arce_cfg = _extract_arce_cfg(cfg or {})
 
 
-        executor_cfg = copy.deepcopy(cfg)
-
-        if isinstance(executor_cfg, dict):
-            if isinstance(executor_cfg.get("arce", None), dict):
-                executor_arce_cfg = copy.deepcopy(executor_cfg["arce"])
-            else:
-                executor_arce_cfg = copy.deepcopy(self.arce_cfg)
-
-
-            executor_arce_cfg["mode"] = "fixed"
-            executor_arce_cfg["policy"] = "fixed"
-
-
-            quant_cfg = executor_arce_cfg.get("quantization", None)
-            if not isinstance(quant_cfg, dict):
-                quant_cfg = {}
-            quant_cfg.setdefault("mode", "fp32")
-            executor_arce_cfg["quantization"] = quant_cfg
-
-
-            packetizer_cfg = executor_arce_cfg.get("packetizer", None)
-            if not isinstance(packetizer_cfg, dict):
-                packetizer_cfg = {}
-            packetizer_cfg["mode"] = "byte_stream"
-            packetizer_cfg.setdefault("packet_size_bytes", 1024)
-            executor_arce_cfg["packetizer"] = packetizer_cfg
-
-
-            channel_cfg = executor_arce_cfg.get("channel", None)
-            if not isinstance(channel_cfg, dict):
-                channel_cfg = {}
-
-
-            channel_cfg["mode"] = "fixed"
-            channel_cfg.setdefault("fixed_state", "medium")
-            channel_cfg.setdefault("state_source", "dataset_link_markov_override")
-            channel_cfg["loss_model"] = "bernoulli"
-            channel_cfg["bernoulli_loss_rates"] = {
-                "good": 0.05,
-                "medium": 0.20,
-                "bad": 0.35,
-                **copy.deepcopy(channel_cfg.get("bernoulli_loss_rates", {}) or {}),
-            }
-            channel_cfg["latency_model"] = "fixed_state_delay"
-            channel_cfg["fixed_delay_ms"] = {
-                "good": 10.0,
-                "medium": 50.0,
-                "bad": 100.0,
-                **copy.deepcopy(channel_cfg.get("fixed_delay_ms", {}) or {}),
-            }
-            channel_cfg["jitter_ms"] = {
-                "good": [0.0, 0.0],
-                "medium": [0.0, 0.0],
-                "bad": [0.0, 0.0],
-            }
-            executor_arce_cfg["channel"] = channel_cfg
-
-
-            delay_cfg = executor_arce_cfg.get("delay", None)
-            if not isinstance(delay_cfg, dict):
-                delay_cfg = {}
-            delay_cfg["policy_by_state"] = {
-                "good": "current",
-                "medium": "current",
-                "bad": "previous_frame",
-                **copy.deepcopy(delay_cfg.get("policy_by_state", {}) or {}),
-            }
-            executor_arce_cfg["delay"] = delay_cfg
-
-
-            fec_cfg = executor_arce_cfg.get("fec", None)
-            if not isinstance(fec_cfg, dict):
-                fec_cfg = {}
-            fec_cfg.setdefault("enabled", True)
-            fec_cfg.setdefault("type", "action")
-            fec_cfg.setdefault("default_type", "raptor_sim")
-            executor_arce_cfg["fec"] = fec_cfg
-
-            redundancy_cfg = executor_arce_cfg.get("redundancy", None)
-            if not isinstance(redundancy_cfg, dict):
-                redundancy_cfg = {}
-            redundancy_cfg.setdefault("enabled", True)
-            executor_arce_cfg["redundancy"] = redundancy_cfg
-
-
-            patch_cfg = executor_arce_cfg.get("patch_selection", None)
-            if not isinstance(patch_cfg, dict):
-                patch_cfg = {}
-            patch_cfg["enabled"] = False
-            executor_arce_cfg["patch_selection"] = patch_cfg
-
-            executor_cfg["arce"] = executor_arce_cfg
-            executor_cfg["mode"] = "fixed"
-            executor_cfg["policy"] = "fixed"
-            executor_cfg["quantization"] = executor_arce_cfg["quantization"]
-            executor_cfg["packetizer"] = executor_arce_cfg["packetizer"]
-            executor_cfg["channel"] = executor_arce_cfg["channel"]
-            executor_cfg["delay"] = executor_arce_cfg["delay"]
-            executor_cfg["fec"] = executor_arce_cfg["fec"]
-            executor_cfg["redundancy"] = executor_arce_cfg["redundancy"]
-        else:
-            executor_cfg = {
-                "mode": "fixed",
-                "policy": "fixed",
-                "arce": {
-                    **copy.deepcopy(self.arce_cfg),
-                    "mode": "fixed",
-                    "policy": "fixed",
-                    "packetizer": {
-                        "mode": "byte_stream",
-                        "packet_size_bytes": 1024,
-                    },
-                    "channel": {
-                        "mode": "fixed",
-                        "fixed_state": "medium",
-                        "loss_model": "bernoulli",
-                        "bernoulli_loss_rates": {
-                            "good": 0.05,
-                            "medium": 0.20,
-                            "bad": 0.35,
-                        },
-                        "latency_model": "fixed_state_delay",
-                        "fixed_delay_ms": {
-                            "good": 10.0,
-                            "medium": 50.0,
-                            "bad": 100.0,
-                        },
-                    },
-                    "delay": {
-                        "policy_by_state": {
-                            "good": "current",
-                            "medium": "current",
-                            "bad": "previous_frame",
-                        }
-                    },
-                    "fec": {
-                        "enabled": True,
-                        "type": "action",
-                        "default_type": "raptor_sim",
-                    },
-                    "redundancy": {
-                        "enabled": True,
-                    },
-                    "patch_selection": {
-                        "enabled": False,
-                    },
-                },
-            }
-
+        executor_cfg = build_c2mab_executor_cfg(cfg, self.arce_cfg)
         self.executor = ARCEFixedComm(executor_cfg)
 
 
@@ -247,14 +107,9 @@ class ARCEC2MABComm:
                 action_cfg.get("fec_mode", "raptor_sim"),
             ),
             send_values=action_cfg.get("send_values", action_cfg.get("send", (0, 1))),
-            quant_modes=action_cfg.get(
-                "quant_modes",
-                action_cfg.get("quant", ("fp32", "fp16", "int8", "int4")),
-            ),
-            redundancy_ratios=action_cfg.get(
-                "redundancy_ratios",
-                action_cfg.get("rho", (0.0, 0.25, 0.5)),
-            ),
+            quant_modes=action_cfg.get("online_quant_modes", ("fp16", "int8", "int4")),
+            redundancy_ratios=action_cfg.get("online_redundancy_ratios", (0.0, 0.10, 0.25, 0.60)),
+            allow_fp32_send=bool(action_cfg.get("allow_fp32_send", False)),
             cache_values=action_cfg.get("cache_values", action_cfg.get("cache", (0, 1))),
             xor_group_size=int(action_cfg.get("xor_group_size", 4)),
             decode_overhead=float(action_cfg.get("decode_overhead", 0.0)),
@@ -262,9 +117,22 @@ class ARCEC2MABComm:
         self.action_ids = [a.action_id for a in self.actions]
         self.action_space = self.actions
         self.no_send_action = next(
-            (a for a in self.actions if getattr(a, "is_no_send", False)),
+            (a for a in self.actions if str(a.action_id) == NO_SEND_ACTION_ID),
             None,
         )
+        if self.no_send_action is None:
+            raise ValueError(f"Missing canonical no-send action: {NO_SEND_ACTION_ID}")
+
+        fp32_online = [
+            a.action_id for a in self.actions
+            if not getattr(a, "is_no_send", False)
+            and str(getattr(a, "quant_mode", "")).lower() == "fp32"
+        ]
+        if fp32_online:
+            raise ValueError(
+                "FP32 send actions are not allowed in online ARCE-C2MAB: "
+                + ", ".join(fp32_online)
+            )
 
 
         context_cfg = self.arce_cfg.get("context", {})
@@ -345,13 +213,12 @@ class ARCEC2MABComm:
                 oracle_cfg.get("explore_warmup_pulls_per_cache", 4)
             ),
             explore_bonus=float(oracle_cfg.get("explore_bonus", 1.0)),
-            quant_quality_prior=oracle_cfg.get(
-                "quant_quality_prior",
-                self.arce_cfg.get(
+            quant_quality_prior=merge_quant_quality_prior({
+                "quant_quality_prior": oracle_cfg.get(
                     "quant_quality_prior",
-                    {"fp32": 1.0, "fp16": 0.97, "int8": 0.85, "int4": 0.55},
-                ),
-            ),
+                    self.arce_cfg.get("quant_quality_prior", {}),
+                )
+            }),
         )
 
 
@@ -407,14 +274,6 @@ class ARCEC2MABComm:
             )
         )
 
-        self.total_budget_mbps = self.system_budget_mbps
-        self.tau_trans_ms = float(
-            oracle_cfg.get(
-                "tau_trans_ms",
-                oracle_cfg.get("fallback_tx_window_ms", self.tx_window_ms),
-            )
-        )
-
 
         packet_cfg = self.arce_cfg.get("packetizer", {}) or {}
         self.packet_size_bytes = int(
@@ -437,13 +296,6 @@ class ARCEC2MABComm:
 
 
         reward_cfg = self.arce_cfg.get("reward", {})
-        self.reward_alpha_q = float(reward_cfg.get("alpha_q", 0.5))
-        self.reward_alpha_c = float(reward_cfg.get("alpha_c", 0.3))
-        self.reward_alpha_d = float(reward_cfg.get("alpha_d", 0.2))
-        self.reward_alpha_v = float(reward_cfg.get("alpha_v", 1.0))
-        self.reward_alpha_m = float(reward_cfg.get("alpha_m", 0.25))
-        self.reward_alpha_r = float(reward_cfg.get("alpha_r", 0.20))
-        self.reward_alpha_t = float(reward_cfg.get("alpha_t", 0.15))
         self.reward_tau_stale_ms = float(reward_cfg.get("tau_stale_ms", 300.0))
         self.reward_stale_max_ms = float(reward_cfg.get("stale_max_ms", 400.0))
 
@@ -500,44 +352,12 @@ class ARCEC2MABComm:
             self.clear_records()
 
 
-    def _channel_profiles_cfg(self) -> Dict[str, Dict[str, Any]]:
-        return cbm_channel_profiles_cfg(
-            self.arce_cfg,
-            DEFAULT_CHANNEL_PROFILES,
-            _normalize_state_name,
-        )
-
     def _profile_for_state(self, state_name: str) -> Dict[str, Any]:
         return cbm_profile_for_state(
             state_name,
             self.arce_cfg,
             DEFAULT_CHANNEL_PROFILES,
             _normalize_state_name,
-        )
-
-    def _extract_channel_state_ids(
-        self,
-        data_dict: Optional[Dict[str, Any]],
-        local_batch_idx: int,
-    ) -> Optional[List[int]]:
-        return cbm_extract_channel_state_ids(
-            data_dict,
-            local_batch_idx,
-            _safe_get_nested,
-        )
-
-    def _state_name_for_sender(
-        self,
-        data_dict: Optional[Dict[str, Any]],
-        batch_idx: int,
-        sender_local_idx: int,
-    ) -> str:
-        return cbm_state_name_for_sender(
-            data_dict,
-            batch_idx,
-            sender_local_idx,
-            CHANNEL_STATE_ID_TO_NAME,
-            _safe_get_nested,
         )
 
 
@@ -604,11 +424,22 @@ class ARCEC2MABComm:
 
     def _estimate_byte_stream_fec_cost(
         self,
-        feature_shape: Sequence[int],
-        action: PDFARCEAction,
-        budget_bytes: Optional[float] = None,
-    ) -> Dict[str, Any]:
-        return cce_estimate_byte_stream_fec_cost(
+        feature_shape,
+        action,
+        budget_bytes=None,
+        message_mask=None,
+    ):
+        compact_cfg = (self.arce_cfg or {}).get("compact_sparse", {}) or {}
+
+        first_compact_info = estimate_compact_sparse_tokens(
+            feature_shape=feature_shape,
+            message_mask=message_mask,
+            action=action,
+            budget_bytes=budget_bytes,
+            compact_sparse_cfg=compact_cfg,
+        )
+
+        first_cost_info = cce_estimate_byte_stream_fec_cost(
             feature_shape=feature_shape,
             action=action,
             budget_bytes=budget_bytes,
@@ -616,8 +447,45 @@ class ARCEC2MABComm:
             metadata_bytes_per_packet=int(self.metadata_bytes_per_packet),
             raw_feature_bytes_fp32_fn=raw_feature_bytes_fp32,
             quant_ratio_to_fp32=QUANT_RATIO_TO_FP32,
+            compact_token_info=first_compact_info,
         )
 
+        predicted_allocated_budget = float(
+            first_cost_info.get("estimated_transmitted_bytes", 0.0) or 0.0
+        )
+
+        if bool(first_compact_info.get("compact_enabled", False)) and predicted_allocated_budget > 0.0:
+            second_compact_info = estimate_compact_sparse_tokens(
+                feature_shape=feature_shape,
+                message_mask=message_mask,
+                action=action,
+                budget_bytes=predicted_allocated_budget,
+                compact_sparse_cfg=compact_cfg,
+            )
+
+            second_cost_info = cce_estimate_byte_stream_fec_cost(
+                feature_shape=feature_shape,
+                action=action,
+                budget_bytes=budget_bytes,
+                packet_size_bytes=int(self.packet_size_bytes),
+                metadata_bytes_per_packet=int(self.metadata_bytes_per_packet),
+                raw_feature_bytes_fp32_fn=raw_feature_bytes_fp32,
+                quant_ratio_to_fp32=QUANT_RATIO_TO_FP32,
+                compact_token_info=second_compact_info,
+            )
+
+            second_cost_info["compact_estimator_first_pass"] = dict(first_compact_info)
+            second_cost_info["compact_estimator_budget_policy"] = "two_pass_predicted_allocated_budget"
+            second_cost_info["compact_estimator_predicted_allocated_budget_bytes"] = float(
+                predicted_allocated_budget
+            )
+            return second_cost_info
+
+        first_cost_info["compact_estimator_budget_policy"] = "single_pass_proposal_budget"
+        first_cost_info["compact_estimator_predicted_allocated_budget_bytes"] = float(
+            predicted_allocated_budget
+        )
+        return first_cost_info
 
     def _cache_quality(self, ego_id: Any, sender_id: Any) -> float:
         return cru_cache_quality(
@@ -660,11 +528,6 @@ class ARCEC2MABComm:
     def _mask_to_bool_2d(self, mask):
         return mask_to_bool_2d(mask)
 
-    def _mask_complementarity(self, sender_mask, ego_mask) -> float:
-        return mask_complementarity(sender_mask, ego_mask)
-
-    def _mask_to_float_2d(self, mask):
-        return mask_to_float_2d(mask)
 
     def _confidence_advantage_complementarity(
         self,
@@ -678,22 +541,16 @@ class ARCEC2MABComm:
             threshold=threshold,
         )
 
-    def communicate_agent_features(
+
+    def _prepare_communication_round(
         self,
         features: torch.Tensor,
-        frame_id: Optional[int] = None,
-        ego_index: int = 0,
-        data_dict: Optional[Dict[str, Any]] = None,
-        batch_idx: int = 0,
-        update_cache: bool = True,
-        return_records: bool = True,
-        message_masks: Optional[torch.Tensor] = None,
-
-        local_cav_confidences: Optional[torch.Tensor] = None,
-    ):
-        if features.dim() != 4:
-            raise ValueError(f"Expected features [N,C,H,W], got {tuple(features.shape)}")
-
+        ego_index: int,
+        data_dict: Optional[Dict[str, Any]],
+        batch_idx: int,
+        local_cav_confidences: Optional[torch.Tensor],
+    ) -> Dict[str, Any]:
+        """Prepare per-frame communication context before C2MAB proposal building."""
         n = int(features.shape[0])
         ego_id = int(ego_index)
 
@@ -702,7 +559,6 @@ class ARCEC2MABComm:
             if int(sender_idx) != int(ego_index)
         ]
         num_collaborators = len(collaborator_indices)
-
 
         total_budget_bytes = self._system_budget_bytes()
         per_link_budget_bytes = self._per_link_budget_bytes(num_collaborators)
@@ -734,7 +590,6 @@ class ARCEC2MABComm:
             link_profiles[sender_idx] = profile
             link_budgets[sender_idx] = float(link_budget_bytes)
 
-
         if use_channel_profile_budget and link_profiles:
             first_sender = next(iter(link_profiles.keys()))
             global_profile = link_profiles[first_sender]
@@ -746,11 +601,62 @@ class ARCEC2MABComm:
                 float(total_budget_bytes) / float(max(1, len(link_budgets)))
             )
 
-
             link_budgets = {
                 int(k): float(per_link_budget_bytes)
                 for k in link_budgets.keys()
             }
+
+        return {
+            "ego_id": int(ego_id),
+            "collaborator_indices": collaborator_indices,
+            "num_collaborators": int(num_collaborators),
+            "total_budget_bytes": float(total_budget_bytes),
+            "per_link_budget_bytes": float(per_link_budget_bytes),
+            "budget_source_cfg": str(budget_source_cfg),
+            "budget_scope_cfg": str(budget_scope_cfg),
+            "use_channel_profile_budget": bool(use_channel_profile_budget),
+            "ego_conf": float(ego_conf),
+            "link_states": link_states,
+            "link_profiles": link_profiles,
+            "link_budgets": link_budgets,
+        }
+
+    def communicate_agent_features(
+        self,
+        features: torch.Tensor,
+        frame_id: Optional[int] = None,
+        ego_index: int = 0,
+        data_dict: Optional[Dict[str, Any]] = None,
+        batch_idx: int = 0,
+        update_cache: bool = True,
+        return_records: bool = True,
+        message_masks: Optional[torch.Tensor] = None,
+
+        local_cav_confidences: Optional[torch.Tensor] = None,
+    ):
+        if features.dim() != 4:
+            raise ValueError(f"Expected features [N,C,H,W], got {tuple(features.shape)}")
+
+        round_ctx = self._prepare_communication_round(
+            features=features,
+            ego_index=int(ego_index),
+            data_dict=data_dict,
+            batch_idx=batch_idx,
+            local_cav_confidences=local_cav_confidences,
+        )
+
+        ego_id = round_ctx["ego_id"]
+        collaborator_indices = round_ctx["collaborator_indices"]
+        num_collaborators = round_ctx["num_collaborators"]
+        total_budget_bytes = round_ctx["total_budget_bytes"]
+        per_link_budget_bytes = round_ctx["per_link_budget_bytes"]
+        budget_source_cfg = round_ctx["budget_source_cfg"]
+        budget_scope_cfg = round_ctx["budget_scope_cfg"]
+        use_channel_profile_budget = round_ctx["use_channel_profile_budget"]
+        ego_conf = round_ctx["ego_conf"]
+        link_states = round_ctx["link_states"]
+        link_profiles = round_ctx["link_profiles"]
+        link_budgets = round_ctx["link_budgets"]
 
         proposals, no_send_candidates = build_c2mab_proposals(
             features_shape=features.shape[1:],
@@ -803,73 +709,31 @@ class ARCEC2MABComm:
             if selected is None:
                 action = no_send_candidates.get(sender_idx, self.no_send_action)
 
-                no_send_profile = link_profiles.get(
-                    sender_idx,
-                    self._profile_for_state(link_states.get(sender_idx, "medium")),
-                )
-                no_send_latency_ms = _profile_scalar(
-                    no_send_profile.get(
-                        "delay_ms",
-                        no_send_profile.get("fixed_delay_ms", 0.0),
-                    ),
-                    0.0,
-                )
-                no_send_cache_q = self._cache_quality(ego_id, sender_idx)
-                no_send_link_budget = float(
-                    link_budgets.get(sender_idx, per_link_budget_bytes)
-                )
-
-
-                out[sender_idx] = torch.zeros_like(out[sender_idx])
-
-                rec = self._make_no_send_record(
-                    out[sender_idx],
-                    frame_id,
-                    ego_id,
-                    sender_idx,
-                    action,
-                )
-                rec["system_budget"] = build_no_send_system_budget_record(
-                    budget_scope=str(budget_scope_cfg),
-                    budget_source=str(budget_source_cfg),
+                rec = execute_no_send_sender(
+                    out=out,
+                    sender_idx=int(sender_idx),
+                    frame_id=frame_id,
+                    ego_id=ego_id,
+                    action=action,
+                    link_states=link_states,
+                    link_profiles=link_profiles,
+                    link_budgets=link_budgets,
+                    per_link_budget_bytes=float(per_link_budget_bytes),
+                    budget_scope_cfg=str(budget_scope_cfg),
+                    budget_source_cfg=str(budget_source_cfg),
                     system_budget_mbps=float(self.system_budget_mbps),
                     tx_window_ms=float(self.tx_window_ms),
                     total_budget_bytes=float(total_budget_bytes),
                     num_collaborators=int(num_collaborators),
-                    per_link_budget_bytes=float(per_link_budget_bytes),
-                    link_budgets=link_budgets,
+                    ego_conf=float(ego_conf),
+                    local_cav_confidences=local_cav_confidences,
+                    context_builder=self.context_builder,
+                    pending_reward=self.pending_reward,
+                    make_no_send_record_fn=self._make_no_send_record,
+                    profile_for_state_fn=self._profile_for_state,
+                    profile_scalar_fn=_profile_scalar,
+                    cache_quality_fn=self._cache_quality,
                 )
-
-
-                try:
-                    if action is not None:
-                        policy = self.get_policy(ego_id, sender_idx)
-                        context = self.context_builder.build(
-                            channel_profile=no_send_profile,
-                            latency_ms=float(no_send_latency_ms),
-                            ego_confidence=float(ego_conf),
-                            cache_quality=float(no_send_cache_q),
-                            complementarity=0.0,
-                            cav_confidence=get_cav_confidence(local_cav_confidences, sender_idx, default=0.0),
-                        )
-                        rec["pdf_action"] = action.as_dict()
-                        rec["context_vector"] = context.vector.tolist()
-                        rec["selected_for_update"] = True
-                        rec["no_send_update"] = True
-                        self.pending_reward.add(
-                            build_no_send_pending_reward_item(
-                                ego_id=ego_id,
-                                sender_idx=sender_idx,
-                                action=action,
-                                context_vector=context.vector,
-                                no_send_link_budget=float(no_send_link_budget),
-                                channel_state=str(link_states.get(sender_idx, "medium")),
-                                cache_quality=float(no_send_cache_q),
-                                channel_profile=no_send_profile,
-                            )
-                        )
-                except Exception as exc:
-                    rec["no_send_update_error"] = f"{type(exc).__name__}: {exc}"
 
                 frame_records.append(rec)
                 self._append_record(rec)
@@ -940,6 +804,7 @@ class ARCEC2MABComm:
                 selected=selected,
                 allocated_budget_bytes=float(allocated_budget_bytes),
                 tx_bytes=float(tx_bytes),
+                record=record,
             )
 
             used_cost += tx_bytes
@@ -1074,6 +939,9 @@ class ARCEC2MABComm:
             reward_lambda_quant=float(getattr(self, "reward_lambda_quant", 0.05)),
             reward_lambda_violate=float(getattr(self, "reward_lambda_violate", 1.0)),
             reward_stale_max_ms=float(self.reward_stale_max_ms),
+            quant_quality_cfg={
+                "quant_quality_prior": self.arce_cfg.get("quant_quality_prior", {})
+            },
         )
 
         self.last_ego_confidence = float(ego_confidence)
@@ -1087,70 +955,16 @@ class ARCEC2MABComm:
         return copy.deepcopy(self.frame_records.get(frame_id, []))
 
     def get_summary(self) -> Dict[str, Any]:
-        total_tx = 0.0
-        total_rx = 0.0
-        selected = 0
-        no_send = 0
-
-        for r in self.records:
-            if r.get("no_send", False):
-                no_send += 1
-            if r.get("dc2mab", {}).get("selected", False):
-                selected += 1
-
-            total_tx += float(
-                r.get(
-                    "actual_transmitted_bytes",
-                    r.get("transmitted_bytes", r.get("tx_bytes", 0.0)),
-                )
-            )
-            total_rx += float(
-                r.get(
-                    "actual_received_bytes",
-                    r.get("received_bytes", r.get("rx_bytes", 0.0)),
-                )
-            )
-
+        """Return a lightweight runtime compatibility summary."""
         budget_source, budget_scope = self._budget_source_scope()
-
-        return {
-            "mode": "dc2mab",
-            "num_records": int(len(self.records)),
-            "num_selected_links": int(selected),
-            "num_no_send_links": int(no_send),
-            "total_transmitted_bytes": float(total_tx),
-            "total_received_bytes": float(total_rx),
-            "system_budget": {
-                "budget_scope": str(budget_scope),
-                "budget_source": str(budget_source),
-                "system_budget_mbps": float(self.system_budget_mbps),
-                "tx_window_ms": float(self.tx_window_ms),
-                "system_budget_bytes": float(self._system_budget_bytes()),
-            },
-            "packetization": {
-                "mode": "byte_stream",
-                "quantize_first": True,
-                "packet_size_bytes": int(self.packet_size_bytes),
-            },
-            "loss_model": {
-                "type": "bernoulli",
-                "good": 0.05,
-                "medium": 0.20,
-                "bad": 0.35,
-            },
-            "delay_model": {
-                "type": "fixed_state_delay",
-                "good": 10.0,
-                "medium": 50.0,
-                "bad": 100.0,
-                "bad_temporal_source": "previous_frame",
-            },
-            "fec_redundancy": {
-                "enabled": True,
-                "rho_values": [0.0, 0.25, 0.5],
-                "packet_cost": "encoded_packets = source_packets + ceil(source_packets * rho)",
-            },
-        }
+        return summarize_dc2mab_runtime_records(
+            self.records,
+            budget_source=str(budget_source),
+            budget_scope=str(budget_scope),
+            system_budget_mbps=float(self.system_budget_mbps),
+            tx_window_ms=float(self.tx_window_ms),
+            system_budget_bytes=float(self._system_budget_bytes()),
+        )
 
 
 __all__ = ["ARCEC2MABComm"]

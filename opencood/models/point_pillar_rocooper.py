@@ -36,6 +36,7 @@ from opencood.models.sub_modules.downsample_conv import DownsampleConv
 from opencood.models.sub_modules.naive_compress import NaiveCompressor
 
 from opencood.models.sub_modules.rocooper_comm import RoCooperComm
+from opencood.models.sub_modules.rocooper_markov_comm import RoCooperMarkovComm
 from opencood.models.fuse_modules.rocooper_fuse import RoCooperFusion
 
 
@@ -142,8 +143,13 @@ class PointPillarRocooper(nn.Module):
         # ------------------------------------------------------------------
         # This module should keep ego features lossless when impair_ego=False.
         rocooper_comm_args = args.get("rocooper_comm", {})
-        self.comm_module = RoCooperComm(rocooper_comm_args)
-
+        if isinstance(rocooper_comm_args, dict) and (
+                rocooper_comm_args.get("channel_state_mode", "fixed") == "markov"
+                or bool((rocooper_comm_args.get("markov_channel", {}) or {}).get("enabled", False))
+        ):
+            self.comm_module = RoCooperMarkovComm(rocooper_comm_args)
+        else:
+            self.comm_module = RoCooperComm(rocooper_comm_args)
         # ------------------------------------------------------------------
         # 5. RoCooper fusion module
         # ------------------------------------------------------------------
@@ -487,10 +493,12 @@ class PointPillarRocooper(nn.Module):
         if self.shrink_flag:
             spatial_features_2d = self.shrink_conv(spatial_features_2d)
 
-        # Single-agent prediction map before fusion.
-        # RoCooper itself does not have to use it, but many OpenCOOD fusion
-        # modules use psm_single as an importance or confidence hint.
-        psm_single = self.cls_head(spatial_features_2d)
+        # RoCooper's BlockPrioritizer is ego-feature-centric in the paper.
+        # Do not feed a clean pre-communication classification map as routing
+        # input; it can leak undamaged confidence and makes the result hard to
+        # compare with the communication-impaired setting.  The current
+        # Aggregator ignores psm_single, so keeping it None is the strict path.
+        psm_single = None
 
         # --------------------------------------------------------------
         # 3. Optional feature compression before transmission
@@ -549,8 +557,10 @@ class PointPillarRocooper(nn.Module):
         output_dict = {
             "psm": psm,
             "rm": rm,
-            "psm_single": psm_single,
         }
+
+        if psm_single is not None:
+            output_dict["psm_single"] = psm_single
 
         if comm_info:
             output_dict["comm_info"] = comm_info
