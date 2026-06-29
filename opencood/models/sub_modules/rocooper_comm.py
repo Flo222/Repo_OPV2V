@@ -472,173 +472,27 @@ class RoCooperComm(nn.Module):
         cfg = self.bandwidth_cfg
         enabled = self.network_enabled and bool(cfg.get("enabled", False))
 
-        mode = str(cfg.get("mode", "resolution_reduction")).lower()
-
         info: Dict[str, Any] = {
             "bandwidth_enabled": enabled,
             "num_bandwidth_limited": 0,
-            "bandwidth_mode": mode,
         }
 
         if not enabled:
             return x, info
 
-        # --------------------------------------------------------------
-        # New mode:
-        # RoCooper first applies its native compression / resolution
-        # reduction. If the compressed feature still exceeds the bandwidth
-        # budget, the CAV feature is dropped or marked for later UCB/GRACE.
-        # --------------------------------------------------------------
-        if mode in [
-            "rocooper_native_then_budget",
-            "native_then_budget",
-            "rocooper_then_budget",
-        ]:
-            bandwidth_mbps = self._as_float(
-                cfg.get("bandwidth_mbps", 27.0),
-                27.0,
-            )
-            frame_interval_ms = self._as_float(
-                cfg.get("frame_interval_ms", cfg.get("frame_interval", 100.0)),
-                100.0,
-            )
-
-            max_native_ratio = max(
-                1.0,
-                self._as_float(cfg.get("max_native_compression_ratio", 32.0), 32.0),
-            )
-
-            min_native_ratio = max(
-                1.0,
-                self._as_float(cfg.get("min_native_compression_ratio", 1.0), 1.0),
-            )
-
-            native_policy = str(
-                cfg.get("native_compression_policy", "auto_to_budget")
-            ).lower()
-
-            fallback = str(
-                cfg.get("fallback_on_exceed", "drop")
-            ).lower()
-
-            if bandwidth_mbps <= 0:
-                budget_bytes = 0.0
-            else:
-                budget_bytes = bandwidth_mbps * 1e6 * (frame_interval_ms / 1000.0) / 8.0
-
-            raw_feature_bytes = float(x[0].numel() * x.element_size())
-
-            if budget_bytes <= 0:
-                required_ratio = float("inf")
-            else:
-                required_ratio = raw_feature_bytes / budget_bytes
-
-            if native_policy == "fixed":
-                native_ratio = self._as_float(
-                    cfg.get("compression_ratio", 1.0),
-                    1.0,
-                )
-                native_ratio = max(min_native_ratio, native_ratio)
-            else:
-                # Auto: use the minimum RoCooper native compression needed
-                # to satisfy the current bandwidth budget.
-                native_ratio = max(min_native_ratio, required_ratio)
-
-            native_ratio = min(max_native_ratio, native_ratio)
-
-            effective_feature_bytes = raw_feature_bytes / max(native_ratio, 1.0)
-
-            selected_mask = impair_mask.clone()
-
-            info["bandwidth_mbps"] = float(bandwidth_mbps)
-            info["bandwidth_frame_interval_ms"] = float(frame_interval_ms)
-            info["bandwidth_budget_bytes"] = float(budget_bytes)
-            info["bandwidth_raw_feature_bytes"] = float(raw_feature_bytes)
-            info["bandwidth_required_compression_ratio"] = float(required_ratio)
-            info["bandwidth_native_compression_ratio"] = float(native_ratio)
-            info["bandwidth_effective_feature_bytes"] = float(effective_feature_bytes)
-            info["bandwidth_native_max_ratio"] = float(max_native_ratio)
-
-            # Apply RoCooper native resolution reduction if needed.
-            if native_ratio > 1.0 and selected_mask.any():
-                num_cav, _, height, width = x.shape
-
-                scale = math.sqrt(native_ratio)
-                new_h = max(1, int(round(height / scale)))
-                new_w = max(1, int(round(width / scale)))
-
-                event_mask = selected_mask
-
-                selected = x[event_mask]
-                selected_low = F.interpolate(
-                    selected,
-                    size=(new_h, new_w),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-                selected_restored = F.interpolate(
-                    selected_low,
-                    size=(height, width),
-                    mode="bilinear",
-                    align_corners=False,
-                )
-
-                x = x.clone()
-                x[event_mask] = selected_restored
-
-                info["num_bandwidth_limited"] = int(event_mask.sum().item())
-                info["bandwidth_resolution_reduced"] = True
-                info["bandwidth_low_resolution_hw"] = [int(new_h), int(new_w)]
-            else:
-                info["bandwidth_resolution_reduced"] = False
-
-            # Strict budget check after RoCooper native compression.
-            exceed_after_native = effective_feature_bytes > budget_bytes
-            info["bandwidth_exceed_after_native"] = bool(exceed_after_native)
-
-            if exceed_after_native and selected_mask.any():
-                if fallback in ["drop", "zero", "mask"]:
-                    x = x.clone()
-                    x[selected_mask] = 0
-                    info["bandwidth_fallback"] = "drop"
-                    info["num_bandwidth_budget_dropped"] = int(selected_mask.sum().item())
-                elif fallback in ["mark", "mark_for_ucb", "ucb", "grace"]:
-                    # Keep feature for now, but expose the failure flag.
-                    # Future GRACE/UCB module should intercept this signal
-                    # and apply stronger compression / selection.
-                    info["bandwidth_fallback"] = "mark_for_ucb"
-                    info["num_bandwidth_budget_dropped"] = 0
-                else:
-                    x = x.clone()
-                    x[selected_mask] = 0
-                    info["bandwidth_fallback"] = "drop"
-                    info["num_bandwidth_budget_dropped"] = int(selected_mask.sum().item())
-            else:
-                info["bandwidth_fallback"] = "pass"
-                info["num_bandwidth_budget_dropped"] = 0
-
-            if self.return_masks:
-                info["bandwidth_event_mask"] = selected_mask.detach()
-
-            return x, info
-
-        # --------------------------------------------------------------
-        # Original RoCooper-style approximation:
-        # bandwidth limitation by resolution reduction.
-        # --------------------------------------------------------------
         mean = self._as_float(cfg.get("mean", 0.0), 0.0)
         std = self._as_float(cfg.get("std", 0.0), 0.0)
         compression_ratio = max(
             1.0,
             self._as_float(cfg.get("compression_ratio", 1.0), 1.0),
         )
+        mode = str(cfg.get("mode", "resolution_reduction"))
 
         if compression_ratio <= 1.0:
             info["bandwidth_compression_ratio"] = compression_ratio
             return x, info
 
         num_cav, _, height, width = x.shape
-
         probs = self._sample_normal_clamped(
             mean=mean,
             std=std,
@@ -647,6 +501,7 @@ class RoCooperComm(nn.Module):
             min_value=0.0,
             max_value=1.0,
         )
+
         event_mask = torch.rand(num_cav, device=x.device) < probs
         event_mask = event_mask & impair_mask
 
@@ -654,12 +509,20 @@ class RoCooperComm(nn.Module):
             info["bandwidth_compression_ratio"] = compression_ratio
             return x, info
 
+        if mode != "resolution_reduction":
+            # Fallback to resolution reduction for unknown modes.
+            mode = "resolution_reduction"
+
+        # Approximate compression ratio by reducing spatial resolution by
+        # sqrt(compression_ratio) along H and W, then upsampling back.
         scale = math.sqrt(compression_ratio)
         new_h = max(1, int(round(height / scale)))
         new_w = max(1, int(round(width / scale)))
 
         selected = x[event_mask]
 
+        # Downsample and upsample. This keeps shape unchanged but removes
+        # high-frequency spatial details, approximating bandwidth pressure.
         selected_low = F.interpolate(
             selected,
             size=(new_h, new_w),
@@ -680,13 +543,16 @@ class RoCooperComm(nn.Module):
         info["bandwidth_prob_mean"] = mean
         info["bandwidth_prob_std"] = std
         info["bandwidth_compression_ratio"] = compression_ratio
-        info["bandwidth_mode"] = "resolution_reduction"
+        info["bandwidth_mode"] = mode
 
         if self.return_masks:
             info["bandwidth_event_mask"] = event_mask.detach()
 
         return x, info
 
+    # ------------------------------------------------------------------
+    # Channel fading
+    # ------------------------------------------------------------------
 
     def _apply_channel_fading(
         self,

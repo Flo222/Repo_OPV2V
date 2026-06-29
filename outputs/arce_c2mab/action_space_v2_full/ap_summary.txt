@@ -1,0 +1,1 @@
+8680:The Average Precision at IOU 0.3 is 0.797, The Average Precision at IOU 0.5 is 0.783, The Average Precision at IOU 0.7 is 0.604

@@ -558,28 +558,7 @@ class RoCooperFusion(nn.Module):
                 others_valid_mask.sum().item()
             ) if others_valid_mask.numel() > 0 else 0
 
-            # Device fix: make valid mask follow feature tensors.
-            _rocooper_device = None
-            for _name in (
-                    "others_features", "others_feature", "others_feat",
-                    "agent_features", "features", "x",
-                    "spatial_features", "spatial_features_2d",
-                    "ego_feature", "ego_feat"):
-                _obj = locals().get(_name, None)
-                if hasattr(_obj, "device"):
-                    _rocooper_device = _obj.device
-                    break
-                if isinstance(_obj, (list, tuple)):
-                    for _v in _obj:
-                        if hasattr(_v, "device"):
-                            _rocooper_device = _v.device
-                            break
-                    if _rocooper_device is not None:
-                        break
-            if _rocooper_device is not None and hasattr(others_valid_mask, "to"):
-                others_valid_mask = others_valid_mask.to(_rocooper_device)
-
-            if others_valid_mask.numel() > 0 and int(others_valid_mask.sum().detach().cpu().item()) == 0:
+            if others_valid_mask.numel() > 0 and int(others_valid_mask.sum().item()) == 0:
                 fused_features.append(ego)
                 scenario_info["fusion_case"] = "ego_only_all_neighbors_missing"
                 scenario_info["aggregator"] = {
