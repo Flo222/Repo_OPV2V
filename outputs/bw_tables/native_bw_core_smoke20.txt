@@ -1,0 +1,53 @@
+
+====================================================================================================
+NoFusion
+{
+  "method": "NoFusion",
+  "frames": 20,
+  "native_BW_MB_per_frame": 0.0,
+  "rule": "no fusion sends no cooperative feature"
+}
+
+====================================================================================================
+V2X-VIT
+resuming by loading epoch 20
+{
+  "method": "V2X-VIT",
+  "frames": 20,
+  "record_count": 40,
+  "applied_links": 20,
+  "where2comm_rate_avg": null,
+  "native_total_MB": 173.01504,
+  "native_BW_MB_per_frame": 8.650752,
+  "rule": "dense native feature bytes before ARCE budget/loss"
+}
+
+====================================================================================================
+Where2Comm
+constructing a partially connected communication graph
+resuming by loading epoch 20
+{
+  "method": "Where2Comm",
+  "frames": 20,
+  "record_count": 40,
+  "applied_links": 20,
+  "where2comm_rate_avg": 0.5552497714757919,
+  "native_total_MB": 96.066561421875,
+  "native_BW_MB_per_frame": 4.80332807109375,
+  "rule": "temporary estimate: dense feature bytes multiplied by output.comm_info.where2comm_rate"
+}
+
+====================================================================================================
+ARCE-C2MAB
+constructing a partially connected communication graph
+resuming by loading epoch 20
+{
+  "method": "ARCE-C2MAB",
+  "frames": 20,
+  "record_count": 60,
+  "applied_links": 18,
+  "where2comm_rate_avg": 0.5552734464406968,
+  "native_total_MB": 0.405504,
+  "native_BW_MB_per_frame": 0.0202752,
+  "rule": "C2MAB selected action pre-budget encoded bytes"
+}

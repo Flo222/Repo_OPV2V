@@ -1,0 +1,195 @@
+{
+  "method": "RoCooper",
+  "model_dir": "opencood/logs/point_pillar_rocooper_opv2v_2026_06_22_12_52_04",
+  "ok": true,
+  "model_class": "PointPillarRocooper",
+  "model_core": "point_pillar_rocooper",
+  "has_arce_comm": false,
+  "arce_record_count": 0,
+  "arce_key_sample": [],
+  "tensor_sample": [
+    {
+      "path": "output.psm",
+      "shape": [
+        1,
+        2,
+        50,
+        176
+      ],
+      "dtype": "torch.float32",
+      "numel": 17600,
+      "bytes_fp32_if_float": 70400
+    },
+    {
+      "path": "output.rm",
+      "shape": [
+        1,
+        14,
+        50,
+        176
+      ],
+      "dtype": "torch.float32",
+      "numel": 123200,
+      "bytes_fp32_if_float": 492800
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[0].block_prioritizer.indices",
+      "shape": [
+        458
+      ],
+      "dtype": "torch.int64",
+      "numel": 458,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[0].block_prioritizer.selection_mask",
+      "shape": [
+        572
+      ],
+      "dtype": "torch.bool",
+      "numel": 572,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[0].block_prioritizer.threshold",
+      "shape": [],
+      "dtype": "torch.float32",
+      "numel": 1,
+      "bytes_fp32_if_float": 4
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[1].block_prioritizer.indices",
+      "shape": [
+        124
+      ],
+      "dtype": "torch.int64",
+      "numel": 124,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[1].block_prioritizer.selection_mask",
+      "shape": [
+        154
+      ],
+      "dtype": "torch.bool",
+      "numel": 154,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[1].block_prioritizer.threshold",
+      "shape": [],
+      "dtype": "torch.float32",
+      "numel": 1,
+      "bytes_fp32_if_float": 4
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[2].block_prioritizer.indices",
+      "shape": [
+        36
+      ],
+      "dtype": "torch.int64",
+      "numel": 36,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[2].block_prioritizer.selection_mask",
+      "shape": [
+        44
+      ],
+      "dtype": "torch.bool",
+      "numel": 44,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[0].scale_info[2].block_prioritizer.threshold",
+      "shape": [],
+      "dtype": "torch.float32",
+      "numel": 1,
+      "bytes_fp32_if_float": 4
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[0].block_prioritizer.indices",
+      "shape": [
+        458
+      ],
+      "dtype": "torch.int64",
+      "numel": 458,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[0].block_prioritizer.selection_mask",
+      "shape": [
+        572
+      ],
+      "dtype": "torch.bool",
+      "numel": 572,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[0].block_prioritizer.threshold",
+      "shape": [],
+      "dtype": "torch.float32",
+      "numel": 1,
+      "bytes_fp32_if_float": 4
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[1].block_prioritizer.indices",
+      "shape": [
+        124
+      ],
+      "dtype": "torch.int64",
+      "numel": 124,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[1].block_prioritizer.selection_mask",
+      "shape": [
+        154
+      ],
+      "dtype": "torch.bool",
+      "numel": 154,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[1].block_prioritizer.threshold",
+      "shape": [],
+      "dtype": "torch.float32",
+      "numel": 1,
+      "bytes_fp32_if_float": 4
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[2].block_prioritizer.indices",
+      "shape": [
+        36
+      ],
+      "dtype": "torch.int64",
+      "numel": 36,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[2].block_prioritizer.selection_mask",
+      "shape": [
+        44
+      ],
+      "dtype": "torch.bool",
+      "numel": 44,
+      "bytes_fp32_if_float": null
+    },
+    {
+      "path": "output.fusion_info.scenario_info[0].aggregator.rounds[1].scale_info[2].block_prioritizer.threshold",
+      "shape": [],
+      "dtype": "torch.float32",
+      "numel": 1,
+      "bytes_fp32_if_float": 4
+    }
+  ],
+  "possible_comm_attrs": [
+    "_unpack_comm_output",
+    "comm_module"
+  ],
+  "error": null,
+  "records_meta": {
+    "_unpack_comm_output_type": "<class 'function'>",
+    "comm_module_type": "<class 'opencood.models.sub_modules.rocooper_comm.RoCooperComm'>"
+  }
+}

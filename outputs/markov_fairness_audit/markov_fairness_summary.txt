@@ -1,0 +1,583 @@
+
+====================================================================================================
+V2X-VIT
+path: opencood/logs/test_opv2v_v2xvit_markov_fp32/config.yaml
+exists: True
+model_core: point_pillar_transformer_opv2v_arce
+range: [-140.8, -38.4, -3, 140.8, 38.4, 1]
+validate_dir: /home/server/v2x_projects/OPV2V/opv2v_data_dumping/test
+test_dir: None
+risk_notes: ['multiple channel configs with different digests in same file']
+channel candidates:
+{
+  "path": "model.args.arce.channel",
+  "mode": "markov",
+  "initial_state": null,
+  "fixed_state": "medium",
+  "seed": null,
+  "states": null,
+  "transition_matrix": null,
+  "profiles": {
+    "good": {
+      "bandwidth_mbps": 27.0,
+      "delay_ms": 10.0,
+      "loss_rate": 0.05,
+      "plr": 0.05
+    },
+    "medium": {
+      "bandwidth_mbps": 5.0,
+      "delay_ms": 50.0,
+      "loss_rate": 0.2,
+      "plr": 0.2
+    },
+    "bad": {
+      "bandwidth_mbps": 1.0,
+      "delay_ms": 100.0,
+      "loss_rate": 0.35,
+      "plr": 0.35
+    }
+  },
+  "bernoulli_loss_rates": {
+    "good": 0.05,
+    "medium": 0.2,
+    "bad": 0.35
+  },
+  "digest": "a8149c595f6937358336cbac0b991e82"
+}
+{
+  "path": "arce.channel",
+  "mode": "fixed",
+  "initial_state": null,
+  "fixed_state": "medium",
+  "seed": null,
+  "states": null,
+  "transition_matrix": null,
+  "profiles": null,
+  "bernoulli_loss_rates": null,
+  "digest": "d109e70e65fc8e7e4f8ac8b33143db04"
+}
+
+====================================================================================================
+Where2Comm
+path: opencood/logs/where2comm_markov_trueloss_fp32_rho0_cache0/config.yaml
+exists: True
+model_core: point_pillar_where2comm_arce
+range: [-140.8, -38.4, -3, 140.8, 38.4, 1]
+validate_dir: /home/server/v2x_projects/OPV2V/opv2v_data_dumping/test
+test_dir: None
+risk_notes: []
+channel candidates:
+{
+  "path": "model.args.arce.channel",
+  "mode": "markov",
+  "initial_state": "medium",
+  "fixed_state": null,
+  "seed": 2026,
+  "states": [
+    "good",
+    "medium",
+    "bad"
+  ],
+  "transition_matrix": [
+    [
+      0.85,
+      0.13,
+      0.02
+    ],
+    [
+      0.1,
+      0.8,
+      0.1
+    ],
+    [
+      0.03,
+      0.17,
+      0.8
+    ]
+  ],
+  "profiles": {
+    "good": {
+      "bandwidth_mbps": 27.0,
+      "plr": 0.05,
+      "loss_rate": 0.05,
+      "delay_ms": 10.0,
+      "fixed_delay_ms": 10.0,
+      "name": "good_fp32_no_fec",
+      "channel_state": "good",
+      "state_name": "good",
+      "send": 1,
+      "cache_enabled": 0,
+      "cache": 0,
+      "quant_mode": "fp32",
+      "quant": "fp32",
+      "quant_bits": 32,
+      "compression_ratio": 1.0,
+      "raw_bits": 32,
+      "rho": 0.0,
+      "redundancy_ratio": 0.0,
+      "effective_redundancy_ratio_for_latency": 0.0,
+      "fec_type": "none",
+      "xor_group_size": 4,
+      "decode_overhead": 0.0,
+      "fec_config": {
+        "enabled": false,
+        "type": "none",
+        "redundancy_ratio": 0.0,
+        "group_size": 4,
+        "decode_overhead": 0.0
+      },
+      "quant_config": {
+        "enabled": false,
+        "mode": "fp32",
+        "raw_bits": 32
+      },
+      "recovery_config": {
+        "priority": [
+          "zero_fill"
+        ],
+        "zero_fill": true,
+        "spatial_interpolation": false,
+        "temporal_cache": false
+      },
+      "recovery": "none",
+      "recovery_priority": [
+        "zero_fill"
+      ],
+      "extra": {
+        "send": 1,
+        "cache_enabled": 0,
+        "quant_mode": "fp32",
+        "rho": 0.0,
+        "redundancy_ratio": 0.0,
+        "fec_type": "none"
+      }
+    },
+    "medium": {
+      "bandwidth_mbps": 5.0,
+      "plr": 0.2,
+      "loss_rate": 0.2,
+      "delay_ms": 50.0,
+      "fixed_delay_ms": 50.0,
+      "name": "medium_fp32_no_fec",
+      "channel_state": "medium",
+      "state_name": "medium",
+      "send": 1,
+      "cache_enabled": 0,
+      "cache": 0,
+      "quant_mode": "fp32",
+      "quant": "fp32",
+      "quant_bits": 32,
+      "compression_ratio": 1.0,
+      "raw_bits": 32,
+      "rho": 0.0,
+      "redundancy_ratio": 0.0,
+      "effective_redundancy_ratio_for_latency": 0.0,
+      "fec_type": "none",
+      "xor_group_size": 4,
+      "decode_overhead": 0.0,
+      "fec_config": {
+        "enabled": false,
+        "type": "none",
+        "redundancy_ratio": 0.0,
+        "group_size": 4,
+        "decode_overhead": 0.0
+      },
+      "quant_config": {
+        "enabled": false,
+        "mode": "fp32",
+        "raw_bits": 32
+      },
+      "recovery_config": {
+        "priority": [
+          "zero_fill"
+        ],
+        "zero_fill": true,
+        "spatial_interpolation": false,
+        "temporal_cache": false
+      },
+      "recovery": "none",
+      "recovery_priority": [
+        "zero_fill"
+      ],
+      "extra": {
+        "send": 1,
+        "cache_enabled": 0,
+        "quant_mode": "fp32",
+        "rho": 0.0,
+        "redundancy_ratio": 0.0,
+        "fec_type": "none"
+      }
+    },
+    "bad": {
+      "bandwidth_mbps": 1.0,
+      "plr": 0.35,
+      "loss_rate": 0.35,
+      "delay_ms": 100.0,
+      "fixed_delay_ms": 100.0,
+      "name": "bad_fp32_no_fec",
+      "channel_state": "bad",
+      "state_name": "bad",
+      "send": 1,
+      "cache_enabled": 0,
+      "cache": 0,
+      "quant_mode": "fp32",
+      "quant": "fp32",
+      "quant_bits": 32,
+      "compression_ratio": 1.0,
+      "raw_bits": 32,
+      "rho": 0.0,
+      "redundancy_ratio": 0.0,
+      "effective_redundancy_ratio_for_latency": 0.0,
+      "fec_type": "none",
+      "xor_group_size": 4,
+      "decode_overhead": 0.0,
+      "fec_config": {
+        "enabled": false,
+        "type": "none",
+        "redundancy_ratio": 0.0,
+        "group_size": 4,
+        "decode_overhead": 0.0
+      },
+      "quant_config": {
+        "enabled": false,
+        "mode": "fp32",
+        "raw_bits": 32
+      },
+      "recovery_config": {
+        "priority": [
+          "zero_fill"
+        ],
+        "zero_fill": true,
+        "spatial_interpolation": false,
+        "temporal_cache": false
+      },
+      "recovery": "none",
+      "recovery_priority": [
+        "zero_fill"
+      ],
+      "extra": {
+        "send": 1,
+        "cache_enabled": 0,
+        "quant_mode": "fp32",
+        "rho": 0.0,
+        "redundancy_ratio": 0.0,
+        "fec_type": "none"
+      }
+    }
+  },
+  "bernoulli_loss_rates": {
+    "good": 0.05,
+    "medium": 0.2,
+    "bad": 0.35
+  },
+  "digest": "72429e64c8fba8a248ef3824d9cd8b8c"
+}
+{
+  "path": "arce.channel",
+  "mode": "markov",
+  "initial_state": "medium",
+  "fixed_state": null,
+  "seed": 2026,
+  "states": [
+    "good",
+    "medium",
+    "bad"
+  ],
+  "transition_matrix": [
+    [
+      0.85,
+      0.13,
+      0.02
+    ],
+    [
+      0.1,
+      0.8,
+      0.1
+    ],
+    [
+      0.03,
+      0.17,
+      0.8
+    ]
+  ],
+  "profiles": {
+    "good": {
+      "bandwidth_mbps": 27.0,
+      "plr": 0.05,
+      "loss_rate": 0.05,
+      "delay_ms": 10.0,
+      "fixed_delay_ms": 10.0,
+      "name": "good_fp32_no_fec",
+      "channel_state": "good",
+      "state_name": "good",
+      "send": 1,
+      "cache_enabled": 0,
+      "cache": 0,
+      "quant_mode": "fp32",
+      "quant": "fp32",
+      "quant_bits": 32,
+      "compression_ratio": 1.0,
+      "raw_bits": 32,
+      "rho": 0.0,
+      "redundancy_ratio": 0.0,
+      "effective_redundancy_ratio_for_latency": 0.0,
+      "fec_type": "none",
+      "xor_group_size": 4,
+      "decode_overhead": 0.0,
+      "fec_config": {
+        "enabled": false,
+        "type": "none",
+        "redundancy_ratio": 0.0,
+        "group_size": 4,
+        "decode_overhead": 0.0
+      },
+      "quant_config": {
+        "enabled": false,
+        "mode": "fp32",
+        "raw_bits": 32
+      },
+      "recovery_config": {
+        "priority": [
+          "zero_fill"
+        ],
+        "zero_fill": true,
+        "spatial_interpolation": false,
+        "temporal_cache": false
+      },
+      "recovery": "none",
+      "recovery_priority": [
+        "zero_fill"
+      ],
+      "extra": {
+        "send": 1,
+        "cache_enabled": 0,
+        "quant_mode": "fp32",
+        "rho": 0.0,
+        "redundancy_ratio": 0.0,
+        "fec_type": "none"
+      }
+    },
+    "medium": {
+      "bandwidth_mbps": 5.0,
+      "plr": 0.2,
+      "loss_rate": 0.2,
+      "delay_ms": 50.0,
+      "fixed_delay_ms": 50.0,
+      "name": "medium_fp32_no_fec",
+      "channel_state": "medium",
+      "state_name": "medium",
+      "send": 1,
+      "cache_enabled": 0,
+      "cache": 0,
+      "quant_mode": "fp32",
+      "quant": "fp32",
+      "quant_bits": 32,
+      "compression_ratio": 1.0,
+      "raw_bits": 32,
+      "rho": 0.0,
+      "redundancy_ratio": 0.0,
+      "effective_redundancy_ratio_for_latency": 0.0,
+      "fec_type": "none",
+      "xor_group_size": 4,
+      "decode_overhead": 0.0,
+      "fec_config": {
+        "enabled": false,
+        "type": "none",
+        "redundancy_ratio": 0.0,
+        "group_size": 4,
+        "decode_overhead": 0.0
+      },
+      "quant_config": {
+        "enabled": false,
+        "mode": "fp32",
+        "raw_bits": 32
+      },
+      "recovery_config": {
+        "priority": [
+          "zero_fill"
+        ],
+        "zero_fill": true,
+        "spatial_interpolation": false,
+        "temporal_cache": false
+      },
+      "recovery": "none",
+      "recovery_priority": [
+        "zero_fill"
+      ],
+      "extra": {
+        "send": 1,
+        "cache_enabled": 0,
+        "quant_mode": "fp32",
+        "rho": 0.0,
+        "redundancy_ratio": 0.0,
+        "fec_type": "none"
+      }
+    },
+    "bad": {
+      "bandwidth_mbps": 1.0,
+      "plr": 0.35,
+      "loss_rate": 0.35,
+      "delay_ms": 100.0,
+      "fixed_delay_ms": 100.0,
+      "name": "bad_fp32_no_fec",
+      "channel_state": "bad",
+      "state_name": "bad",
+      "send": 1,
+      "cache_enabled": 0,
+      "cache": 0,
+      "quant_mode": "fp32",
+      "quant": "fp32",
+      "quant_bits": 32,
+      "compression_ratio": 1.0,
+      "raw_bits": 32,
+      "rho": 0.0,
+      "redundancy_ratio": 0.0,
+      "effective_redundancy_ratio_for_latency": 0.0,
+      "fec_type": "none",
+      "xor_group_size": 4,
+      "decode_overhead": 0.0,
+      "fec_config": {
+        "enabled": false,
+        "type": "none",
+        "redundancy_ratio": 0.0,
+        "group_size": 4,
+        "decode_overhead": 0.0
+      },
+      "quant_config": {
+        "enabled": false,
+        "mode": "fp32",
+        "raw_bits": 32
+      },
+      "recovery_config": {
+        "priority": [
+          "zero_fill"
+        ],
+        "zero_fill": true,
+        "spatial_interpolation": false,
+        "temporal_cache": false
+      },
+      "recovery": "none",
+      "recovery_priority": [
+        "zero_fill"
+      ],
+      "extra": {
+        "send": 1,
+        "cache_enabled": 0,
+        "quant_mode": "fp32",
+        "rho": 0.0,
+        "redundancy_ratio": 0.0,
+        "fec_type": "none"
+      }
+    }
+  },
+  "bernoulli_loss_rates": {
+    "good": 0.05,
+    "medium": 0.2,
+    "bad": 0.35
+  },
+  "digest": "72429e64c8fba8a248ef3824d9cd8b8c"
+}
+
+====================================================================================================
+ARCE-C2MAB
+path: opencood/logs/main_opv2v_where2comm_grace_full/config.yaml
+exists: True
+model_core: point_pillar_where2comm_arce
+range: [-140.8, -38.4, -3, 140.8, 38.4, 1]
+validate_dir: /home/server/v2x_projects/OPV2V/opv2v_data_dumping/test
+test_dir: None
+risk_notes: []
+channel candidates:
+{
+  "path": "model.args.arce.channel",
+  "mode": "markov",
+  "initial_state": "medium",
+  "fixed_state": null,
+  "seed": 2026,
+  "states": [
+    "good",
+    "medium",
+    "bad"
+  ],
+  "transition_matrix": [
+    [
+      0.85,
+      0.13,
+      0.02
+    ],
+    [
+      0.1,
+      0.8,
+      0.1
+    ],
+    [
+      0.03,
+      0.17,
+      0.8
+    ]
+  ],
+  "profiles": {
+    "good": {
+      "bandwidth_mbps": 27.0,
+      "delay_ms": 10.0,
+      "fixed_delay_ms": 10.0,
+      "loss_rate": 0.05,
+      "plr": 0.05
+    },
+    "medium": {
+      "bandwidth_mbps": 5.0,
+      "delay_ms": 50.0,
+      "fixed_delay_ms": 50.0,
+      "loss_rate": 0.2,
+      "plr": 0.2
+    },
+    "bad": {
+      "bandwidth_mbps": 1.0,
+      "delay_ms": 100.0,
+      "fixed_delay_ms": 100.0,
+      "loss_rate": 0.35,
+      "plr": 0.35
+    }
+  },
+  "bernoulli_loss_rates": {
+    "good": 0.05,
+    "medium": 0.2,
+    "bad": 0.35
+  },
+  "digest": "81e59aff875d08f4a5a7f416e63ca2c0"
+}
+
+====================================================================================================
+CoSDH
+path: opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/config.yaml
+exists: True
+model_core: point_pillar_cosdh_markov
+range: [-140.8, -38.4, -3, 140.8, 38.4, 1]
+validate_dir: /home/server/v2x_projects/OPV2V/opv2v_data_dumping/test
+test_dir: /home/server/v2x_projects/OPV2V/opv2v_data_dumping/test
+risk_notes: ['no explicit channel/arce/channel_state_markov config found']
+channel candidates:
+
+====================================================================================================
+RoCooper
+path: opencood/logs/point_pillar_rocooper_opv2v_2026_06_22_12_52_04/config.markov_result_0754_0728_0561.yaml
+exists: True
+model_core: point_pillar_rocooper
+range: [-140.8, -40, -3, 140.8, 40, 1]
+validate_dir: opv2v_data_dumping/test
+test_dir: None
+risk_notes: ['no explicit channel/arce/channel_state_markov config found']
+channel candidates:
+
+====================================================================================================
+CoopDiff
+path: opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval/config.yaml
+exists: True
+model_core: point_pillar_diff_stu_markov
+range: [-140.8, -38.4, -3, 140.8, 38.4, 1]
+validate_dir: /data/opv2v/test
+test_dir: None
+risk_notes: ['no explicit channel/arce/channel_state_markov config found']
+channel candidates:
+
+saved: outputs/markov_fairness_audit/markov_fairness.json

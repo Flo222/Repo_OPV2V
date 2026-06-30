@@ -1,0 +1,28 @@
+{
+  "method": "V2X-VIT",
+  "scenario": "Markov",
+  "frame_count": 20,
+  "native_total_MB": 173.01504,
+  "native_BW_MB_per_frame": 8.650752,
+  "native_bw_rule": "Dense native feature bytes before ARCE budget/loss.",
+  "actual_total_MB": 1.24928,
+  "actual_BW_MB_per_frame": 0.062464,
+  "raw_record_count": 40,
+  "record_count": 20,
+  "skipped_non_comm_record_count": 20,
+  "applied_link_count": 20,
+  "no_send_count": 0,
+  "where2comm_rate_avg": null,
+  "where2comm_rate_min": null,
+  "where2comm_rate_max": null,
+  "where2comm_rate_count": 0,
+  "missing_arce_pre_budget_count": 0,
+  "action_id_counter": {},
+  "quant_counter": {
+    "fp32": 20
+  },
+  "rho_counter": {
+    "0.0": 20
+  },
+  "notes": []
+}

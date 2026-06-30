@@ -1,0 +1,2 @@
+method,scenario,frame_count,native_BW_MB_per_frame,native_total_MB,actual_BW_MB_per_frame,actual_total_MB,raw_record_count,record_count,skipped_non_comm_record_count,applied_link_count,no_send_count,where2comm_rate_avg,where2comm_rate_min,where2comm_rate_max,where2comm_rate_count,missing_arce_pre_budget_count,native_bw_rule
+ARCE-C2MAB,Markov,20,0.0202752,0.405504,0.0195584,0.391168,60,20,40,18,2,0.5552645683288574,0.544862687587738,0.5662286877632141,20,0,ARCE-C2MAB selected action pre-budget encoded bytes; no dense fallback.

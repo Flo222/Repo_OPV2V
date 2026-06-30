@@ -1,0 +1,2 @@
+method,scenario,frame_count,record_count,transmitted_link_count,no_send_count,BW,bw_MB_per_frame,total_tx_MB,int4_count,packed_int4_count,all_int4_packed
+V2X-VIT,Markov,2170,3442,3442,0,0.0585902599078341,0.0585902599078341,127.140864,0,0,

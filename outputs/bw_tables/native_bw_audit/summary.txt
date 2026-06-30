@@ -1,0 +1,154 @@
+
+====================================================================================================
+NoFusion opencood/logs/point_pillar_nofusion_opv2v_range140_e20_2026_06_29_22_58_15
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+resuming by loading epoch 20
+{
+  "method": "NoFusion",
+  "ok": true,
+  "model_core": "point_pillar",
+  "model_class": "PointPillar",
+  "has_arce_comm": false,
+  "arce_record_count": 0,
+  "possible_comm_attrs": [],
+  "error": null,
+  "json": "outputs/bw_tables/native_bw_audit/NoFusion.json"
+}
+
+====================================================================================================
+V2X-VIT opencood/logs/test_opv2v_v2xvit_markov_fp32
+resuming by loading epoch 20
+{
+  "method": "V2X-VIT",
+  "ok": true,
+  "model_core": "point_pillar_transformer_opv2v_arce",
+  "model_class": "PointPillarTransformerOpv2vArce",
+  "has_arce_comm": true,
+  "arce_record_count": 6,
+  "possible_comm_attrs": [
+    "_run_arce_comm",
+    "arce_comm",
+    "arce_comm_type"
+  ],
+  "error": null,
+  "json": "outputs/bw_tables/native_bw_audit/V2X-VIT.json"
+}
+
+====================================================================================================
+Where2Comm opencood/logs/where2comm_markov_trueloss_fp32_rho0_cache0
+constructing a partially connected communication graph
+resuming by loading epoch 20
+{
+  "method": "Where2Comm",
+  "ok": true,
+  "model_core": "point_pillar_where2comm_arce",
+  "model_class": "PointPillarWhere2commArce",
+  "has_arce_comm": true,
+  "arce_record_count": 6,
+  "possible_comm_attrs": [
+    "_build_arce_comm",
+    "arce_comm"
+  ],
+  "error": null,
+  "json": "outputs/bw_tables/native_bw_audit/Where2Comm.json"
+}
+
+====================================================================================================
+CoSDH opencood/logs/opv2v_cosdh_markov_byte_2026_06_16
+{
+  "method": "CoSDH",
+  "ok": false,
+  "model_core": "point_pillar_cosdh_markov",
+  "model_class": null,
+  "has_arce_comm": false,
+  "arce_record_count": 0,
+  "possible_comm_attrs": [],
+  "error": "AssertionError(\"intermediatelate is not found. Please add your processor file's name in opencood/data_utils/datasets/__init__.py\")",
+  "json": "outputs/bw_tables/native_bw_audit/CoSDH.json"
+}
+
+====================================================================================================
+RoCooper opencood/logs/point_pillar_rocooper_opv2v_2026_06_22_12_52_04
+resuming by loading epoch 30
+{
+  "method": "RoCooper",
+  "ok": true,
+  "model_core": "point_pillar_rocooper",
+  "model_class": "PointPillarRocooper",
+  "has_arce_comm": false,
+  "arce_record_count": 0,
+  "possible_comm_attrs": [
+    "_unpack_comm_output",
+    "comm_module"
+  ],
+  "error": null,
+  "json": "outputs/bw_tables/native_bw_audit/RoCooper.json"
+}
+
+====================================================================================================
+CoopDiff opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+输入形状: torch.Size([2, 128, 24, 88])
+输出形状: torch.Size([2, 128, 24, 88])
+sampling_timesteps 2
+sampling_timesteps 2
+resuming by loading epoch 20
+{
+  "method": "CoopDiff",
+  "ok": true,
+  "model_core": "point_pillar_diff_stu_markov",
+  "model_class": "PointPillarDiffStuMarkov",
+  "has_arce_comm": false,
+  "arce_record_count": 0,
+  "possible_comm_attrs": [
+    "mask_offset_loss",
+    "object_mask"
+  ],
+  "error": null,
+  "json": "outputs/bw_tables/native_bw_audit/CoopDiff.json"
+}
+
+====================================================================================================
+ARCE-C2MAB opencood/logs/main_opv2v_where2comm_grace_full
+constructing a partially connected communication graph
+resuming by loading epoch 20
+{
+  "method": "ARCE-C2MAB",
+  "ok": true,
+  "model_core": "point_pillar_where2comm_arce",
+  "model_class": "PointPillarWhere2commArce",
+  "has_arce_comm": true,
+  "arce_record_count": 9,
+  "possible_comm_attrs": [
+    "_build_arce_comm",
+    "arce_comm"
+  ],
+  "error": null,
+  "json": "outputs/bw_tables/native_bw_audit/ARCE-C2MAB.json"
+}
+
+Saved summary: outputs/bw_tables/native_bw_audit/summary.json
