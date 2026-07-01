@@ -1,7 +1,6 @@
 name: point_pillar_cosdh_markov_v2xreal_vc
 root_dir: /data/v2xreal/train
 validate_dir: /data/v2xreal/validate
-test_dir: /data/v2xreal/test
 dataset_mode: vc
 wild_setting:
   async: false
@@ -100,7 +99,6 @@ data_augment:
   - 1.05
 postprocess:
   core_method: VoxelPostprocessorV2XReal
-  gt_range: *cav_lidar_range
   anchor_args:
     cav_lidar_range: *cav_lidar_range
     num: 2
@@ -184,7 +182,6 @@ model:
         packet_size_bytes: 1024
         bytes_per_value: 4
         zero_fill_missing: true
-      selection_policy: random
       states:
       - good
       - medium
@@ -219,11 +216,6 @@ model:
           packet_loss_rate: 0.35
           delay_ms: 100.0
           temporal_source: previous_frame
-      verbose: false
-    # Late dense prediction maps also go through Markov damage.
-    cosdh_late_markov:
-      enabled: true
-      share_profile_with_intermediate: true
       verbose: false
 loss:
   core_method: point_pillar_loss_v2xreal

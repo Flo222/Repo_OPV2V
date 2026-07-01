@@ -521,44 +521,32 @@ class Where2comm(nn.Module):
             communication_rates = self.naive_communication(batch_warp_confidence_maps, B,
                                                             batch_warp_maks_list, req_mask)
         
-        # Mask the features first, then always pass the actually transmitted
-        # message through the Markov channel.  The old code skipped channel
-        # damage when ``fully=True``, which made full-communication CoSDH an
-        # accidental ideal-channel bypass.
+        # mask the features
         if self.fully:
-            communication_masks = torch.ones(
-                (warp_x.shape[0], 1, warp_x.shape[-2], warp_x.shape[-1]),
-                device=warp_x.device,
-                dtype=warp_x.dtype,
-            )
+            communication_masks = torch.tensor(1).to(warp_x.device)
         else:
             if warp_x.shape[-1] != communication_masks.shape[-1]:
                 communication_masks = F.interpolate(
                     communication_masks, size=(warp_x.shape[-2], warp_x.shape[-1]),
-                    mode='nearest')
+                    mode='bilinear', align_corners=False)
+            warp_x = warp_x * communication_masks
 
-        warp_x = warp_x * communication_masks
-
-        if apply_markov:
-            # CoSDH-Markov byte-stream channel: apply bandwidth limit,
-            # Bernoulli packet loss and delay to the CoSDH-selected raw-float
-            # message only.
-            warp_x, cosdh_markov_info = self.cosdh_markov_channel(
-                warp_x,
-                record_len=record_len,
-                communication_mask=communication_masks,
-                frame_id=None,
-                scale_idx=scale_idx,
-                num_scales=num_scales,
-            )
-            self.cosdh_markov_info = cosdh_markov_info
-        else:
-            cosdh_markov_info = {
-                'enabled': False,
-                'reason': 'markov_disabled_for_this_call',
-                'scale_idx': scale_idx,
-            }
-            self.cosdh_markov_info = cosdh_markov_info
+            if apply_markov:
+                # CoSDH-Markov byte-stream channel:
+                # apply bandwidth limit, Bernoulli packet loss and delay
+                # to CoSDH-selected raw-float message only.
+                warp_x, cosdh_markov_info = self.cosdh_markov_channel(
+                    warp_x,
+                    record_len=record_len,
+                    communication_mask=communication_masks,
+                    frame_id=None,
+                    scale_idx=scale_idx,
+                    num_scales=num_scales,
+                )
+                self.cosdh_markov_info = cosdh_markov_info
+            else:
+                cosdh_markov_info = {'enabled': False, 'reason': 'non_primary_scale', 'scale_idx': scale_idx}
+                self.cosdh_markov_info = cosdh_markov_info
 
         
         x_out = self.fuse_modules(warp_x, record_len,

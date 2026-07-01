@@ -365,74 +365,6 @@ def rocooper_native_bw_from_output(
     return info
 
 
-
-def rocooper_channel_native_bw_from_output(
-    output: Any,
-    bytes_per_value: int = 4,
-) -> Dict[str, Any]:
-    """RoCooper main-table BW: non-ego feature tensor bytes at comm input.
-
-    The paper's BlockPrioritizer is an Aggregator-side regional cross-learning
-    module after feature reception, so its multi-round selected-block volume is
-    kept as diagnostic, not as main communication BW.
-    """
-    info = {
-        "native_bytes": 0.0,
-        "num_non_ego": 0,
-        "channels": 0,
-        "height": 0,
-        "width": 0,
-        "feature_shape_found": False,
-        "comm_info_found": False,
-    }
-
-    if not isinstance(output, dict):
-        return info
-
-    comm_info = output.get("comm_info", {})
-    fusion_info = output.get("fusion_info", {})
-
-    if isinstance(comm_info, dict):
-        info["comm_info_found"] = True
-        num_non_ego = _to_int(comm_info.get("num_non_ego", 0), 0)
-    else:
-        num_non_ego = 0
-
-    feature_shape = None
-    if isinstance(fusion_info, dict):
-        feature_shape = fusion_info.get("feature_shape")
-
-    # Fallback through scenario_info if feature_shape is not directly available.
-    if not isinstance(feature_shape, (list, tuple)) and isinstance(fusion_info, dict):
-        scenarios = _as_dict_list(fusion_info.get("scenario_info"))
-        for scenario in scenarios:
-            candidate = scenario.get("updated_others_shape")
-            if isinstance(candidate, (list, tuple)):
-                feature_shape = candidate
-                break
-
-    if isinstance(feature_shape, (list, tuple)) and len(feature_shape) >= 4:
-        info["feature_shape_found"] = True
-        # Shape is [total_cav, C, H, W] or [num_other, C, H, W].
-        channels = _to_int(feature_shape[1], 0)
-        height = _to_int(feature_shape[2], 0)
-        width = _to_int(feature_shape[3], 0)
-
-        if num_non_ego <= 0:
-            total_cav = _to_int(feature_shape[0], 0)
-            num_non_ego = max(0, total_cav - 1)
-
-        info["num_non_ego"] = int(num_non_ego)
-        info["channels"] = int(channels)
-        info["height"] = int(height)
-        info["width"] = int(width)
-
-        if num_non_ego > 0 and channels > 0 and height > 0 and width > 0:
-            info["native_bytes"] = float(num_non_ego * channels * height * width * bytes_per_value)
-
-    return info
-
-
 def extract_where2comm_rate(output: Any) -> Optional[float]:
     candidates = [
         ["comm_info", "where2comm_rate"],
@@ -557,9 +489,6 @@ def summarize_native_bw(
     rocooper_round_count = 0
     rocooper_scenario_count = 0
     rocooper_missing_scale_info_count = 0
-    rocooper_block_routing_total_bytes = 0.0
-    rocooper_channel_feature_shape_missing_count = 0
-    rocooper_channel_comm_info_missing_count = 0
     notes: List[str] = []
 
     prev_record_count = 0
@@ -574,24 +503,13 @@ def summarize_native_bw(
             frame_count += 1
 
             if method_key == "rocooper":
-                # Main-table communication BW: non-ego feature tensor bytes at
-                # RoCooper communication module input.
-                channel_info = rocooper_channel_native_bw_from_output(output, bytes_per_value=4)
-
-                native_total_bytes += float(channel_info.get("native_bytes", 0.0) or 0.0)
-                raw_record_count += 1
-                record_count += 1
-                applied_link_count += int(channel_info.get("num_non_ego", 0) or 0)
-
-                if not bool(channel_info.get("feature_shape_found", False)):
-                    rocooper_channel_feature_shape_missing_count += 1
-                if not bool(channel_info.get("comm_info_found", False)):
-                    rocooper_channel_comm_info_missing_count += 1
-
-                # Diagnostic only: Aggregator internal multi-round/multi-scale
-                # block-routing processing volume. This is not the main BW.
                 rocooper_info = rocooper_native_bw_from_output(output, bytes_per_value=4)
-                rocooper_block_routing_total_bytes += float(rocooper_info.get("native_bytes", 0.0) or 0.0)
+
+                native_total_bytes += float(rocooper_info.get("native_bytes", 0.0) or 0.0)
+                raw_record_count += int(rocooper_info.get("num_scale_records", 0) or 0)
+                record_count += int(rocooper_info.get("num_scale_records", 0) or 0)
+                applied_link_count += int(rocooper_info.get("num_scale_records", 0) or 0)
+
                 rocooper_scale_record_count += int(rocooper_info.get("num_scale_records", 0) or 0)
                 rocooper_selected_block_count += int(rocooper_info.get("num_selected_blocks", 0) or 0)
                 rocooper_round_count += int(rocooper_info.get("num_rounds", 0) or 0)
@@ -600,8 +518,6 @@ def summarize_native_bw(
 
                 if "rocooper_actual_bw_not_available_from_fusion_info" not in notes:
                     notes.append("rocooper_actual_bw_not_available_from_fusion_info")
-                if "rocooper_block_routing_volume_is_diagnostic_not_main_bw" not in notes:
-                    notes.append("rocooper_block_routing_volume_is_diagnostic_not_main_bw")
 
                 if progress_interval > 0 and frame_count % progress_interval == 0:
                     print("%s native BW frames: %d" % (method, frame_count), flush=True)
@@ -736,7 +652,7 @@ def summarize_native_bw(
     elif method_key == "coopdiff":
         rule = "CoopDiff native offered BW from CoopDiffMarkovFeatureChannel message_bytes."
     elif method_key == "rocooper":
-        rule = "RoCooper native offered BW from non-ego feature tensor bytes at communication module input."
+        rule = "RoCooper native offered BW from selected feature blocks in fusion_info."
     else:
         rule = "Unknown method rule."
 
@@ -771,10 +687,6 @@ def summarize_native_bw(
         "rocooper_round_count": int(rocooper_round_count),
         "rocooper_scenario_count": int(rocooper_scenario_count),
         "rocooper_missing_scale_info_count": int(rocooper_missing_scale_info_count),
-        "rocooper_block_routing_total_MB": float(rocooper_block_routing_total_bytes / 1_000_000.0),
-        "rocooper_block_routing_BW_MB_per_frame": float(rocooper_block_routing_total_bytes / 1_000_000.0 / denom),
-        "rocooper_channel_feature_shape_missing_count": int(rocooper_channel_feature_shape_missing_count),
-        "rocooper_channel_comm_info_missing_count": int(rocooper_channel_comm_info_missing_count),
         "action_id_counter": dict(sorted(action_id_counter.items())),
         "quant_counter": dict(sorted(quant_counter.items())),
         "rho_counter": dict(sorted(rho_counter.items())),
@@ -810,9 +722,6 @@ def write_csv(path: str, summary: Dict[str, Any]) -> None:
         "rocooper_round_count",
         "rocooper_scenario_count",
         "rocooper_missing_scale_info_count",
-        "rocooper_block_routing_BW_MB_per_frame",
-        "rocooper_channel_feature_shape_missing_count",
-        "rocooper_channel_comm_info_missing_count",
         "native_bw_rule",
     ]
 

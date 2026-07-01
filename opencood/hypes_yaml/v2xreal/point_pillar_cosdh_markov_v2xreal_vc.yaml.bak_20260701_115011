@@ -100,7 +100,6 @@ data_augment:
   - 1.05
 postprocess:
   core_method: VoxelPostprocessorV2XReal
-  gt_range: *cav_lidar_range
   anchor_args:
     cav_lidar_range: *cav_lidar_range
     num: 2

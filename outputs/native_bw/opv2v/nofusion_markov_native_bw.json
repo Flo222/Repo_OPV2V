@@ -1,0 +1,20 @@
+{
+  "method": "NoFusion",
+  "scenario": "Markov",
+  "frame_count": 2170,
+  "native_total_MB": 0.0,
+  "native_BW_MB_per_frame": 0.0,
+  "native_bw_rule": "NoFusion sends no cooperative message.",
+  "actual_total_MB": 0.0,
+  "actual_BW_MB_per_frame": 0.0,
+  "raw_record_count": 0,
+  "record_count": 0,
+  "skipped_non_comm_record_count": 0,
+  "applied_link_count": 0,
+  "no_send_count": 0,
+  "where2comm_rate_avg": null,
+  "where2comm_rate_min": null,
+  "where2comm_rate_max": null,
+  "where2comm_rate_count": 0,
+  "notes": []
+}

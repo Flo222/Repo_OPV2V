@@ -78,36 +78,8 @@ def visualize(infer_result, pcd, pc_range, save_path, method='3d', left_hand=Fal
 
             score = infer_result.get("score_tensor", None)
             if score is not None:
-                score_np = score.detach().cpu().numpy()
-
-                # V2X-Real multi-class CoSDH may produce scores with shape
-                # [N, C] or flattened [N*C]. Visualization only needs one
-                # scalar score per final predicted box, so align it safely.
-                num_pred = pred_box_np.shape[0]
-
-                if score_np.ndim == 0:
-                    score_np = score_np.reshape(1)
-                elif score_np.ndim > 1:
-                    if score_np.shape[0] == num_pred:
-                        score_np = score_np.max(axis=1)
-                    else:
-                        score_np = score_np.reshape(-1)
-
-                score_np = score_np.reshape(-1)
-
-                if score_np.shape[0] != num_pred:
-                    if score_np.shape[0] % max(num_pred, 1) == 0:
-                        score_np = score_np.reshape(num_pred, -1).max(axis=1)
-                    else:
-                        score_np = score_np[:num_pred]
-
-                pred_name = [
-                    f'score:{float(score_np[i]):.3f}'
-                    for i in range(min(num_pred, score_np.shape[0]))
-                ]
-
-                if len(pred_name) < num_pred:
-                    pred_name += ['pred'] * (num_pred - len(pred_name))
+                score_np = score.cpu().numpy()
+                pred_name = [f'score:{score_np[i]:.3f}' for i in range(score_np.shape[0])]
 
             uncertainty = infer_result.get("uncertainty_tensor", None)
             if uncertainty is not None:

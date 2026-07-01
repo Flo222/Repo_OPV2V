@@ -15,8 +15,6 @@ import numpy as np
 import opencood.hypes_yaml.yaml_utils as yaml_utils
 from opencood.data_utils.datasets.cosdh_dataset_builder import build_dataset_cosdh as build_dataset
 from opencood.utils import eval_utils
-from opencood.utils import eval_utils_v2xreal
-import opencood.data_utils
 from opencood.visualization import vis_utils_cosdh as vis_utils, my_vis, simple_vis_cosdh as simple_vis
 from opencood.tools import train_utils_cosdh as train_utils, inference_utils_cosdh as inference_utils
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -51,19 +49,6 @@ def set_random_seed(seed):
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-
-def _resolve_vis_range(hypes):
-    postprocess_cfg = hypes.get('postprocess', {})
-    if 'gt_range' in postprocess_cfg and postprocess_cfg['gt_range']:
-        return postprocess_cfg['gt_range']
-
-    anchor_args = postprocess_cfg.get('anchor_args', {})
-    if 'cav_lidar_range' in anchor_args and anchor_args['cav_lidar_range']:
-        return anchor_args['cav_lidar_range']
-
-    model_args = hypes.get('model', {}).get('args', {})
-    return model_args.get('lidar_range', None)
 
 
 def main():
@@ -130,30 +115,13 @@ def main():
                             pin_memory=False,
                             drop_last=False)
     
-    # Create the dictionary for evaluation.
-    # V2X-Real is multi-class and should report per-class AP + mAP,
-    # matching inference_v2xreal.py / inference_coopdiff_v2xreal.py.
-    post_core = str(hypes.get("postprocess", {}).get("core_method", ""))
-    num_class = int(hypes.get("model", {}).get("args", {}).get("num_class", 1))
-    is_v2xreal_eval = ("V2XReal" in post_core) or (num_class > 1)
+    # Create the dictionary for evaluation
+    result_stat = {0.3: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
+                0.5: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
+                0.7: {'tp': [], 'fp': [], 'gt': 0, 'score': []}}
 
-    if is_v2xreal_eval:
-        result_stat = {}
-        for class_name in opencood.data_utils.SUPER_CLASS_MAP.keys():
-            result_stat[class_name] = {}
-            for iou_threshold in [0.3, 0.5, 0.7]:
-                result_stat[class_name][iou_threshold] = {
-                    "tp": [], "fp": [], "gt": 0
-                }
-        print("[CoSDH inference] Using V2X-Real multi-class evaluation.")
-    else:
-        result_stat = {0.3: {'tp': [], 'fp': [], 'gt': 0, 'score': []},
-                       0.5: {'tp': [], 'fp': [], 'gt': 0, 'score': []},
-                       0.7: {'tp': [], 'fp': [], 'gt': 0, 'score': []}}
-        print("[CoSDH inference] Using OPV2V single-class evaluation.")
-
+    
     infer_info = opt.fusion_method + opt.note
-    vis_range = _resolve_vis_range(hypes)
 
     for i, batch_data in tqdm(enumerate(data_loader)):
 
@@ -195,42 +163,21 @@ def main():
             gt_box_tensor = infer_result['gt_box_tensor']
             pred_score = infer_result['pred_score']
             
-            if is_v2xreal_eval:
-                gt_label_tensor = infer_result.get("gt_label_tensor", None)
-                if pred_box_tensor is not None and pred_score is not None and gt_label_tensor is not None:
-                    # V2X-Real pred_score is expected to be [N, 2]:
-                    # column 0 = score, column 1 = 1-indexed class id.
-                    if pred_score.dim() == 1:
-                        raise RuntimeError("V2X-Real eval expects pred_score with shape [N, 2], got 1-D score.")
-                    for class_id, class_name in enumerate(result_stat.keys()):
-                        class_id += 1
-                        keep_index_pred = pred_score[:, -1] == class_id
-                        keep_index_gt = gt_label_tensor == class_id
-                        for iou_threshold in result_stat[class_name].keys():
-                            eval_utils_v2xreal.caluclate_tp_fp(
-                                pred_box_tensor[keep_index_pred, ...],
-                                pred_score[keep_index_pred, 0],
-                                gt_box_tensor[keep_index_gt, ...],
-                                result_stat[class_name],
-                                iou_threshold)
-                elif gt_label_tensor is None:
-                    raise RuntimeError("V2X-Real eval needs gt_label_tensor, but inference result does not contain it.")
-            else:
-                eval_utils.caluclate_tp_fp(pred_box_tensor,
-                                        pred_score,
-                                        gt_box_tensor,
-                                        result_stat,
-                                        0.3)
-                eval_utils.caluclate_tp_fp(pred_box_tensor,
-                                        pred_score,
-                                        gt_box_tensor,
-                                        result_stat,
-                                        0.5)
-                eval_utils.caluclate_tp_fp(pred_box_tensor,
-                                        pred_score,
-                                        gt_box_tensor,
-                                        result_stat,
-                                        0.7)
+            eval_utils.caluclate_tp_fp(pred_box_tensor,
+                                    pred_score,
+                                    gt_box_tensor,
+                                    result_stat,
+                                    0.3)
+            eval_utils.caluclate_tp_fp(pred_box_tensor,
+                                    pred_score,
+                                    gt_box_tensor,
+                                    result_stat,
+                                    0.5)
+            eval_utils.caluclate_tp_fp(pred_box_tensor,
+                                    pred_score,
+                                    gt_box_tensor,
+                                    result_stat,
+                                    0.7)
             if opt.save_npy:
                 npy_save_path = os.path.join(opt.model_dir, 'npy')
                 if not os.path.exists(npy_save_path):
@@ -262,27 +209,24 @@ def main():
                 # simple_vis.visualize(infer_result,
                 #                     batch_data['ego'][
                 #                         'origin_lidar'][0],
-                #                     vis_range,
+                #                     hypes['postprocess']['gt_range'],
                 #                     vis_save_path,
                 #                     method='3d',
                 #                     left_hand=left_hand)
                  
                 vis_save_path = os.path.join(vis_save_path_root, 'bev_%05d.png' % i)
-                if vis_range is not None:
-                    simple_vis.visualize(infer_result,
-                                        batch_data['ego'][
-                                            'origin_lidar'][0],
-                                        vis_range,
-                                        vis_save_path,
-                                        method='bev',
-                                        left_hand=left_hand)
+                simple_vis.visualize(infer_result,
+                                    batch_data['ego'][
+                                        'origin_lidar'][0],
+                                    hypes['postprocess']['gt_range'],
+                                    vis_save_path,
+                                    method='bev',
+                                    left_hand=left_hand)
         torch.cuda.empty_cache()
     
     print(f"total frame: {i + 1}")
-    if is_v2xreal_eval:
-        eval_utils_v2xreal.eval_final_results(result_stat, opt.model_dir)
-    else:
-        eval_utils.eval_final_results(result_stat, opt.model_dir, infer_info)
+    _, ap50, ap70 = eval_utils.eval_final_results(result_stat,
+                                opt.model_dir, infer_info)
 
 if __name__ == '__main__':
     main()

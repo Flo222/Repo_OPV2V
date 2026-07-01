@@ -1,4 +1,3 @@
-import copy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -14,29 +13,12 @@ from opencood.models.comm_modules.cosdh_markov_byte_channel import CosDHMarkovBy
 from opencood.utils.transformation_utils_cosdh import normalize_pairwise_tfm
 
 
-def _merge_markov_cfg(base_cfg, override_cfg):
-    merged = copy.deepcopy(base_cfg) if isinstance(base_cfg, dict) else {}
-    if not isinstance(override_cfg, dict):
-        return merged
-
-    for key, value in override_cfg.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_markov_cfg(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
-
-
-class PointPillarCosdhMarkovV2xreal(nn.Module):
+class PointPillarCosdhMarkov(nn.Module):
     """
     Where2comm implementation with point pillar backbone.
     """
     def __init__(self, args):
-        super(PointPillarCosdhMarkovV2xreal, self).__init__()
-
-        self.num_class = int(args.get('num_class', 3))
-        self.anchor_number = int(args.get('anchor_number', args.get('anchor_num', 2)))
-        self.max_cav = int(args.get('max_cav', 4))
+        super(PointPillarCosdhMarkov, self).__init__()
 
         self.pillar_vfe = PillarVFE(args['pillar_vfe'],
                                     num_point_features=4,
@@ -60,23 +42,9 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
         self.voxel_size = args['voxel_size']
 
         # Pass CoSDH-Markov byte-stream channel config into CoSDH fusion.
-        base_markov_cfg = copy.deepcopy(args.get('cosdh_markov', {}))
         if 'where2comm' in args:
-            args['where2comm']['cosdh_markov'] = base_markov_cfg
-        self.cosdh_markov_channel = CosDHMarkovByteChannel(base_markov_cfg)
-
-        late_markov_cfg = _merge_markov_cfg(
-            base_markov_cfg, args.get('cosdh_late_markov', {})
-        )
-        self.cosdh_late_markov_share_profile = bool(
-            late_markov_cfg.get('share_profile_with_intermediate', False)
-        )
-        if self.cosdh_late_markov_share_profile:
-            self.cosdh_late_markov_channel = self.cosdh_markov_channel
-        else:
-            self.cosdh_late_markov_channel = CosDHMarkovByteChannel(
-                late_markov_cfg
-            )
+            args['where2comm']['cosdh_markov'] = args.get('cosdh_markov', {})
+        self.cosdh_markov_channel = CosDHMarkovByteChannel(args.get('cosdh_markov', {}))
         self.fusion_net = nn.ModuleList()
         for i in range(len(args['base_bev_backbone']['layer_nums'])):
             fuse_module = Where2comm(args['where2comm'], dim=args['feat_dim'][i])
@@ -107,21 +75,16 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
                                                                     args['compression']))
             print(f"compression_ratio: {self.compression_ratio}")
 
-        # V2X-Real is a three-class detection task.  Its postprocessor/loss
-        # expect psm channels = anchor_number * num_class * num_class and
-        # rm channels = 7 * anchor_number * num_class.
-        self.cls_head = nn.Conv2d(
-            self.out_channel,
-            self.anchor_number * self.num_class * self.num_class,
-            kernel_size=1)
-        self.reg_head = nn.Conv2d(
-            self.out_channel,
-            7 * self.anchor_number * self.num_class,
-            kernel_size=1)
-
-        # V2X-Real loss/postprocess do not consume dir_preds in this codebase.
+        self.cls_head = nn.Conv2d(self.out_channel, args['anchor_number'],
+                                  kernel_size=1)
+        self.reg_head = nn.Conv2d(self.out_channel, 7 * args['anchor_number'],
+                                  kernel_size=1)
         self.use_dir = False
-
+        if 'dir_args' in args.keys():
+            self.use_dir = True
+            self.dir_head = nn.Conv2d(self.out_channel, args['dir_args']['num_bins'] * args['anchor_number'],
+                                  kernel_size=1) # BIN_NUM = 2
+ 
         if 'backbone_fix' in args.keys() and args['backbone_fix']:
             self.backbone_fix()
 
@@ -139,9 +102,8 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
             p.requires_grad = False
 
         if self.compression:
-            for compressor in self.naive_compressor_list:
-                for p in compressor.parameters():
-                    p.requires_grad = False
+            for p in self.naive_compressor.parameters():
+                p.requires_grad = False
         if self.shrink_flag:
             for p in self.shrink_conv.parameters():
                 p.requires_grad = False
@@ -161,13 +123,6 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
         cum_sum_len = torch.cumsum(record_len, dim=0)
         split_x = torch.tensor_split(x, cum_sum_len[:-1].cpu())
         return split_x
-
-    def start_late_comm_frame(self):
-        """Reset the late-message channel once per inference sample."""
-        if self.cosdh_late_markov_channel is self.cosdh_markov_channel:
-            return
-        if hasattr(self.cosdh_late_markov_channel, 'start_frame'):
-            self.cosdh_late_markov_channel.start_frame()
     
 
     def forward(self, data_dict):
@@ -212,8 +167,8 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
             psm = self.cls_head(spatial_features_2d)
             rm = self.reg_head(spatial_features_2d)
 
-            output_dict = {'psm': psm,
-                           'rm': rm}
+            output_dict = {'cls_preds': psm,
+                        'reg_preds': rm}
 
             if self.use_dir:
                 output_dict.update({'dir_preds': self.dir_head(spatial_features_2d)})
@@ -245,9 +200,7 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
         feature_list = self.backbone.get_multiscale_feature(spatial_features)
         fused_feature_list = []
         if hasattr(self.cosdh_markov_channel, 'start_frame'):
-            self.cosdh_markov_channel.start_frame(
-                link_key_aliases=data_dict.get('cav_id_list', None)
-            )
+            self.cosdh_markov_channel.start_frame()
         num_fusion_scales = len(self.fusion_net)
         
         for i, fuse_module in enumerate(self.fusion_net):
@@ -273,14 +226,8 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
         psm = self.cls_head(fused_feature)
         rm = self.reg_head(fused_feature)
 
-        output_dict = {'psm': psm,
-                       'rm': rm}
-
-        if hasattr(self.cosdh_markov_channel, 'latest_info'):
-            output_dict['comm_info'] = {
-                'cosdh_markov': self.cosdh_markov_channel.latest_info,
-                'cosdh_markov_enabled': getattr(self.cosdh_markov_channel, 'enabled', False),
-            }
+        output_dict = {'cls_preds': psm,
+                       'reg_preds': rm}
 
         if self.use_dir:
             output_dict.update({'dir_preds': self.dir_head(fused_feature)})

@@ -1,0 +1,36 @@
+
+====================================================================================================
+PROBE RoCooper
+resuming by loading epoch 30
+method: RoCooper
+error: None
+model_class: PointPillarRocooper
+frame_count: 20
+
+====================================================================================================
+PROBE CoopDiff
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+too many cavs
+输入形状: torch.Size([2, 128, 24, 88])
+输出形状: torch.Size([2, 128, 24, 88])
+sampling_timesteps 2
+sampling_timesteps 2
+resuming by loading epoch 20
+method: CoopDiff
+error: None
+model_class: PointPillarDiffStuMarkov
+frame_count: 20
+MODULE coopdiff_markov_channel CoopDiffMarkovFeatureChannel
+  rec_count: 60
+  numeric_sums: {'bandwidth_mbps': 780.0, 'batch': 0.0, 'cav': 60.0, 'consumed_bytes': 3244032.0, 'delay_slots': 12.0, 'frame_index': 1200.0, 'global_idx': 60.0, 'initial_budget_bytes': 3244032.0, 'initial_budget_packets': 3168.0, 'message_bytes': 302776320.0, 'num_packets': 295680.0, 'num_scales': 180.0, 'packet_loss_rate': 10.199999999999996, 'received_units': 11636.0, 'remaining_budget_bytes_after': 0.0, 'remaining_budget_bytes_before': 3244032.0, 'scale_idx': 60.0, 'selected_units': 887040.0, 'sent_units': 12672.0, 'unit_bytes': 35840.0}
+  summary: {"enabled": true, "num_records": 60, "states": {"medium": {"count": 24, "selected_units": 354816, "sent_units": 1952, "received_units": 1534, "message_bytes": 121110528, "consumed_bytes": 499712}, "good": {"count": 24, "selected_units": 354816, "sent_units": 10528, "received_units": 9983, "message_bytes": 121110528, "consumed_bytes": 2695168}, "bad": {"count": 12, "selected_units": 177408, "sent_units": 192, "received_units": 119, "message_bytes": 60555264, "consumed_bytes": 49152}}, "total_sele
+
+saved: outputs/native_bw/probe/comm_record_modules_probe.json

@@ -200,15 +200,8 @@ model:
         packet_size_bytes: 1024
         bytes_per_value: 4
         zero_fill_missing: true
-      selection_policy: random
       verbose: true
       debug_first_n_frames: 20
-
-    # Late dense prediction maps also go through Markov damage.
-    cosdh_late_markov:
-      enabled: true
-      share_profile_with_intermediate: true
-      verbose: false
 
     dir_args: *dir_args
 

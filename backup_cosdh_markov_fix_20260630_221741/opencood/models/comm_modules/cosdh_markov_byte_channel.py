@@ -52,12 +52,6 @@ class CosDHMarkovByteChannel(nn.Module):
         self.packet_size_bytes = int(packet_cfg.get("packet_size_bytes", 1024))
         self.bytes_per_value = int(packet_cfg.get("bytes_per_value", 4))
         self.zero_fill_missing = bool(packet_cfg.get("zero_fill_missing", True))
-        # When the selected CoSDH message exceeds the byte budget, the original
-        # implementation kept the first cells in raster order.  That creates a
-        # spatial bias unrelated to communication importance.  Use random
-        # budget truncation by default; set to ``raster`` to reproduce the old
-        # behavior or ``magnitude`` for a deterministic energy-based proxy.
-        self.selection_policy = str(cfg.get("selection_policy", "random")).lower()
 
         self.states = cfg.get("states", ["good", "medium", "bad"])
         self.initial_state = cfg.get("initial_state", "medium")
@@ -96,11 +90,6 @@ class CosDHMarkovByteChannel(nn.Module):
         # Link-level Markov state persists across frames.
         self._link_state = {}
 
-        # Optional CAV-id aliases for the current ego frame.  When available,
-        # intermediate CoSDH features and late dense detections use the same
-        # physical link key, so they share one Markov state and one byte budget.
-        self._link_key_aliases = None
-
         # Per-frame shared budget sessions. Reset by start_frame().
         self._frame_sessions = {}
 
@@ -119,51 +108,16 @@ class CosDHMarkovByteChannel(nn.Module):
             if float(profile.get("delay_ms", 0.0)) >= frame_ms:
                 self.need_delay_cache = True
 
-    def _normalize_link_aliases(self, link_key_aliases):
-        if link_key_aliases is None:
-            return None
-
-        if torch.is_tensor(link_key_aliases):
-            link_key_aliases = link_key_aliases.detach().cpu().tolist()
-
-        # DataLoader with batch size 1 may wrap the list once.
-        if isinstance(link_key_aliases, (list, tuple)) and len(link_key_aliases) == 1 \
-                and isinstance(link_key_aliases[0], (list, tuple)):
-            link_key_aliases = link_key_aliases[0]
-
-        if not isinstance(link_key_aliases, (list, tuple)):
-            link_key_aliases = [link_key_aliases]
-
-        aliases = []
-        for item in link_key_aliases:
-            if torch.is_tensor(item):
-                item = item.detach().cpu().item() if item.numel() == 1 else item.detach().cpu().tolist()
-            if isinstance(item, (list, tuple)) and len(item) == 1:
-                item = item[0]
-            aliases.append(str(item))
-        return aliases
-
-    def start_frame(self, frame_id=None, link_key_aliases=None):
+    def start_frame(self, frame_id=None):
         """Start a new inference frame/session.
 
         This should be called once before CoSDH iterates over its multi-scale
         fusion modules. It ensures all scales in the same frame share the same
-        link state and bandwidth budget.  If CAV ids are provided, all messages
-        from the same non-ego CAV also share the same physical link key across
-        intermediate and late branches.
+        link state and bandwidth budget.
         """
         self._frame_index += 1
         self._frame_sessions = {}
         self.latest_info = []
-        aliases = self._normalize_link_aliases(link_key_aliases)
-        if aliases is not None:
-            self._link_key_aliases = aliases
-
-    def _resolve_link_key(self, b, local_idx):
-        aliases = self._link_key_aliases
-        if aliases is not None and int(b) == 0 and int(local_idx) < len(aliases):
-            return "link_{}".format(aliases[int(local_idx)])
-        return "b{}_cav{}".format(int(b), int(local_idx))
 
     def _next_state(self, link_key, device):
         cur = self._link_state.get(link_key, self.initial_state)
@@ -334,18 +288,7 @@ class CosDHMarkovByteChannel(nn.Module):
                 "received_units": 0,
             }
 
-        if max_send_cells >= selected_cells:
-            sent_idx = selected_idx
-        elif self.selection_policy == "raster":
-            sent_idx = selected_idx[:max_send_cells]
-        elif self.selection_policy == "magnitude":
-            flat_energy = msg.abs().sum(dim=0).reshape(-1)
-            topk = torch.topk(flat_energy[selected_idx], k=max_send_cells, largest=True).indices
-            sent_idx = selected_idx[topk]
-        else:
-            perm = torch.randperm(selected_cells, device=msg.device)[:max_send_cells]
-            sent_idx = selected_idx[perm]
-
+        sent_idx = selected_idx[:max_send_cells]
         consumed_bytes = int(max_send_cells * cell_bytes)
         session["remaining_budget_bytes"] = max(0, remaining_before - consumed_bytes)
 
@@ -417,7 +360,7 @@ class CosDHMarkovByteChannel(nn.Module):
                 if local_idx == 0 and not self.impair_ego:
                     continue
 
-                link_key = self._resolve_link_key(b, local_idx)
+                link_key = "b{}_cav{}".format(b, local_idx)
                 session = self._get_or_create_session(link_key, x.device)
 
                 cur_msg = out[global_idx]

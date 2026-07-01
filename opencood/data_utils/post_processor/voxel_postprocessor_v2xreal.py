@@ -314,7 +314,9 @@ class VoxelPostprocessorV2XReal(BasePostprocessor):
                 'pos_equal_one': pos_equal_one,
                 'neg_equal_one': neg_equal_one}
 
-    def post_process(self, data_dict, output_dict, projection=True):
+    def post_process(self, data_dict, output_dict, projection=True,
+                     confidence_beta=None, confidence_threshold=None,
+                     class_aware_nms=False):
         """
         Process the outputs of the model to 2D/3D bounding box.
         Step1: convert each cav's output to bounding box format
@@ -364,6 +366,16 @@ class VoxelPostprocessorV2XReal(BasePostprocessor):
             batch_size = prob.shape[0]
             # (B, H, W, num_anchor*num_class*num_class)
             prob = F.sigmoid(prob.permute(0, 2, 3, 1))
+            # Original CoSDH suppresses low-confidence non-ego late messages
+            # before merging them with the ego intermediate output.
+            if cav_id != 'ego' and confidence_threshold is not None:
+                prob = torch.where(
+                    prob >= float(confidence_threshold),
+                    prob,
+                    torch.zeros_like(prob),
+                )
+            if cav_id != 'ego' and confidence_beta is not None:
+                prob = prob * float(confidence_beta)
             # (B, H*W*num_anchor*num_class, num_class)
             prob = prob.reshape(batch_size, num_anchors, -1)
             # (B, H*W*num_anchor*num_class)
@@ -447,11 +459,31 @@ class VoxelPostprocessorV2XReal(BasePostprocessor):
 
         unprojected_box3d_tensor = torch.vstack(unprojected_box3d_list)
         unprojected_box3d_tensor = unprojected_box3d_tensor[keep_index]
-        # nms
-        keep_index = box_utils.nms_rotated(pred_box3d_tensor,
-                                           scores,
-                                           self.params['nms_thresh']
-                                           )
+        # Multi-class hybrid inference must not suppress overlapping boxes of
+        # different classes. Other V2X-Real baselines retain the legacy NMS
+        # path unless class_aware_nms is explicitly enabled.
+        if class_aware_nms:
+            class_keep = []
+            for class_id in torch.unique(pred_label_tensor):
+                class_indices = torch.nonzero(
+                    pred_label_tensor == class_id, as_tuple=False
+                ).flatten()
+                keep_local = box_utils.nms_rotated(
+                    pred_box3d_tensor[class_indices],
+                    scores[class_indices],
+                    self.params['nms_thresh'],
+                )
+                class_keep.append(class_indices[keep_local])
+            keep_index = torch.cat(class_keep, dim=0)
+            keep_index = keep_index[
+                torch.argsort(scores[keep_index], descending=True)
+            ]
+        else:
+            keep_index = box_utils.nms_rotated(
+                pred_box3d_tensor,
+                scores,
+                self.params['nms_thresh'],
+            )
         pred_box3d_tensor = pred_box3d_tensor[keep_index]
         unprojected_box3d_tensor = unprojected_box3d_tensor[keep_index]
 

@@ -1,0 +1,74 @@
+opencood/models/point_pillar_rocooper.py:11:    -> RoCooper communication impairment
+opencood/models/point_pillar_rocooper.py:22:    opencood/models/sub_modules/rocooper_block_prioritizer.py
+opencood/models/point_pillar_rocooper.py:67:            block_prioritizer: ...
+opencood/models/point_pillar_rocooper.py:80:            "comm_info": optional communication statistics,
+opencood/models/point_pillar_rocooper.py:128:        # The actual lossy communication simulation is handled by RoCooperComm.
+opencood/models/point_pillar_rocooper.py:141:        # 4. RoCooper communication impairment module
+opencood/models/point_pillar_rocooper.py:241:            cfg["block_prioritizer"]
+opencood/models/point_pillar_rocooper.py:247:            "block_prioritizer": args.get("block_prioritizer", {}),
+opencood/models/point_pillar_rocooper.py:272:        RoCooper communication/fusion modules under lossy communication.
+opencood/models/point_pillar_rocooper.py:430:    def forward(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:
+opencood/models/point_pillar_rocooper.py:491:        # Do not feed a clean pre-communication classification map as routing
+opencood/models/point_pillar_rocooper.py:493:        # compare with the communication-impaired setting.  The current
+opencood/models/point_pillar_rocooper.py:504:        # 4. RoCooper communication impairment
+opencood/models/sub_modules/rocooper_comm.py:3:RoCooper communication impairment module for OpenCOOD.
+opencood/models/sub_modules/rocooper_comm.py:60:          communication_range: 70
+opencood/models/sub_modules/rocooper_comm.py:124:        self.communication_range = float(
+opencood/models/sub_modules/rocooper_comm.py:125:            self.cfg.get("communication_range", 70.0)
+opencood/models/sub_modules/rocooper_comm.py:153:        # Each item is a detached feature tensor from a previous forward pass.
+opencood/models/sub_modules/rocooper_comm.py:157:    # Public forward
+opencood/models/sub_modules/rocooper_comm.py:160:    def forward(
+opencood/models/sub_modules/rocooper_comm.py:168:        Apply communication impairments to non-ego CAV features.
+opencood/models/sub_modules/rocooper_comm.py:229:            beyond_range_mask = distances > self.communication_range
+opencood/models/sub_modules/rocooper_comm.py:242:            "communication_range": self.communication_range,
+opencood/models/sub_modules/rocooper_comm.py:283:        # 5. Frame drop / communication disruption
+opencood/models/sub_modules/rocooper_comm.py:289:        # 6. Drop beyond communication range, optional
+opencood/models/sub_modules/rocooper_comm.py:968:    # Frame drop / communication disruption
+opencood/models/sub_modules/rocooper_comm.py:1058:        # Use communication_range as a simple d0 estimate.
+opencood/models/sub_modules/rocooper_comm.py:1059:        d0 = max(1.0, self.communication_range)
+opencood/models/sub_modules/rocooper_markov_comm.py:3:Markov channel wrapper for RoCooper communication impairment.
+opencood/models/sub_modules/rocooper_markov_comm.py:6:communication states according to a Markov transition matrix.
+opencood/models/sub_modules/rocooper_markov_comm.py:91:        bw["bandwidth_mbps"] = float(
+opencood/models/sub_modules/rocooper_markov_comm.py:92:            params.get("bandwidth_mbps", bw.get("bandwidth_mbps", 27.0))
+opencood/models/sub_modules/rocooper_markov_comm.py:179:    def forward(self, *args, **kwargs):
+opencood/models/sub_modules/rocooper_block_prioritizer.py:6:    opencood/models/sub_modules/rocooper_block_prioritizer.py
+opencood/models/sub_modules/rocooper_block_prioritizer.py:108:    def forward(self, block_summary: torch.Tensor) -> torch.Tensor:
+opencood/models/sub_modules/rocooper_block_prioritizer.py:174:    def forward(self, block_summary: torch.Tensor) -> torch.Tensor:
+opencood/models/sub_modules/rocooper_block_prioritizer.py:199:        scores = block_prioritizer(ego_blocks)
+opencood/models/sub_modules/rocooper_block_prioritizer.py:200:        topk_indices = block_prioritizer.select_topk(scores)
+opencood/models/sub_modules/rocooper_block_prioritizer.py:257:        self.bypass_unselected_blocks = bool(
+opencood/models/sub_modules/rocooper_block_prioritizer.py:258:            self.cfg.get("bypass_unselected_blocks", True)
+opencood/models/sub_modules/rocooper_block_prioritizer.py:265:        self.min_selected_blocks = safe_int(
+opencood/models/sub_modules/rocooper_block_prioritizer.py:266:            self.cfg.get("min_selected_blocks", 1),
+opencood/models/sub_modules/rocooper_block_prioritizer.py:269:        self.min_selected_blocks = max(1, self.min_selected_blocks)
+opencood/models/sub_modules/rocooper_block_prioritizer.py:271:        self.max_selected_blocks = self.cfg.get("max_selected_blocks", None)
+opencood/models/sub_modules/rocooper_block_prioritizer.py:272:        if self.max_selected_blocks is not None:
+opencood/models/sub_modules/rocooper_block_prioritizer.py:273:            self.max_selected_blocks = max(1, int(self.max_selected_blocks))
+opencood/models/sub_modules/rocooper_block_prioritizer.py:466:    def forward(
+opencood/models/sub_modules/rocooper_block_prioritizer.py:522:        k = max(self.min_selected_blocks, k)
+opencood/models/sub_modules/rocooper_block_prioritizer.py:525:        if self.max_selected_blocks is not None:
+opencood/models/sub_modules/rocooper_block_prioritizer.py:526:            k = min(k, int(self.max_selected_blocks))
+opencood/models/sub_modules/rocooper_block_prioritizer.py:729:            "num_selected_blocks": int(indices.shape[-1]),
+opencood/models/sub_modules/rocooper_block_prioritizer.py:731:            "bypass_unselected_blocks": self.bypass_unselected_blocks,
+opencood/models/sub_modules/rocooper_block_prioritizer.py:858:        updated_selected_blocks: torch.Tensor,
+opencood/models/sub_modules/rocooper_block_prioritizer.py:876:            updated_selected_blocks:
+opencood/models/sub_modules/rocooper_block_prioritizer.py:895:                updated_selected_blocks=updated_selected_blocks,
+opencood/models/sub_modules/rocooper_block_prioritizer.py:918:                        updated_selected_blocks=updated_selected_blocks[b],
+opencood/models/sub_modules/rocooper_block_prioritizer.py:935:        updated_selected_blocks: torch.Tensor,
+opencood/models/sub_modules/rocooper_block_prioritizer.py:948:        if updated_selected_blocks.dim() != 3:
+opencood/models/sub_modules/rocooper_block_prioritizer.py:950:                "updated_selected_blocks must be [k, tokens, C]."
+opencood/models/sub_modules/rocooper_block_prioritizer.py:957:        delta = updated_selected_blocks - selected_original
+opencood/models/sub_modules/rocooper_aggregator.py:28:from opencood.models.sub_modules.rocooper_block_prioritizer import BlockPrioritizer
+opencood/models/sub_modules/rocooper_aggregator.py:66:    def forward(
+opencood/models/sub_modules/rocooper_aggregator.py:141:    def forward(
+opencood/models/sub_modules/rocooper_aggregator.py:236:    def forward(self, x: torch.Tensor) -> torch.Tensor:
+opencood/models/sub_modules/rocooper_aggregator.py:275:    def forward(self, features: List[torch.Tensor]) -> torch.Tensor:
+opencood/models/sub_modules/rocooper_aggregator.py:340:    def forward(
+opencood/models/sub_modules/rocooper_aggregator.py:371:        block_prioritizer_cfg: Optional[Dict[str, Any]] = None,
+opencood/models/sub_modules/rocooper_aggregator.py:376:        self.block_prioritizer_cfg = block_prioritizer_cfg or {}
+opencood/models/sub_modules/rocooper_aggregator.py:399:        self.block_prioritizer = BlockPrioritizer(
+opencood/models/sub_modules/rocooper_aggregator.py:400:            cfg=self.block_prioritizer_cfg,
+opencood/models/sub_modules/rocooper_aggregator.py:489:        selected_ego, selected_others, indices, bp_info = self.block_prioritizer.route(
+opencood/models/sub_modules/rocooper_aggregator.py:494:        scale_info["block_prioritizer"] = bp_info
+opencood/models/sub_modules/rocooper_aggregator.py:495:        scale_info["num_selected_blocks"] = int(indices.numel())
+opencood/models/sub_modules/rocooper_aggregator.py:560:    def forward(

@@ -29,15 +29,9 @@ def inference_late_fusion(batch_data, model, dataset):
     except Exception:
         apply_late_markov_to_output_dict = None
 
-    # Dedicated late-message channels need an explicit per-sample frame reset.
-    # Shared late/intermediate channels keep the frame started inside ego
-    # forward(), so start_late_comm_frame() is a no-op in that case.
-    if hasattr(model, "start_late_comm_frame"):
-        model.start_late_comm_frame()
-
     # Make the order explicit: ego first starts the intermediate Markov frame,
-    # then non-ego late messages optionally share the same physical link
-    # session with intermediate fusion when configured to do so.
+    # then non-ego late messages share the same channel object with distinct
+    # link keys such as late_641.
     cav_items = []
     if 'ego' in batch_data:
         cav_items.append(('ego', batch_data['ego']))
@@ -45,21 +39,15 @@ def inference_late_fusion(batch_data, model, dataset):
         if cav_id != 'ego':
             cav_items.append((cav_id, cav_content))
 
-    for local_idx, (cav_id, cav_content) in enumerate(cav_items):
+    for cav_id, cav_content in cav_items:
         cav_content["_ego_flag"] = cav_id == 'ego'
         cav_content["_comm_link_key"] = str(cav_id)
-        cav_content["_comm_local_idx"] = local_idx
 
         cav_output = model(cav_content)
 
         if cav_id != 'ego' and apply_late_markov_to_output_dict is not None:
-            share_with_intermediate = bool(
-                getattr(model, "cosdh_late_markov_share_profile", False)
-            )
             channel = getattr(model, "cosdh_late_markov_channel", None)
-            if share_with_intermediate and hasattr(model, "cosdh_markov_channel"):
-                channel = getattr(model, "cosdh_markov_channel")
-            elif channel is None:
+            if channel is None:
                 channel = getattr(model, "cosdh_markov_channel", None)
 
             if channel is not None and bool(getattr(channel, "enabled", False)):
@@ -69,47 +57,21 @@ def inference_late_fusion(batch_data, model, dataset):
                 else:
                     verbose_prefix = "CoSDH-Markov-Late-OPV2V"
 
-                if share_with_intermediate and \
-                        hasattr(channel, "_resolve_link_key"):
-                    link_key = channel._resolve_link_key(0, local_idx)
-                elif share_with_intermediate:
-                    link_key = 'link_' + str(cav_id)
-                else:
-                    link_key = 'late_' + str(cav_id)
-
                 cav_output = apply_late_markov_to_output_dict(
                     cav_output,
                     channel,
-                    link_key=link_key,
+                    link_key='late_' + str(cav_id),
                     verbose_prefix=verbose_prefix,
                 )
 
         output_dict[cav_id] = cav_output
 
-    post_process_result = dataset.post_process(batch_data, output_dict)
-    if not isinstance(post_process_result, tuple):
-        raise RuntimeError(
-            "dataset.post_process is expected to return a tuple, got "
-            f"{type(post_process_result)}"
-        )
-
-    gt_label_tensor = None
-    if len(post_process_result) == 4:
-        pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor = \
-            post_process_result
-    elif len(post_process_result) == 3:
-        pred_box_tensor, pred_score, gt_box_tensor = post_process_result
-    else:
-        raise RuntimeError(
-            "dataset.post_process returned an unexpected tuple length: "
-            f"{len(post_process_result)}"
-        )
+    pred_box_tensor, pred_score, gt_box_tensor = \
+        dataset.post_process(batch_data, output_dict)
 
     return_dict = {"pred_box_tensor": pred_box_tensor,
                    "pred_score": pred_score,
                    "gt_box_tensor": gt_box_tensor}
-    if gt_label_tensor is not None:
-        return_dict["gt_label_tensor"] = gt_label_tensor
     return return_dict
 
 def inference_no_fusion(batch_data, model, dataset, single_gt=False):

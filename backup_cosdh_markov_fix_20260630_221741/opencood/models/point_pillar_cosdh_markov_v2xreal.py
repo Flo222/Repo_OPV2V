@@ -1,4 +1,3 @@
-import copy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -12,19 +11,6 @@ from opencood.models.sub_modules.naive_compress_cosdh import NaiveCompressor
 from opencood.models.fuse_modules.fusion_in_one_cosdh_markov import Where2comm
 from opencood.models.comm_modules.cosdh_markov_byte_channel import CosDHMarkovByteChannel
 from opencood.utils.transformation_utils_cosdh import normalize_pairwise_tfm
-
-
-def _merge_markov_cfg(base_cfg, override_cfg):
-    merged = copy.deepcopy(base_cfg) if isinstance(base_cfg, dict) else {}
-    if not isinstance(override_cfg, dict):
-        return merged
-
-    for key, value in override_cfg.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_markov_cfg(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
 
 
 class PointPillarCosdhMarkovV2xreal(nn.Module):
@@ -60,23 +46,9 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
         self.voxel_size = args['voxel_size']
 
         # Pass CoSDH-Markov byte-stream channel config into CoSDH fusion.
-        base_markov_cfg = copy.deepcopy(args.get('cosdh_markov', {}))
         if 'where2comm' in args:
-            args['where2comm']['cosdh_markov'] = base_markov_cfg
-        self.cosdh_markov_channel = CosDHMarkovByteChannel(base_markov_cfg)
-
-        late_markov_cfg = _merge_markov_cfg(
-            base_markov_cfg, args.get('cosdh_late_markov', {})
-        )
-        self.cosdh_late_markov_share_profile = bool(
-            late_markov_cfg.get('share_profile_with_intermediate', False)
-        )
-        if self.cosdh_late_markov_share_profile:
-            self.cosdh_late_markov_channel = self.cosdh_markov_channel
-        else:
-            self.cosdh_late_markov_channel = CosDHMarkovByteChannel(
-                late_markov_cfg
-            )
+            args['where2comm']['cosdh_markov'] = args.get('cosdh_markov', {})
+        self.cosdh_markov_channel = CosDHMarkovByteChannel(args.get('cosdh_markov', {}))
         self.fusion_net = nn.ModuleList()
         for i in range(len(args['base_bev_backbone']['layer_nums'])):
             fuse_module = Where2comm(args['where2comm'], dim=args['feat_dim'][i])
@@ -161,13 +133,6 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
         cum_sum_len = torch.cumsum(record_len, dim=0)
         split_x = torch.tensor_split(x, cum_sum_len[:-1].cpu())
         return split_x
-
-    def start_late_comm_frame(self):
-        """Reset the late-message channel once per inference sample."""
-        if self.cosdh_late_markov_channel is self.cosdh_markov_channel:
-            return
-        if hasattr(self.cosdh_late_markov_channel, 'start_frame'):
-            self.cosdh_late_markov_channel.start_frame()
     
 
     def forward(self, data_dict):
@@ -245,9 +210,7 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
         feature_list = self.backbone.get_multiscale_feature(spatial_features)
         fused_feature_list = []
         if hasattr(self.cosdh_markov_channel, 'start_frame'):
-            self.cosdh_markov_channel.start_frame(
-                link_key_aliases=data_dict.get('cav_id_list', None)
-            )
+            self.cosdh_markov_channel.start_frame()
         num_fusion_scales = len(self.fusion_net)
         
         for i, fuse_module in enumerate(self.fusion_net):

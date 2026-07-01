@@ -24,22 +24,6 @@ from opencood.data_utils.datasets.intermediate_fusion_dataset_v2xreal import (
 class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
     """V2X-Real mixed intermediate+late dataset for CoSDH inference."""
 
-    def __init__(self, params, visualize, train=True):
-        super().__init__(params, visualize, train)
-        postprocess_cfg = params.get("postprocess", {})
-        # Match the original CoSDH late-message confidence calibration while
-        # keeping it configurable for V2X-Real experiments.
-        self.confidence_beta = postprocess_cfg.get("confidence_beta", 0.9)
-        self.confidence_threshold = postprocess_cfg.get(
-            "confidence_threshold", 0.3
-        )
-        self.class_aware_nms = bool(
-            postprocess_cfg.get("class_aware_nms", True)
-        )
-        print("confidence_beta:", self.confidence_beta)
-        print("confidence_threshold:", self.confidence_threshold)
-        print("class_aware_nms:", self.class_aware_nms)
-
     def __getitem__(self, idx):
         if self.train:
             return super().__getitem__(idx)
@@ -421,23 +405,14 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
                     _out["dm"] = _out["dir_preds"]
 
         pred_box_tensor, pred_score = self.post_processor.post_process(
-            data_dict,
-            output_dict,
-            confidence_beta=self.confidence_beta,
-            confidence_threshold=self.confidence_threshold,
-            class_aware_nms=self.class_aware_nms,
+            data_dict, output_dict
         )
 
         gt_result = self.post_processor.generate_gt_bbx({"ego": data_dict["ego"]})
         if isinstance(gt_result, tuple):
             gt_box_tensor = gt_result[0]
-            gt_label_tensor = gt_result[1] if len(gt_result) > 1 else None
         else:
             gt_box_tensor = gt_result
-            gt_label_tensor = None
-
-        if gt_label_tensor is not None:
-            return pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor
         return pred_box_tensor, pred_score, gt_box_tensor
 
 

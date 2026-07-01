@@ -24,22 +24,6 @@ from opencood.data_utils.datasets.intermediate_fusion_dataset_v2xreal import (
 class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
     """V2X-Real mixed intermediate+late dataset for CoSDH inference."""
 
-    def __init__(self, params, visualize, train=True):
-        super().__init__(params, visualize, train)
-        postprocess_cfg = params.get("postprocess", {})
-        # Match the original CoSDH late-message confidence calibration while
-        # keeping it configurable for V2X-Real experiments.
-        self.confidence_beta = postprocess_cfg.get("confidence_beta", 0.9)
-        self.confidence_threshold = postprocess_cfg.get(
-            "confidence_threshold", 0.3
-        )
-        self.class_aware_nms = bool(
-            postprocess_cfg.get("class_aware_nms", True)
-        )
-        print("confidence_beta:", self.confidence_beta)
-        print("confidence_threshold:", self.confidence_threshold)
-        print("class_aware_nms:", self.class_aware_nms)
-
     def __getitem__(self, idx):
         if self.train:
             return super().__getitem__(idx)
@@ -84,6 +68,7 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
                 continue
             late_entry = self._build_late_entry(
                 selected_cav_base=cav_content,
+                cav_id=cav_id,
                 main_ego_pose=main_ego_pose,
                 idx=idx,
                 flip=flip,
@@ -104,6 +89,18 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
         noise_rotation,
         noise_scale,
     ):
+        # CoSDH fusion assumes local index 0 is ego.  Keep the intermediate
+        # feature order explicit instead of relying on retrieve_base_data order.
+        base_data_dict_ordered = OrderedDict()
+        for cav_id, cav_content in base_data_dict.items():
+            if cav_content.get("ego", False):
+                base_data_dict_ordered[cav_id] = cav_content
+                break
+        for cav_id, cav_content in base_data_dict.items():
+            if cav_id not in base_data_dict_ordered:
+                base_data_dict_ordered[cav_id] = cav_content
+        base_data_dict = base_data_dict_ordered
+
         pairwise_t_matrix = self.get_pairwise_transformation(
             base_data_dict, self.max_cav
         )
@@ -119,6 +116,7 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
         channel_delay_slots = []
         spatial_correction_matrix = []
         projected_lidar_stack = [] if self.visualize else None
+        cav_id_list = []
 
         for cav_id, selected_cav_base in base_data_dict.items():
             distance = math.sqrt(
@@ -140,6 +138,7 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
             object_stack.append(selected_cav_processed["object_bbx_center"])
             object_id_stack += selected_cav_processed["object_ids"]
             processed_features.append(selected_cav_processed["processed_features"])
+            cav_id_list.append(str(cav_id))
             velocity.append(selected_cav_processed["velocity"])
             time_delay.append(float(selected_cav_base["time_delay"]))
             infra.append(1 if int(cav_id) < 0 else 0)
@@ -221,6 +220,7 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
             "pairwise_t_matrix": pairwise_t_matrix,
             "transformation_matrix": np.eye(4),
             "sample_idx": idx,
+            "cav_id_list": cav_id_list,
         }
         if self.visualize:
             entry["origin_lidar"] = projected_lidar_stack
@@ -229,6 +229,7 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
     def _build_late_entry(
         self,
         selected_cav_base,
+        cav_id,
         main_ego_pose,
         idx,
         flip,
@@ -297,6 +298,7 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
             "pairwise_t_matrix": pairwise_t_matrix,
             "transformation_matrix": transformation_matrix,
             "sample_idx": idx,
+            "cav_id_list": [str(cav_id)],
         }
         if self.visualize:
             entry["origin_lidar"] = [selected_cav_processed["projected_lidar_original"]]
@@ -387,6 +389,7 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
                 "num_anchors_per_location": entry["num_anchors_per_location"],
                 "transformation_matrix": transformation_matrix,
                 "sample_idx": entry.get("sample_idx", -1),
+                "cav_id_list": entry.get("cav_id_list", []),
             }
         )
 
@@ -421,23 +424,14 @@ class IntermediateLateFusionDatasetV2XReal(IntermediateFusionDatasetV2XReal):
                     _out["dm"] = _out["dir_preds"]
 
         pred_box_tensor, pred_score = self.post_processor.post_process(
-            data_dict,
-            output_dict,
-            confidence_beta=self.confidence_beta,
-            confidence_threshold=self.confidence_threshold,
-            class_aware_nms=self.class_aware_nms,
+            data_dict, output_dict
         )
 
         gt_result = self.post_processor.generate_gt_bbx({"ego": data_dict["ego"]})
         if isinstance(gt_result, tuple):
             gt_box_tensor = gt_result[0]
-            gt_label_tensor = gt_result[1] if len(gt_result) > 1 else None
         else:
             gt_box_tensor = gt_result
-            gt_label_tensor = None
-
-        if gt_label_tensor is not None:
-            return pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor
         return pred_box_tensor, pred_score, gt_box_tensor
 
 

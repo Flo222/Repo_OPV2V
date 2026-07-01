@@ -1,0 +1,2 @@
+method,scenario,frame_count,native_BW_MB_per_frame,native_total_MB,actual_BW_MB_per_frame,actual_total_MB,raw_record_count,record_count,skipped_non_comm_record_count,applied_link_count,no_send_count,where2comm_rate_avg,where2comm_rate_min,where2comm_rate_max,where2comm_rate_count,missing_arce_pre_budget_count,native_bw_rule
+CoopDiff,Markov,2170,13.945849393548386,30262.493184,0.1251851797235023,271.65184,5997,5997,0,5997,0,,,,0,0,CoopDiff native offered BW from CoopDiffMarkovFeatureChannel message_bytes.
