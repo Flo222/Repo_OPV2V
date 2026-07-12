@@ -4,6 +4,13 @@ from opencood.comm.arce.policies.compact_sparse_cost_helper import (
     estimate_compact_sparse_tokens,
 )
 
+from opencood.comm.arce.policies.payload_transport import (
+    apply_payload_native_transport_to_arce_cfg,
+    compact_sparse_cfg_for_transport,
+    is_payload_native_transport,
+    normalize_transport_mode,
+)
+
 import copy
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -69,6 +76,7 @@ from opencood.comm.arce.policies.channel_budget_manager import (
 )
 from opencood.comm.arce.policies.action_adapter import normalize_runtime_action
 from opencood.comm.arce.c2mab_local_confidence import get_cav_confidence
+from opencood.comm.arce.policies.payload_context import build_payload_agent_confidence
 
 
 from opencood.comm.arce.c2mab_common import (
@@ -95,6 +103,9 @@ class ARCEC2MABComm:
     def __init__(self, cfg: Optional[Dict[str, Any]] = None):
         self.arce_cfg = _extract_arce_cfg(cfg or {})
 
+
+        self.transport_mode = normalize_transport_mode(self.arce_cfg)
+        self.arce_cfg = apply_payload_native_transport_to_arce_cfg(self.arce_cfg)
 
         executor_cfg = build_c2mab_executor_cfg(cfg, self.arce_cfg)
         self.executor = ARCEFixedComm(executor_cfg)
@@ -299,6 +310,9 @@ class ARCEC2MABComm:
         self.reward_tau_stale_ms = float(reward_cfg.get("tau_stale_ms", 300.0))
         self.reward_stale_max_ms = float(reward_cfg.get("stale_max_ms", 400.0))
 
+        self.reward_lambda_ap = float(
+            reward_cfg.get("lambda_ap", reward_cfg.get("reward_lambda_ap", 1.0))
+        )
         self.reward_lambda_cost = float(
             reward_cfg.get("lambda_cost", reward_cfg.get("reward_lambda_cost", 0.10))
         )
@@ -429,11 +443,12 @@ class ARCEC2MABComm:
         budget_bytes=None,
         message_mask=None,
     ):
-        compact_cfg = (self.arce_cfg or {}).get("compact_sparse", {}) or {}
+        compact_cfg = compact_sparse_cfg_for_transport(self.arce_cfg)
+        runtime_message_mask = None if is_payload_native_transport(self.arce_cfg) else message_mask
 
         first_compact_info = estimate_compact_sparse_tokens(
             feature_shape=feature_shape,
-            message_mask=message_mask,
+            message_mask=runtime_message_mask,
             action=action,
             budget_bytes=budget_bytes,
             compact_sparse_cfg=compact_cfg,
@@ -457,7 +472,7 @@ class ARCEC2MABComm:
         if bool(first_compact_info.get("compact_enabled", False)) and predicted_allocated_budget > 0.0:
             second_compact_info = estimate_compact_sparse_tokens(
                 feature_shape=feature_shape,
-                message_mask=message_mask,
+                message_mask=runtime_message_mask,
                 action=action,
                 budget_bytes=predicted_allocated_budget,
                 compact_sparse_cfg=compact_cfg,
@@ -566,11 +581,36 @@ class ARCEC2MABComm:
         budget_source_cfg, budget_scope_cfg = self._budget_source_scope()
         use_channel_profile_budget = self._use_channel_profile_budget()
 
-        ego_conf = get_cav_confidence(
+        payload_context_cfg = (
+            (self.arce_cfg.get("context", {}) or {}).get("payload_context", {}) or {}
+        )
+        use_payload_context = bool(
+            payload_context_cfg.get(
+                "enabled",
+                is_payload_native_transport(self.arce_cfg),
+            )
+        )
+        prefer_payload_conf = bool(
+            payload_context_cfg.get("prefer_payload_confidence", use_payload_context)
+        )
+
+        local_ego_conf = get_cav_confidence(
             local_cav_confidences,
             int(ego_index),
-            default=float(self.default_ego_confidence),
+            default=None,
         )
+        if local_ego_conf is not None:
+            ego_conf = float(local_ego_conf)
+            ego_conf_source = "local_detection_confidence_summary"
+        elif prefer_payload_conf:
+            ego_payload_ctx = build_payload_agent_confidence(features, int(ego_index))
+            ego_conf = float(
+                ego_payload_ctx.get("confidence", float(self.default_ego_confidence))
+            )
+            ego_conf_source = "payload_ego_energy_normalized"
+        else:
+            ego_conf = float(self.default_ego_confidence)
+            ego_conf_source = "default_ego_confidence"
 
         link_states: Dict[int, str] = {}
         link_profiles: Dict[int, Dict[str, Any]] = {}
@@ -616,6 +656,7 @@ class ARCEC2MABComm:
             "budget_scope_cfg": str(budget_scope_cfg),
             "use_channel_profile_budget": bool(use_channel_profile_budget),
             "ego_conf": float(ego_conf),
+            "ego_conf_source": str(ego_conf_source),
             "link_states": link_states,
             "link_profiles": link_profiles,
             "link_budgets": link_budgets,
@@ -633,6 +674,7 @@ class ARCEC2MABComm:
         message_masks: Optional[torch.Tensor] = None,
 
         local_cav_confidences: Optional[torch.Tensor] = None,
+        local_cav_confidence_maps: Optional[torch.Tensor] = None,
     ):
         if features.dim() != 4:
             raise ValueError(f"Expected features [N,C,H,W], got {tuple(features.shape)}")
@@ -654,16 +696,22 @@ class ARCEC2MABComm:
         budget_scope_cfg = round_ctx["budget_scope_cfg"]
         use_channel_profile_budget = round_ctx["use_channel_profile_budget"]
         ego_conf = round_ctx["ego_conf"]
+        ego_conf_source = round_ctx.get("ego_conf_source", "unknown")
         link_states = round_ctx["link_states"]
         link_profiles = round_ctx["link_profiles"]
         link_budgets = round_ctx["link_budgets"]
+        runtime_message_masks = (
+            None if is_payload_native_transport(self.arce_cfg) else message_masks
+        )
 
         proposals, no_send_candidates = build_c2mab_proposals(
             features_shape=features.shape[1:],
+            features=features,
             collaborator_indices=collaborator_indices,
             ego_id=ego_id,
             ego_index=int(ego_index),
             ego_confidence=float(ego_conf),
+            ego_confidence_source=str(ego_conf_source),
             total_budget_bytes=float(total_budget_bytes),
             per_link_budget_bytes=float(per_link_budget_bytes),
             num_collaborators=int(num_collaborators),
@@ -678,7 +726,7 @@ class ARCEC2MABComm:
             arce_cfg=self.arce_cfg,
             context_builder=self.context_builder,
             local_cav_confidences=local_cav_confidences,
-            message_masks=message_masks,
+            local_cav_confidence_maps=local_cav_confidence_maps,
             packet_size_bytes=int(self.packet_size_bytes),
             sender_topk_actions=int(self.sender_topk_actions),
             sender_force_quant_coverage=bool(self.sender_force_quant_coverage),
@@ -688,10 +736,6 @@ class ARCEC2MABComm:
             cache_quality_fn=self._cache_quality,
             estimate_cost_fn=self._estimate_byte_stream_fec_cost,
             get_policy_fn=self.get_policy,
-            mask_to_bool_2d_fn=self._mask_to_bool_2d,
-            confidence_advantage_complementarity_fn=(
-                self._confidence_advantage_complementarity
-            ),
         )
 
         oracle_result = self.oracle.select(proposals, budget_bytes=total_budget_bytes)
@@ -765,8 +809,8 @@ class ARCEC2MABComm:
                     action_override=arce_action,
                     budget_bytes=float(allocated_budget_bytes),
                     message_mask=(
-                        message_masks[sender_idx]
-                        if message_masks is not None
+                        runtime_message_masks[sender_idx]
+                        if runtime_message_masks is not None
                         else None
                     ),
                     complementarity=float(getattr(selected, "complementarity", 0.0)),
@@ -796,6 +840,7 @@ class ARCEC2MABComm:
                 per_link_budget_bytes=float(per_link_budget_bytes),
                 allocated_budget_bytes=float(allocated_budget_bytes),
                 link_budgets=link_budgets,
+                debug_records=bool(self.arce_cfg.get("debug_records", False)),
             )
 
             tx_bytes = selected_transmitted_bytes(record, selected)
@@ -846,6 +891,7 @@ class ARCEC2MABComm:
             selected_by_sender=selected_by_sender,
             oracle_result=oracle_result,
             packet_size_bytes=int(self.packet_size_bytes),
+            debug_records=bool(self.arce_cfg.get("debug_records", False)),
         )
         self._append_record(superarm_record)
 
@@ -865,6 +911,7 @@ class ARCEC2MABComm:
         message_masks: Optional[torch.Tensor] = None,
 
         local_cav_confidences: Optional[torch.Tensor] = None,
+        local_cav_confidence_maps: Optional[torch.Tensor] = None,
     ):
         if features.dim() != 4:
             raise ValueError(
@@ -872,6 +919,9 @@ class ARCEC2MABComm:
             )
 
         record_lens = _as_list_record_len(record_len)
+
+        if is_payload_native_transport(self.arce_cfg):
+            message_masks = None
 
         outputs = []
         all_records = []
@@ -891,6 +941,13 @@ class ARCEC2MABComm:
                 except Exception:
                     group_local_cav_confidences = local_cav_confidences
 
+            group_local_cav_confidence_maps = None
+            if local_cav_confidence_maps is not None:
+                try:
+                    group_local_cav_confidence_maps = local_cav_confidence_maps[offset: offset + n]
+                except Exception:
+                    group_local_cav_confidence_maps = local_cav_confidence_maps
+
             out_group, records = self.communicate_agent_features(
                 group,
                 frame_id=frame_id,
@@ -902,6 +959,7 @@ class ARCEC2MABComm:
                 message_masks=group_masks,
 
                 local_cav_confidences=group_local_cav_confidences,
+                local_cav_confidence_maps=group_local_cav_confidence_maps,
             )
 
             outputs.append(out_group)
@@ -934,6 +992,7 @@ class ARCEC2MABComm:
             collab_confidence=float(collab_confidence),
             budget_bytes=budget_bytes,
             get_policy_fn=self.get_policy,
+            reward_lambda_ap=float(getattr(self, "reward_lambda_ap", 1.0)),
             reward_lambda_cost=float(getattr(self, "reward_lambda_cost", 0.10)),
             reward_lambda_delay=float(getattr(self, "reward_lambda_delay", 0.05)),
             reward_lambda_quant=float(getattr(self, "reward_lambda_quant", 0.05)),

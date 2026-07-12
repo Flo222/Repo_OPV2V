@@ -5,6 +5,8 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from opencood.comm.arce.c2mab_local_confidence import get_cav_confidence
+from opencood.comm.arce.policies.payload_context import build_payload_pair_context, build_detection_confidence_pair_context
+from opencood.comm.arce.policies.payload_transport import is_payload_native_transport
 from opencood.comm.arce.policies.action_space import PDFARCEAction
 from opencood.comm.arce.policies.ego_greedy_oracle import CAVProposal
 from opencood.comm.arce.policies.sender_candidate_selector import build_sender_candidates
@@ -13,10 +15,12 @@ from opencood.comm.arce.policies.sender_candidate_selector import build_sender_c
 def build_c2mab_proposals(
     *,
     features_shape: Sequence[int],
+    features: Any,
     collaborator_indices: Sequence[int],
     ego_id: Any,
     ego_index: int,
     ego_confidence: float,
+    ego_confidence_source: str,
     total_budget_bytes: float,
     per_link_budget_bytes: float,
     num_collaborators: int,
@@ -31,7 +35,7 @@ def build_c2mab_proposals(
     arce_cfg: Dict[str, Any],
     context_builder: Any,
     local_cav_confidences: Any,
-    message_masks: Any,
+    local_cav_confidence_maps: Any,
     packet_size_bytes: int,
     sender_topk_actions: int,
     sender_force_quant_coverage: bool,
@@ -41,8 +45,6 @@ def build_c2mab_proposals(
     cache_quality_fn: Callable[[Any, Any], float],
     estimate_cost_fn: Callable[..., Dict[str, Any]],
     get_policy_fn: Callable[[Any, Any], Any],
-    mask_to_bool_2d_fn: Callable[[Any], Any],
-    confidence_advantage_complementarity_fn: Callable[..., Tuple[float, Any, Dict[str, Any]]],
 ) -> Tuple[List[CAVProposal], Dict[int, PDFARCEAction]]:
     proposals: List[CAVProposal] = []
     no_send_candidates: Dict[int, PDFARCEAction] = {}
@@ -66,47 +68,46 @@ def build_c2mab_proposals(
         )
         cache_q = cache_quality_fn(ego_id, sender_idx)
 
-        comp_i_ego = 0.0
-        comp_source = "none"
+        payload_context_cfg = (
+            (arce_cfg.get("context", {}) or {}).get("payload_context", {}) or {}
+        )
+        use_payload_context = bool(
+            payload_context_cfg.get(
+                "enabled",
+                is_payload_native_transport(arce_cfg),
+            )
+        )
+
+        payload_ctx = build_payload_pair_context(
+            features,
+            ego_index=int(ego_index),
+            sender_idx=int(sender_idx),
+        )
+        detection_ctx = build_detection_confidence_pair_context(
+            local_cav_confidence_maps,
+            ego_index=int(ego_index),
+            sender_idx=int(sender_idx),
+        )
+        if bool(detection_ctx.get("valid", False)):
+            comp_i_ego = float(detection_ctx.get("complementarity", 0.0))
+            comp_source = str(
+                detection_ctx.get(
+                    "complementarity_source",
+                    "local_detection_soft_complementarity",
+                )
+            )
+            comp_stats = dict(detection_ctx)
+        else:
+            comp_i_ego = float(payload_ctx.get("complementarity", 0.0))
+            comp_source = str(
+                payload_ctx.get(
+                    "complementarity_source",
+                    "payload_energy_cosine_distance",
+                )
+            )
+            comp_stats = dict(payload_ctx)
         sender_mask = None
         ego_mask = None
-        sender_mask_for_oracle = None
-        comp_stats = {
-            "mode": "none",
-            "sender_valid": False,
-            "ego_valid": False,
-        }
-
-        if message_masks is not None:
-            try:
-                mask_threshold = float(
-                    arce_cfg.get("patch_selection", {}).get("mask_threshold", 0.05)
-                )
-                ego_mask = message_masks[int(ego_index)]
-                sender_mask = message_masks[int(sender_idx)]
-
-                comp_i_ego, sender_mask_for_oracle, comp_stats = (
-                    confidence_advantage_complementarity_fn(
-                        sender_mask,
-                        ego_mask,
-                        threshold=mask_threshold,
-                    )
-                )
-                comp_source = "where2comm_confidence_advantage"
-
-                if sender_mask_for_oracle is None:
-                    sender_mask_for_oracle = mask_to_bool_2d_fn(sender_mask)
-
-            except Exception as exc:
-                comp_i_ego = 0.0
-                comp_source = f"fallback_zero:{type(exc).__name__}"
-                sender_mask = None
-                ego_mask = None
-                sender_mask_for_oracle = None
-                comp_stats = {
-                    "mode": "exception",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
 
         comp_raw = float(comp_i_ego)
         comp_norm_mode = str(arce_cfg.get("complementarity_norm", "raw_clip")).lower()
@@ -118,17 +119,31 @@ def build_c2mab_proposals(
             comp_norm = max(0.0, min(1.0, float(comp_raw)))
         comp_norm = max(0.0, min(1.0, float(comp_norm)))
 
+        local_sender_conf = get_cav_confidence(
+            local_cav_confidences,
+            int(sender_idx),
+            default=None,
+        )
+        if local_sender_conf is not None:
+            cav_confidence_value = float(local_sender_conf)
+            cav_confidence_source = "local_detection_confidence_summary"
+        else:
+            payload_sender_conf = float(payload_ctx.get("sender_confidence", 0.0))
+            cav_confidence_value = float(payload_sender_conf)
+            cav_confidence_source = str(
+                payload_ctx.get(
+                    "sender_confidence_source",
+                    "payload_sender_energy_normalized",
+                )
+            )
+
         context = context_builder.build(
             channel_profile=profile,
             latency_ms=latency_ms,
             ego_confidence=ego_confidence,
             cache_quality=cache_q,
             complementarity=comp_norm,
-            cav_confidence=get_cav_confidence(
-                local_cav_confidences,
-                sender_idx,
-                default=0.0,
-            ),
+            cav_confidence=float(cav_confidence_value),
         )
 
         feasible = []
@@ -140,7 +155,7 @@ def build_c2mab_proposals(
                 feature_shape=features_shape,
                 action=action,
                 budget_bytes=proposal_budget_bytes,
-                message_mask=sender_mask,
+                message_mask=None,
             )
             if not bool(cost_info["feasible"]):
                 continue
@@ -190,9 +205,18 @@ def build_c2mab_proposals(
                     cost_bytes=float(cand_cost),
                     record={
                         "channel_state": state_name,
+                        "ego_confidence": float(ego_confidence),
+                        "ego_confidence_source": str(ego_confidence_source),
+                        "cav_confidence": float(cav_confidence_value),
+                        "cav_confidence_source": str(cav_confidence_source),
                         "complementarity": float(comp_i_ego),
                         "complementarity_source": str(comp_source),
                         "complementarity_stats": copy.deepcopy(comp_stats),
+                        "payload_context": copy.deepcopy(payload_ctx),
+                        "payload_context_enabled": bool(use_payload_context),
+                        "payload_context_source": str(
+                            payload_ctx.get("payload_context_source", "none")
+                        ),
                         "channel_profile": profile,
                         "link_budget_bytes": float(link_budget_bytes),
                         "proposal_budget_bytes": float(proposal_budget_bytes),
@@ -255,8 +279,8 @@ def build_c2mab_proposals(
                         "sender_force_quant_coverage": bool(sender_force_quant_coverage),
                         "sender_include_low_cost": bool(sender_include_low_cost),
                     },
-                    mask=sender_mask_for_oracle,
-                    ego_mask=mask_to_bool_2d_fn(ego_mask),
+                    mask=None,
+                    ego_mask=None,
                     complementarity=float(comp_i_ego),
                 )
             )

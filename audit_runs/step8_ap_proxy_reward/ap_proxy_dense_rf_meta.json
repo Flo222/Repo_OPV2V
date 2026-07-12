@@ -1,7 +1,8 @@
 {
   "model_type": "RandomForestRegressor",
-  "target": "frame_ap70",
-  "feature_names": [
+  "source_csv": "audit_runs/step8_ap_proxy_reward/ap_proxy_dataset_full.csv",
+  "label_col": "label_quality_mean_0357",
+  "feature_cols": [
     "dense_mean_conf",
     "dense_max_conf",
     "dense_sum_conf",
@@ -12,17 +13,48 @@
     "dense_top10_mean",
     "dense_top50_mean"
   ],
-  "num_rows": 500,
-  "num_train": 400,
-  "num_test": 100,
-  "train_pearson": 0.9219171278163093,
-  "train_spearman": 0.9292863705398158,
-  "test_pearson": 0.5900614528961976,
-  "test_spearman": 0.5371737173717371,
-  "dense_mean_baseline_test_pearson": 0.05413029140278241,
-  "dense_mean_baseline_test_spearman": -0.040996099609960986,
-  "model_dir": "opencood/logs/main_opv2v_where2comm_grace_full",
-  "yaml_path": "opencood/logs/main_opv2v_where2comm_grace_full/config.yaml",
-  "max_samples": 500,
-  "iou_thr": 0.7
+  "num_rows": 2170,
+  "train_rows": 1736,
+  "val_rows": 434,
+  "seed": 2026,
+  "test_size": 0.2,
+  "params": {
+    "n_estimators": 300,
+    "max_depth": 8,
+    "min_samples_leaf": 2
+  },
+  "train_metrics": {
+    "mae": 0.07283344028618828,
+    "rmse": 0.09206447521580717,
+    "r2": 0.6354726737013232,
+    "y_true_mean": 0.6767349118405576,
+    "y_pred_mean": 0.6774028202074738,
+    "y_true_min": 0.0,
+    "y_true_max": 1.0,
+    "y_pred_min": 0.008025925925925926,
+    "y_pred_max": 0.8612996063359996
+  },
+  "val_metrics": {
+    "mae": 0.08810603797650779,
+    "rmse": 0.11498527825725163,
+    "r2": 0.5317555269060381,
+    "y_true_mean": 0.6632711725635507,
+    "y_pred_mean": 0.6655810673551965,
+    "y_true_min": 0.0,
+    "y_true_max": 1.0,
+    "y_pred_min": 0.00819291225749559,
+    "y_pred_max": 0.8197913638271538
+  },
+  "feature_importances": {
+    "dense_mean_conf": 0.09458450490415479,
+    "dense_max_conf": 0.10898695784130721,
+    "dense_sum_conf": 0.0966195748335162,
+    "dense_std_conf": 0.1434262040602855,
+    "dense_count_gt_03": 0.056047073918033916,
+    "dense_count_gt_05": 0.016442395641797426,
+    "dense_count_gt_07": 0.006704708900713507,
+    "dense_top10_mean": 0.2904237271514098,
+    "dense_top50_mean": 0.18676485274878166
+  },
+  "label_definition": "frame quality = TP / (TP + FP + FN); default label is mean of IoU 0.3/0.5/0.7 qualities"
 }

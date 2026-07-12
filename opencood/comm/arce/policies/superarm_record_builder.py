@@ -3,6 +3,19 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+
+def _oracle_superarm_light_summary(oracle_result: Dict[str, Any]) -> Dict[str, Any]:
+    selected = oracle_result.get("selected", []) or []
+    return {
+        "used_budget_bytes": float(oracle_result.get("used_budget_bytes", 0.0)),
+        "remaining_budget_bytes": float(oracle_result.get("remaining_budget_bytes", 0.0)),
+        "num_candidates": int(oracle_result.get("num_candidates", 0) or 0),
+        "num_selected": int(oracle_result.get("num_selected", len(selected)) or 0),
+        "selected_sender_ids": [str(getattr(x, "sender_id", "")) for x in selected],
+        "selected_action_ids": [str(getattr(x, "action_id", "")) for x in selected],
+    }
+
+
 def build_dc2mab_superarm_record(
     *,
     frame_id: Any,
@@ -21,9 +34,14 @@ def build_dc2mab_superarm_record(
     selected_by_sender: Dict[int, Any],
     oracle_result: Dict[str, Any],
     packet_size_bytes: int,
+    debug_records: bool = False,
 ) -> Dict[str, Any]:
-    """Build the frame-level C2MAB superarm audit record."""
-    return {
+    """Build the frame-level C2MAB superarm record.
+
+    Default output is lightweight and suitable for full experiments. Set
+    debug_records=True to retain detailed oracle internals.
+    """
+    record = {
         "frame_id": frame_id,
         "batch_idx": int(batch_idx),
         "ego_id": str(ego_id),
@@ -43,33 +61,20 @@ def build_dc2mab_superarm_record(
                 proposal.action_id for proposal in selected_by_sender.values()
             ],
             "num_selected": len(selected_by_sender),
-            "oracle": {
-                key: value
-                for key, value in oracle_result.items()
-                if key not in ("selected",)
-            },
+            "oracle": (
+                {
+                    key: value
+                    for key, value in oracle_result.items()
+                    if key not in ("selected",)
+                }
+                if bool(debug_records)
+                else _oracle_superarm_light_summary(oracle_result)
+            ),
             "packetization": {
                 "mode": "byte_stream",
                 "packet_size_bytes": int(packet_size_bytes),
                 "quantize_first": True,
             },
-            "loss_model": {
-                "type": "bernoulli",
-                "good": 0.05,
-                "medium": 0.20,
-                "bad": 0.35,
-            },
-            "delay_model": {
-                "type": "fixed_state_delay",
-                "good": 10.0,
-                "medium": 50.0,
-                "bad": 100.0,
-                "bad_temporal_source": "previous_frame",
-            },
-            "fec_redundancy": {
-                "enabled": True,
-                "rho_values": [0.0, 0.25, 0.5],
-                "cost_model": "source_packets + ceil(source_packets * rho)",
-            },
         },
     }
+    return record

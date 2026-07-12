@@ -1,0 +1,2 @@
+method,scenario,frame_count,record_count,transmitted_link_count,no_send_count,BW,bw_MB_per_frame,total_tx_MB,int4_count,packed_int4_count,all_int4_packed
+ARCE-C2MAB,Markov,2170,3444,3320,124,0.07516867834101383,0.07516867834101383,163.116032,1274,1274,True

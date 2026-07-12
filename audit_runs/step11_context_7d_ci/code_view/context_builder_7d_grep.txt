@@ -1,1 +1,0 @@
-57:    def mean_detection_confidence(pred_scores: Any, threshold: float = 0.3) -> float:

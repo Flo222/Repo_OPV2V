@@ -71,6 +71,76 @@ def selected_transmitted_bytes(record: Dict[str, Any], selected: Any) -> float:
     )
 
 
+
+def _proposal_light_summary(selected: Any) -> Dict[str, Any]:
+    action = getattr(selected, "action", None)
+    action_id = getattr(selected, "action_id", None)
+    record = getattr(selected, "record", {}) or {}
+    ctx = getattr(selected, "context", None)
+
+    summary = {
+        "ego_id": str(getattr(selected, "ego_id", "")),
+        "sender_id": str(getattr(selected, "sender_id", "")),
+        "action_id": str(action_id),
+        "ucb": float(getattr(selected, "ucb", 0.0)),
+        "mean": float(getattr(selected, "mean", 0.0)),
+        "bonus": float(getattr(selected, "bonus", 0.0)),
+        "cost_bytes": float(getattr(selected, "cost_bytes", 0.0)),
+        "complementarity": float(getattr(selected, "complementarity", record.get("complementarity", 0.0)) or 0.0),
+        "ego_confidence": float(record.get("ego_confidence", 0.0) or 0.0),
+        "cav_confidence": float(record.get("cav_confidence", 0.0) or 0.0),
+        "ego_confidence_source": str(record.get("ego_confidence_source", "unknown")),
+        "cav_confidence_source": str(record.get("cav_confidence_source", "unknown")),
+        "complementarity_source": str(record.get("complementarity_source", "unknown")),
+        "channel_state": str(record.get("channel_state", "unknown")),
+        "estimated_tx_bytes": float(record.get("estimated_tx_bytes", record.get("estimated_transmitted_bytes", 0.0)) or 0.0),
+        "estimated_encoded_bytes": float(record.get("estimated_encoded_bytes", record.get("encoded_bytes", 0.0)) or 0.0),
+        "proposal_budget_bytes": float(record.get("proposal_budget_bytes", 0.0) or 0.0),
+        "link_budget_bytes": float(record.get("link_budget_bytes", 0.0) or 0.0),
+    }
+
+    if action is not None:
+        summary["action"] = {
+            "send": int(getattr(action, "send", 0)),
+            "quant_mode": str(getattr(action, "quant_mode", "")),
+            "redundancy_ratio": float(getattr(action, "redundancy_ratio", 0.0)),
+            "cache_enabled": int(getattr(action, "cache_enabled", 0)),
+            "fec_type": str(getattr(action, "fec_type", "")),
+        }
+
+    if ctx is not None:
+        summary["context"] = {
+            "B_norm": float(getattr(ctx, "B_norm", 0.0)),
+            "p_loss": float(getattr(ctx, "p_loss", 0.0)),
+            "d_norm": float(getattr(ctx, "d_norm", 0.0)),
+            "ego_confidence": float(getattr(ctx, "ego_confidence", 0.0)),
+            "cache_quality": float(getattr(ctx, "cache_quality", 0.0)),
+            "complementarity": float(getattr(ctx, "complementarity", 0.0)),
+            "cav_confidence": float(getattr(ctx, "cav_confidence", 0.0)),
+        }
+
+    return summary
+
+
+def _oracle_light_summary(oracle_result: Dict[str, Any], total_budget_bytes: float, budget_scope: str, budget_source: str) -> Dict[str, Any]:
+    selected = oracle_result.get("selected", []) or []
+    return {
+        "budget_bytes": float(total_budget_bytes),
+        "used_budget_bytes": float(oracle_result.get("used_budget_bytes", 0.0)),
+        "remaining_budget_bytes": float(oracle_result.get("remaining_budget_bytes", 0.0)),
+        "budget_scope": str(budget_scope),
+        "budget_source": str(budget_source),
+        "num_candidates": int(oracle_result.get("num_candidates", 0) or 0),
+        "num_selected": int(oracle_result.get("num_selected", len(selected)) or 0),
+        "selected_sender_ids": [
+            str(getattr(x, "sender_id", "")) for x in selected
+        ],
+        "selected_action_ids": [
+            str(getattr(x, "action_id", "")) for x in selected
+        ],
+    }
+
+
 def enrich_selected_execution_record(
     *,
     record: Dict[str, Any],
@@ -86,24 +156,52 @@ def enrich_selected_execution_record(
     per_link_budget_bytes: float,
     allocated_budget_bytes: float,
     link_budgets: Dict[int, float],
+    debug_records: bool = False,
 ) -> Dict[str, Any]:
     record = copy.deepcopy(record)
+    proposal_summary = _proposal_light_summary(selected)
+
     record["dc2mab"] = {
         "selected": True,
-        "proposal": selected.as_dict(),
-        "oracle": {
-            "budget_bytes": float(total_budget_bytes),
-            "used_budget_bytes": float(oracle_result["used_budget_bytes"]),
-            "remaining_budget_bytes": float(oracle_result["remaining_budget_bytes"]),
-            "budget_scope": str(budget_scope),
-            "budget_source": str(budget_source),
-            "oracle_raw": {
-                key: value
-                for key, value in oracle_result.items()
-                if key not in ("selected",)
-            },
-        },
+        "proposal": (
+            selected.as_dict() if bool(debug_records) else proposal_summary
+        ),
+        "oracle": (
+            {
+                "budget_bytes": float(total_budget_bytes),
+                "used_budget_bytes": float(oracle_result["used_budget_bytes"]),
+                "remaining_budget_bytes": float(oracle_result["remaining_budget_bytes"]),
+                "budget_scope": str(budget_scope),
+                "budget_source": str(budget_source),
+                "oracle_raw": {
+                    key: value
+                    for key, value in oracle_result.items()
+                    if key not in ("selected",)
+                },
+            }
+            if bool(debug_records)
+            else _oracle_light_summary(
+                oracle_result,
+                total_budget_bytes=total_budget_bytes,
+                budget_scope=budget_scope,
+                budget_source=budget_source,
+            )
+        ),
     }
+
+    # Top-level context fields are intentionally duplicated for lightweight
+    # audits and final experiment summaries.
+    for key in (
+        "ego_confidence",
+        "cav_confidence",
+        "complementarity",
+        "ego_confidence_source",
+        "cav_confidence_source",
+        "complementarity_source",
+    ):
+        if key in proposal_summary:
+            record[key] = proposal_summary[key]
+
     record["pdf_action"] = pdf_action.as_dict()
     record["system_budget"] = {
         "budget_scope": str(budget_scope),
@@ -123,7 +221,6 @@ def enrich_selected_execution_record(
         "link_budgets": {str(k): float(v) for k, v in link_budgets.items()},
     }
     return record
-
 
 def build_budget_consistency(
     *,

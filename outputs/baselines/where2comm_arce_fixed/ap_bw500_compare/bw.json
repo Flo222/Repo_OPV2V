@@ -1,0 +1,18 @@
+{
+  "method": "Where2Comm-ARCE-Fixed",
+  "scenario": "Markov",
+  "frame_count": 500,
+  "record_count": 823,
+  "transmitted_link_count": 823,
+  "no_send_count": 0,
+  "BW": 0.047007744,
+  "bw_MB_per_frame": 0.047007744,
+  "total_tx_MB": 23.503872,
+  "int4_count": 0,
+  "packed_int4_count": 0,
+  "all_int4_packed": null,
+  "bw_breakdown_json": "outputs/baselines/where2comm_arce_fixed/ap_bw500_compare/bw_breakdown.json",
+  "avg_tokens_per_token_record": 22591.670716889428,
+  "avg_tx_bytes_per_token": 1.2641285175640546,
+  "bad_legacy_action_ids": []
+}

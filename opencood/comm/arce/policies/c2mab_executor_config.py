@@ -3,6 +3,10 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, Optional
 
+from opencood.comm.arce.policies.payload_transport import (
+    apply_payload_native_transport_to_arce_cfg,
+)
+
 
 _DEFAULT_LOSS_RATES = {
     "good": 0.05,
@@ -49,6 +53,7 @@ def build_c2mab_executor_cfg(
 
     executor_arce_cfg["mode"] = "fixed"
     executor_arce_cfg["policy"] = "fixed"
+    executor_arce_cfg = apply_payload_native_transport_to_arce_cfg(executor_arce_cfg)
 
     quant_cfg = _dict_or_empty(executor_arce_cfg.get("quantization", None))
     quant_cfg.setdefault("mode", "fp32")

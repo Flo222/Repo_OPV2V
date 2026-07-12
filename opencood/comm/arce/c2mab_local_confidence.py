@@ -51,38 +51,69 @@ def local_cav_confidences_from_psm(psm_single: Any, topk: int = 50):
         return torch.clamp(vals, 0.0, 1.0)
 
 
-def get_cav_confidence(local_cav_confidences: Any, cav_idx: int, default: float = 0.0) -> float:
-    """Read C_i for one CAV from a tensor/list/dict container."""
+def get_cav_confidence(local_cav_confidences: Any, cav_idx: int, default: Any = 0.0) -> Any:
+    """Return one CAV confidence value.
+
+    If default=None, missing or invalid confidence returns None. This lets callers
+    distinguish "not available" from a valid numeric confidence.
+    """
+    if default is None:
+        fallback = None
+    else:
+        try:
+            fallback = float(default)
+        except Exception:
+            fallback = 0.0
+
     try:
+        if local_cav_confidences is None:
+            return fallback
+
+        vals = local_cav_confidences
+        if hasattr(vals, "detach"):
+            vals = vals.detach().cpu().flatten().tolist()
+        elif hasattr(vals, "flatten"):
+            vals = vals.flatten().tolist()
+
         idx = int(cav_idx)
-    except Exception:
-        return float(default)
+        if idx < 0 or idx >= len(vals):
+            return fallback
 
-    if local_cav_confidences is None:
-        return float(default)
+        v = vals[idx]
+        if v is None:
+            return fallback
+        return float(v)
+    except Exception:
+        return fallback
+
+def local_cav_confidence_maps_from_psm(psm_single: Any) -> Any:
+    """Return per-CAV local detection confidence maps [N, H, W].
+
+    This uses detection-head classification logits, not communication masks.
+    """
+    if psm_single is None:
+        return None
 
     try:
-        if torch.is_tensor(local_cav_confidences):
-            if idx < 0 or idx >= int(local_cav_confidences.numel()):
-                return float(default)
-            return float(local_cav_confidences.detach().flatten()[idx].cpu().item())
+        if not torch.is_tensor(psm_single):
+            return None
+
+        conf = torch.sigmoid(psm_single.detach().float())
+        if conf.dim() == 4:
+            # [N, A, H, W] -> [N, H, W]
+            conf = conf.max(dim=1).values
+        elif conf.dim() == 3:
+            # Already [N, H, W]
+            pass
+        else:
+            return None
+
+        return torch.clamp(conf, 0.0, 1.0)
     except Exception:
-        return float(default)
-
-    try:
-        if isinstance(local_cav_confidences, dict):
-            return float(local_cav_confidences.get(idx, local_cav_confidences.get(str(idx), default)))
-        if isinstance(local_cav_confidences, (list, tuple)):
-            if idx < 0 or idx >= len(local_cav_confidences):
-                return float(default)
-            return float(local_cav_confidences[idx])
-    except Exception:
-        return float(default)
-
-    return float(default)
-
+        return None
 
 __all__ = [
     "local_cav_confidences_from_psm",
+    "local_cav_confidence_maps_from_psm",
     "get_cav_confidence",
 ]

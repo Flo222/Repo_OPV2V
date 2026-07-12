@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from opencood.comm.arce.c2mab_local_confidence import local_cav_confidences_from_psm
+from opencood.comm.arce.c2mab_local_confidence import local_cav_confidences_from_psm, local_cav_confidence_maps_from_psm
 
 from opencood.models.sub_modules.base_bev_backbone import BaseBEVBackbone
 from opencood.models.fuse_modules.where2comm_arce_fuse import Where2commArce
@@ -163,6 +163,7 @@ class PointPillarWhere2commArce(nn.Module):
         self.arce_enabled = bool(args.get("arce", {}).get("enabled", False)) if isinstance(args.get("arce", {}), dict) else False
         self.arce_comm = self._build_arce_comm(args) if self.arce_enabled else None
         self._init_ap_proxy_reward(args)
+        self._init_delta_ap_proxy_reward(args)
 
         self.fusion_net = Where2commArce(args["where2comm_fusion"], arce_comm=self.arce_comm)
         self.multi_scale = args["where2comm_fusion"]["multi_scale"]
@@ -228,6 +229,121 @@ class PointPillarWhere2commArce(nn.Module):
             self.ap_proxy_model = None
             self.ap_proxy_enabled = False
             self.ap_proxy_error = "{}: {}".format(type(exc).__name__, exc)
+
+    def _init_delta_ap_proxy_reward(self, args):
+        """Load paired delta AP proxy for reward gain prediction."""
+        self.delta_ap_proxy_enabled = False
+        self.delta_ap_proxy_model = None
+        self.delta_ap_proxy_feature_cols = []
+        self.delta_ap_proxy_error = None
+
+        default_path = "audit_runs/step8_ap_proxy_reward/delta_ap_proxy_rf.pkl"
+
+        arce_cfg = args.get("arce", {}) if isinstance(args, dict) else {}
+        proxy_cfg = {}
+        if isinstance(arce_cfg, dict):
+            proxy_cfg = arce_cfg.get("delta_ap_proxy_reward", {}) or {}
+
+        enabled = bool(proxy_cfg.get("enabled", True))
+        model_path = str(proxy_cfg.get("model_path", default_path))
+        require_model = bool(proxy_cfg.get("require_model", False))
+
+        if not enabled:
+            self.delta_ap_proxy_error = "disabled_by_config"
+            return
+
+        if not os.path.exists(model_path):
+            self.delta_ap_proxy_error = "model_path_not_found: {}".format(model_path)
+            if require_model:
+                raise FileNotFoundError(self.delta_ap_proxy_error)
+            return
+
+        try:
+            with open(model_path, "rb") as f:
+                payload = pickle.load(f)
+
+            if isinstance(payload, dict):
+                self.delta_ap_proxy_model = payload.get("model", payload)
+                self.delta_ap_proxy_feature_cols = list(payload.get("feature_cols", []))
+            else:
+                self.delta_ap_proxy_model = payload
+                self.delta_ap_proxy_feature_cols = []
+
+            if not self.delta_ap_proxy_feature_cols:
+                base = list(getattr(self, "ap_proxy_feature_cols", []))
+                self.delta_ap_proxy_feature_cols = (
+                    ["collab_" + k for k in base]
+                    + ["ego_" + k for k in base]
+                    + ["diff_" + k for k in base]
+                )
+
+            self.delta_ap_proxy_enabled = True
+            self.delta_ap_proxy_error = None
+        except Exception as exc:
+            self.delta_ap_proxy_model = None
+            self.delta_ap_proxy_enabled = False
+            self.delta_ap_proxy_error = "{}: {}".format(type(exc).__name__, exc)
+            if require_model:
+                raise
+
+    def _delta_reward_features_from_psm(self, collab_psm, ego_psm):
+        collab = self._dense_reward_features_from_psm(collab_psm)
+        ego = self._dense_reward_features_from_psm(ego_psm)
+
+        feats = {}
+        for k, v in collab.items():
+            feats["collab_" + k] = float(v)
+        for k, v in ego.items():
+            feats["ego_" + k] = float(v)
+        for k in collab.keys():
+            feats["diff_" + k] = float(collab[k]) - float(ego.get(k, 0.0))
+        return feats
+
+    def _predict_delta_ap_proxy_gain(self, collab_psm, ego_psm):
+        debug = {
+            "delta_ap_proxy_enabled": bool(getattr(self, "delta_ap_proxy_enabled", False)),
+            "delta_ap_proxy_used": False,
+            "delta_ap_proxy_error": getattr(self, "delta_ap_proxy_error", None),
+            "delta_ap_proxy_predict_error": None,
+            "source": "unavailable",
+            "delta_ap_hat": None,
+        }
+
+        feats = self._delta_reward_features_from_psm(collab_psm, ego_psm)
+        for k in [
+            "collab_dense_mean_conf",
+            "collab_dense_max_conf",
+            "collab_dense_top50_mean",
+            "ego_dense_mean_conf",
+            "ego_dense_max_conf",
+            "ego_dense_top50_mean",
+            "diff_dense_mean_conf",
+            "diff_dense_max_conf",
+            "diff_dense_top50_mean",
+        ]:
+            if k in feats:
+                debug[k] = float(feats[k])
+
+        if not bool(getattr(self, "delta_ap_proxy_enabled", False)):
+            return None, debug
+
+        try:
+            cols = list(self.delta_ap_proxy_feature_cols)
+            missing = [c for c in cols if c not in feats]
+            if missing:
+                raise RuntimeError("missing delta AP proxy features: {}".format(missing))
+
+            x = np.asarray([[float(feats[c]) for c in cols]], dtype=np.float64)
+            delta = float(self.delta_ap_proxy_model.predict(x)[0])
+
+            debug["delta_ap_proxy_used"] = True
+            debug["delta_ap_proxy_error"] = None
+            debug["source"] = "paired_delta_ap_proxy"
+            debug["delta_ap_hat"] = float(delta)
+            return delta, debug
+        except Exception as exc:
+            debug["delta_ap_proxy_predict_error"] = "{}: {}".format(type(exc).__name__, exc)
+            return None, debug
 
     def _dense_reward_features_from_psm(self, psm):
         """
@@ -357,6 +473,10 @@ class PointPillarWhere2commArce(nn.Module):
         """Compute C_i using modular local confidence utility."""
         return local_cav_confidences_from_psm(psm_single, topk=50)
 
+    def _local_cav_confidence_maps_from_psm(self, psm_single):
+        """Build dense local detection confidence maps for soft complementarity."""
+        return local_cav_confidence_maps_from_psm(psm_single)
+
     def _infer_frame_id(self, data_dict):
         for key in ("frame_id", "timestamp", "sample_idx", "sample_id"):
             if isinstance(data_dict, dict) and key in data_dict:
@@ -388,7 +508,9 @@ class PointPillarWhere2commArce(nn.Module):
             spatial_features_2d = self.shrink_conv(spatial_features_2d)
 
         psm_single = self.cls_head(spatial_features_2d)
+        rm_single = self.reg_head(spatial_features_2d)
         local_cav_confidences = self._local_cav_confidences_from_psm(psm_single)
+        local_cav_confidence_maps = self._local_cav_confidence_maps_from_psm(psm_single)
 
         if self.compression:
             spatial_features_2d = self.naive_compressor(spatial_features_2d)
@@ -404,6 +526,7 @@ class PointPillarWhere2commArce(nn.Module):
                 data_dict=data_dict,
                 frame_id=frame_id,
                 local_cav_confidences=local_cav_confidences,
+                local_cav_confidence_maps=local_cav_confidence_maps,
             )
             if self.shrink_flag:
                 fused_feature = self.shrink_conv(fused_feature)
@@ -416,6 +539,7 @@ class PointPillarWhere2commArce(nn.Module):
                 data_dict=data_dict,
                 frame_id=frame_id,
                 local_cav_confidences=local_cav_confidences,
+                local_cav_confidence_maps=local_cav_confidence_maps,
             )
 
         psm = self.cls_head(fused_feature)
@@ -442,6 +566,7 @@ class PointPillarWhere2commArce(nn.Module):
 
                 ego_confidence = None
                 ego_ap_proxy_debug = None
+                ego_psm_for_delta = None
                 try:
                     with torch.no_grad():
                         if torch.is_tensor(record_len):
@@ -464,6 +589,7 @@ class PointPillarWhere2commArce(nn.Module):
                                 device=psm_single.device,
                             )
                             ego_psm_single = psm_single.index_select(0, _ego_idx_tensor)
+                            ego_psm_for_delta = ego_psm_single
                             ego_confidence, ego_ap_proxy_debug = self._predict_ap_proxy_confidence(ego_psm_single)
                 except Exception as _ego_exc:
                     ego_confidence = None
@@ -471,13 +597,45 @@ class PointPillarWhere2commArce(nn.Module):
                         "error": "{}: {}".format(type(_ego_exc).__name__, _ego_exc)
                     }
 
+                delta_confidence_override = None
+                delta_ap_proxy_debug = {
+                    "source": "unavailable",
+                    "delta_ap_proxy_used": False,
+                }
+                try:
+                    if ego_psm_for_delta is not None:
+                        delta_confidence_override, delta_ap_proxy_debug = (
+                            self._predict_delta_ap_proxy_gain(psm, ego_psm_for_delta)
+                        )
+                except Exception as _delta_exc:
+                    delta_ap_proxy_debug = {
+                        "source": "delta_proxy_error",
+                        "delta_ap_proxy_used": False,
+                        "delta_ap_proxy_predict_error": "{}: {}".format(
+                            type(_delta_exc).__name__, _delta_exc
+                        ),
+                    }
+
+                reward_ego_confidence = ego_confidence
+                if delta_confidence_override is not None:
+                    reward_ego_confidence = float(collab_confidence) - float(delta_confidence_override)
+
                 arce_reward_update = self.arce_comm.update_with_proxy_reward(
                     collab_confidence=collab_confidence,
-                    ego_confidence=ego_confidence,
+                    ego_confidence=reward_ego_confidence,
                 )
                 if isinstance(arce_reward_update, dict):
                     arce_reward_update["ap_proxy_reward"] = ap_proxy_debug
                     arce_reward_update["ego_ap_proxy_reward"] = ego_ap_proxy_debug
+                    arce_reward_update["delta_ap_proxy_reward"] = delta_ap_proxy_debug
+                    arce_reward_update["reward_delta_source"] = (
+                        "paired_delta_ap_proxy"
+                        if delta_confidence_override is not None
+                        else "absolute_ap_proxy_difference"
+                    )
+                    arce_reward_update["delta_confidence_override"] = (
+                        None if delta_confidence_override is None else float(delta_confidence_override)
+                    )
                     if ego_confidence is not None:
                         arce_reward_update["ap_proxy_delta"] = float(collab_confidence) - float(ego_confidence)
             except Exception as exc:
@@ -496,7 +654,28 @@ class PointPillarWhere2commArce(nn.Module):
                 arce_info = list(arce_info)
                 arce_info.append({"reward_update": arce_reward_update})
 
-        output_dict = {"psm": psm, "rm": rm, "com": communication_rates}
+        ego_indices = []
+        offset = 0
+        for n_cav in record_len.detach().cpu().tolist():
+            ego_indices.append(offset)
+            offset += int(n_cav)
+
+        ego_idx_tensor = torch.as_tensor(
+            ego_indices,
+            dtype=torch.long,
+            device=psm_single.device,
+        )
+
+        ego_psm = psm_single.index_select(0, ego_idx_tensor)
+        ego_rm = rm_single.index_select(0, ego_idx_tensor)
+
+        output_dict = {
+            "psm": psm,
+            "rm": rm,
+            "ego_psm": ego_psm,
+            "ego_rm": ego_rm,
+            "com": communication_rates,
+        }
         output_dict["comm_info"] = {
             "where2comm_rate": communication_rates,
             "arce": arce_info,

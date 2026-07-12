@@ -1,0 +1,107 @@
+{
+  "raw_record_count": 1323,
+  "record_count": 823,
+  "skipped_non_comm_record_count": 500,
+  "selected_count": 823,
+  "transmitted_count": 823,
+  "no_send_count": 0,
+  "total_tx_MB": 23.503872,
+  "total_rx_MB": 19.196928,
+  "total_tokens": 18592945,
+  "token_record_count": 823,
+  "avg_tokens_per_token_record": 22591.670716889428,
+  "avg_tx_bytes_per_token": 1.2641285175640546,
+  "counter": {
+    "action_id": {
+      "unknown": 823
+    },
+    "quant_mode": {
+      "fp32": 823
+    },
+    "rho": {
+      "0": 823
+    },
+    "cache": {
+      "0": 823
+    },
+    "source_tensor_kind": {
+      "unknown": 823
+    }
+  },
+  "groups": {
+    "by_quant": {
+      "fp32": {
+        "record_count": 823,
+        "token_record_count": 823,
+        "tx_bytes": 23503872.0,
+        "rx_bytes": 19196928.0,
+        "tokens": 18592945,
+        "tx_MB": 23.503872,
+        "rx_MB": 19.196928,
+        "avg_tx_bytes_per_record": 28558.775212636694,
+        "avg_tokens_per_token_record": 22591.670716889428,
+        "avg_tx_bytes_per_token": 1.2641285175640546
+      }
+    },
+    "by_rho": {
+      "0": {
+        "record_count": 823,
+        "token_record_count": 823,
+        "tx_bytes": 23503872.0,
+        "rx_bytes": 19196928.0,
+        "tokens": 18592945,
+        "tx_MB": 23.503872,
+        "rx_MB": 19.196928,
+        "avg_tx_bytes_per_record": 28558.775212636694,
+        "avg_tokens_per_token_record": 22591.670716889428,
+        "avg_tx_bytes_per_token": 1.2641285175640546
+      }
+    },
+    "by_cache": {
+      "0": {
+        "record_count": 823,
+        "token_record_count": 823,
+        "tx_bytes": 23503872.0,
+        "rx_bytes": 19196928.0,
+        "tokens": 18592945,
+        "tx_MB": 23.503872,
+        "rx_MB": 19.196928,
+        "avg_tx_bytes_per_record": 28558.775212636694,
+        "avg_tokens_per_token_record": 22591.670716889428,
+        "avg_tx_bytes_per_token": 1.2641285175640546
+      }
+    },
+    "by_action_id": {
+      "unknown": {
+        "record_count": 823,
+        "token_record_count": 823,
+        "tx_bytes": 23503872.0,
+        "rx_bytes": 19196928.0,
+        "tokens": 18592945,
+        "tx_MB": 23.503872,
+        "rx_MB": 19.196928,
+        "avg_tx_bytes_per_record": 28558.775212636694,
+        "avg_tokens_per_token_record": 22591.670716889428,
+        "avg_tx_bytes_per_token": 1.2641285175640546
+      }
+    },
+    "by_source_tensor_kind": {
+      "unknown": {
+        "record_count": 823,
+        "token_record_count": 823,
+        "tx_bytes": 23503872.0,
+        "rx_bytes": 19196928.0,
+        "tokens": 18592945,
+        "tx_MB": 23.503872,
+        "rx_MB": 19.196928,
+        "avg_tx_bytes_per_record": 28558.775212636694,
+        "avg_tokens_per_token_record": 22591.670716889428,
+        "avg_tx_bytes_per_token": 1.2641285175640546
+      }
+    }
+  },
+  "bad_legacy_action_ids": [],
+  "contains_send0_fp32": false,
+  "contains_send1_fp32": false,
+  "contains_rho0p5": false
+}

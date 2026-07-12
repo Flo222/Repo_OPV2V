@@ -1,0 +1,15 @@
+{
+  "Method": "Where2Comm-ARCE-Fixed",
+  "AP@0.3-Markov": 0.711,
+  "AP@0.5-Markov": 0.692,
+  "AP@0.7-Markov": 0.484,
+  "BW-Markov": 0.047007744,
+  "total_tx_MB": 23.503872,
+  "frame_count": 500,
+  "record_count": 823,
+  "transmitted_link_count": 823,
+  "no_send_count": 0,
+  "int4_count": 0,
+  "packed_int4_count": 0,
+  "all_int4_packed": null
+}

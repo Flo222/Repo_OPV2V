@@ -1,0 +1,18 @@
+{
+  "method": "ARCE-C2MAB",
+  "scenario": "Markov",
+  "frame_count": 500,
+  "record_count": 823,
+  "transmitted_link_count": 751,
+  "no_send_count": 72,
+  "BW": 0.065179648,
+  "bw_MB_per_frame": 0.065179648,
+  "total_tx_MB": 32.589824,
+  "int4_count": 285,
+  "packed_int4_count": 285,
+  "all_int4_packed": true,
+  "bw_breakdown_json": "outputs/arce_c2mab/no_send_reward_fix_ap_bw500/bw_breakdown.json",
+  "avg_tokens_per_token_record": null,
+  "avg_tx_bytes_per_token": null,
+  "bad_legacy_action_ids": []
+}

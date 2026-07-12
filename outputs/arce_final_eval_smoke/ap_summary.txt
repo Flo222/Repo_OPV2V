@@ -1,2 +1,0 @@
-outputs/arce_final_eval_smoke/arce_c2mab_ap.log:128:The Average Precision at IOU 0.3 is 0.854, The Average Precision at IOU 0.5 is 0.838, The Average Precision at IOU 0.7 is 0.702
-outputs/arce_final_eval_smoke/where2comm_arce_fixed_ap.log:12:The Average Precision at IOU 0.3 is 0.802, The Average Precision at IOU 0.5 is 0.785, The Average Precision at IOU 0.7 is 0.610

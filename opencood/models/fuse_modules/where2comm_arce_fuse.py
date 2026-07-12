@@ -10,6 +10,7 @@ before they enter the fusion module.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -149,44 +150,47 @@ class Where2commArce(nn.Module):
         data_dict: Optional[Dict[str, Any]],
         frame_id: Optional[int],
         local_cav_confidences: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        local_cav_confidence_maps: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[List[Dict[str, Any]]]]:
         if self.arce_comm is None:
-            return x, {"enabled": False, "reason": "arce_comm_is_none"}
+            return x, None
 
-        # The transmitted message is already masked by Where2comm. The mask is
-        # passed separately so patch selection can rank valid regions by
-        # Where2comm confidence/mask rather than by activation only.
-        message_masks = raw_masks if raw_masks is not None else communication_masks
-        try:
-            out = self.arce_comm.communicate_flattened_features(
-                x,
-                record_len,
-                data_dict=data_dict,
-                frame_id=frame_id,
-                ego_index=0,
-                update_cache=True,
-                return_records=True,
-                message_masks=message_masks,
-                local_cav_confidences=local_cav_confidences,
-            )
-        except TypeError:
-            # Backward compatibility with older ARCE implementations that do not
-            # accept message_masks yet.
-            out = self.arce_comm.communicate_flattened_features(
-                x,
-                record_len,
-                data_dict=data_dict,
-                frame_id=frame_id,
-                ego_index=0,
-                update_cache=True,
-                return_records=True,
-            )
-
-        if isinstance(out, tuple) and len(out) == 2:
-            x_arce, comm_info = out
+        # payload_native means ARCE transports the payload tensor as a generic
+        # message and must not consume Where2Comm-specific masks. Other modes may
+        # still use Where2Comm mask-native payloads for fixed baselines.
+        transport_mode = str(getattr(self.arce_comm, "transport_mode", "")).strip().lower()
+        if transport_mode == "payload_native":
+            message_masks = None
         else:
-            x_arce, comm_info = out, {"enabled": True, "warning": "unexpected_arce_return"}
-        return x_arce, comm_info
+            message_masks = raw_masks if raw_masks is not None else communication_masks
+
+        # Dispatch only kwargs supported by the active ARCE implementation.
+        # ARCEC2MABComm supports local_cav_confidences; ARCEFixedComm does not.
+        # Both current implementations support message_masks, but this remains
+        # compatible with older checkpoints/code snapshots.
+        fn = self.arce_comm.communicate_flattened_features
+        params = set(inspect.signature(fn).parameters.keys())
+
+        kwargs = {
+            "data_dict": data_dict,
+            "frame_id": frame_id,
+            "ego_index": 0,
+            "update_cache": True,
+            "return_records": True,
+        }
+        if "message_masks" in params:
+            kwargs["message_masks"] = message_masks
+        if "local_cav_confidences" in params:
+            kwargs["local_cav_confidences"] = local_cav_confidences
+        if "local_cav_confidence_maps" in params:
+            kwargs["local_cav_confidence_maps"] = local_cav_confidence_maps
+
+        out = fn(x, record_len, **kwargs)
+
+        if isinstance(out, tuple):
+            return out[0], out[1]
+        return out, None
+
 
     @staticmethod
     def _attach_arce_feature_delta(arce_info: Optional[Dict[str, Any]], x_after: torch.Tensor, x_before: torch.Tensor) -> Dict[str, Any]:
@@ -204,7 +208,7 @@ class Where2commArce(nn.Module):
             }
         return arce_info
 
-    def forward(self, x, psm_single, record_len, pairwise_t_matrix, backbone=None, data_dict=None, frame_id=None, local_cav_confidences=None):
+    def forward(self, x, psm_single, record_len, pairwise_t_matrix, backbone=None, data_dict=None, frame_id=None, local_cav_confidences=None, local_cav_confidence_maps=None):
         _, C, H, W = x.shape
         B = pairwise_t_matrix.shape[0]
         arce_info: Dict[str, Any] = {"enabled": self.arce_comm is not None, "records": []}
@@ -240,6 +244,7 @@ class Where2commArce(nn.Module):
                         data_dict,
                         frame_id,
                         local_cav_confidences=local_cav_confidences,
+                local_cav_confidence_maps=local_cav_confidence_maps,
                     )
                     arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
 
@@ -283,6 +288,7 @@ class Where2commArce(nn.Module):
                 data_dict,
                 frame_id,
                 local_cav_confidences=local_cav_confidences,
+                local_cav_confidence_maps=local_cav_confidence_maps,
             )
             arce_info = self._attach_arce_feature_delta(arce_info, x, x_before_arce)
             batch_node_features = self.regroup(x, record_len)

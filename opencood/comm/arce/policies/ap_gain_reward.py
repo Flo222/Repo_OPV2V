@@ -35,6 +35,7 @@ def c2mab_ap_gain_reward(
     delay_ms: float,
     budget_violation: bool,
     quant_mode: str = "fp32",
+    lambda_ap: float = 1.0,
     lambda_cost: float = 0.10,
     lambda_delay: float = 0.05,
     lambda_quant: float = 0.05,
@@ -44,7 +45,7 @@ def c2mab_ap_gain_reward(
 ) -> Tuple[float, Dict[str, float]]:
     """Compute AP-proxy-gain dominated link reward.
 
-    r = w * AP_gain
+    r = lambda_ap * w * AP_gain
         - lambda_cost * cost_norm
         - lambda_delay * delay_norm
         - lambda_quant * quant_loss
@@ -59,7 +60,7 @@ def c2mab_ap_gain_reward(
     violation = 1.0 if bool(budget_violation) else 0.0
 
     reward = (
-        w * ap_gain
+        float(lambda_ap) * w * ap_gain
         - float(lambda_cost) * cost_norm
         - float(lambda_delay) * delay_norm
         - float(lambda_quant) * q_loss
@@ -72,6 +73,7 @@ def c2mab_ap_gain_reward(
         "ap_proxy_gain": float(ap_gain),
         "contribution_weight": float(w),
         "weighted_ap_proxy_gain": float(w * ap_gain),
+        "scaled_weighted_ap_proxy_gain": float(float(lambda_ap) * w * ap_gain),
         "cost_bytes": float(cost_bytes),
         "budget_bytes": float(budget_bytes),
         "normalized_cost": float(cost_norm),
@@ -80,6 +82,7 @@ def c2mab_ap_gain_reward(
         "quant_mode": str(quant_mode).lower(),
         "quant_loss": float(q_loss),
         "budget_violation": float(violation),
+        "lambda_ap": float(lambda_ap),
         "lambda_cost": float(lambda_cost),
         "lambda_delay": float(lambda_delay),
         "lambda_quant": float(lambda_quant),

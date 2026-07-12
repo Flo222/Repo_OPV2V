@@ -1,0 +1,289 @@
+{
+  "raw_record_count": 30,
+  "record_count": 10,
+  "skipped_non_comm_record_count": 20,
+  "selected_count": 10,
+  "transmitted_count": 10,
+  "no_send_count": 0,
+  "total_tx_MB": 0.083968,
+  "total_rx_MB": 0.070656,
+  "total_tokens": 0,
+  "token_record_count": 0,
+  "avg_tokens_per_token_record": null,
+  "avg_tx_bytes_per_token": null,
+  "counter": {
+    "action_id": {
+      "send1_int4_rho0_cache0_none": 1,
+      "send1_int4_rho0_cache1_none": 1,
+      "send1_int4_rho0p10_cache0_raptor_sim": 1,
+      "send1_int4_rho0p10_cache1_raptor_sim": 1,
+      "send1_int4_rho0p25_cache0_raptor_sim": 1,
+      "send1_int4_rho0p25_cache1_raptor_sim": 1,
+      "send1_int8_rho0_cache0_none": 1,
+      "send1_int8_rho0_cache1_none": 1,
+      "send1_int4_rho0p60_cache0_raptor_sim": 1,
+      "send1_int4_rho0p60_cache1_raptor_sim": 1
+    },
+    "quant_mode": {
+      "int4": 8,
+      "int8": 2
+    },
+    "rho": {
+      "0": 4,
+      "0.1": 2,
+      "0.25": 2,
+      "0.6": 2
+    },
+    "cache": {
+      "0": 5,
+      "1": 5
+    },
+    "source_tensor_kind": {
+      "unknown": 10
+    }
+  },
+  "groups": {
+    "by_quant": {
+      "int4": {
+        "record_count": 8,
+        "token_record_count": 0,
+        "tx_bytes": 53248.0,
+        "rx_bytes": 44032.0,
+        "tokens": 0,
+        "tx_MB": 0.053248,
+        "rx_MB": 0.044032,
+        "avg_tx_bytes_per_record": 6656.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "int8": {
+        "record_count": 2,
+        "token_record_count": 0,
+        "tx_bytes": 30720.0,
+        "rx_bytes": 26624.0,
+        "tokens": 0,
+        "tx_MB": 0.03072,
+        "rx_MB": 0.026624,
+        "avg_tx_bytes_per_record": 15360.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      }
+    },
+    "by_rho": {
+      "0": {
+        "record_count": 4,
+        "token_record_count": 0,
+        "tx_bytes": 45056.0,
+        "rx_bytes": 38912.0,
+        "tokens": 0,
+        "tx_MB": 0.045056,
+        "rx_MB": 0.038912,
+        "avg_tx_bytes_per_record": 11264.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "0.1": {
+        "record_count": 2,
+        "token_record_count": 0,
+        "tx_bytes": 16384.0,
+        "rx_bytes": 13312.0,
+        "tokens": 0,
+        "tx_MB": 0.016384,
+        "rx_MB": 0.013312,
+        "avg_tx_bytes_per_record": 8192.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "0.25": {
+        "record_count": 2,
+        "token_record_count": 0,
+        "tx_bytes": 18432.0,
+        "rx_bytes": 15360.0,
+        "tokens": 0,
+        "tx_MB": 0.018432,
+        "rx_MB": 0.01536,
+        "avg_tx_bytes_per_record": 9216.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "0.6": {
+        "record_count": 2,
+        "token_record_count": 0,
+        "tx_bytes": 4096.0,
+        "rx_bytes": 3072.0,
+        "tokens": 0,
+        "tx_MB": 0.004096,
+        "rx_MB": 0.003072,
+        "avg_tx_bytes_per_record": 2048.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      }
+    },
+    "by_cache": {
+      "0": {
+        "record_count": 5,
+        "token_record_count": 0,
+        "tx_bytes": 41984.0,
+        "rx_bytes": 35840.0,
+        "tokens": 0,
+        "tx_MB": 0.041984,
+        "rx_MB": 0.03584,
+        "avg_tx_bytes_per_record": 8396.8,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "1": {
+        "record_count": 5,
+        "token_record_count": 0,
+        "tx_bytes": 41984.0,
+        "rx_bytes": 34816.0,
+        "tokens": 0,
+        "tx_MB": 0.041984,
+        "rx_MB": 0.034816,
+        "avg_tx_bytes_per_record": 8396.8,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      }
+    },
+    "by_action_id": {
+      "send1_int4_rho0_cache0_none": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 7168.0,
+        "rx_bytes": 6144.0,
+        "tokens": 0,
+        "tx_MB": 0.007168,
+        "rx_MB": 0.006144,
+        "avg_tx_bytes_per_record": 7168.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int4_rho0_cache1_none": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 7168.0,
+        "rx_bytes": 6144.0,
+        "tokens": 0,
+        "tx_MB": 0.007168,
+        "rx_MB": 0.006144,
+        "avg_tx_bytes_per_record": 7168.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int4_rho0p10_cache0_raptor_sim": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 8192.0,
+        "rx_bytes": 7168.0,
+        "tokens": 0,
+        "tx_MB": 0.008192,
+        "rx_MB": 0.007168,
+        "avg_tx_bytes_per_record": 8192.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int4_rho0p10_cache1_raptor_sim": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 8192.0,
+        "rx_bytes": 6144.0,
+        "tokens": 0,
+        "tx_MB": 0.008192,
+        "rx_MB": 0.006144,
+        "avg_tx_bytes_per_record": 8192.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int4_rho0p25_cache0_raptor_sim": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 9216.0,
+        "rx_bytes": 7168.0,
+        "tokens": 0,
+        "tx_MB": 0.009216,
+        "rx_MB": 0.007168,
+        "avg_tx_bytes_per_record": 9216.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int4_rho0p25_cache1_raptor_sim": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 9216.0,
+        "rx_bytes": 8192.0,
+        "tokens": 0,
+        "tx_MB": 0.009216,
+        "rx_MB": 0.008192,
+        "avg_tx_bytes_per_record": 9216.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int4_rho0p60_cache0_raptor_sim": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 2048.0,
+        "rx_bytes": 2048.0,
+        "tokens": 0,
+        "tx_MB": 0.002048,
+        "rx_MB": 0.002048,
+        "avg_tx_bytes_per_record": 2048.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int4_rho0p60_cache1_raptor_sim": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 2048.0,
+        "rx_bytes": 1024.0,
+        "tokens": 0,
+        "tx_MB": 0.002048,
+        "rx_MB": 0.001024,
+        "avg_tx_bytes_per_record": 2048.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int8_rho0_cache0_none": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 15360.0,
+        "rx_bytes": 13312.0,
+        "tokens": 0,
+        "tx_MB": 0.01536,
+        "rx_MB": 0.013312,
+        "avg_tx_bytes_per_record": 15360.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      },
+      "send1_int8_rho0_cache1_none": {
+        "record_count": 1,
+        "token_record_count": 0,
+        "tx_bytes": 15360.0,
+        "rx_bytes": 13312.0,
+        "tokens": 0,
+        "tx_MB": 0.01536,
+        "rx_MB": 0.013312,
+        "avg_tx_bytes_per_record": 15360.0,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      }
+    },
+    "by_source_tensor_kind": {
+      "unknown": {
+        "record_count": 10,
+        "token_record_count": 0,
+        "tx_bytes": 83968.0,
+        "rx_bytes": 70656.0,
+        "tokens": 0,
+        "tx_MB": 0.083968,
+        "rx_MB": 0.070656,
+        "avg_tx_bytes_per_record": 8396.8,
+        "avg_tokens_per_token_record": 0.0,
+        "avg_tx_bytes_per_token": null
+      }
+    }
+  },
+  "bad_legacy_action_ids": [],
+  "contains_send0_fp32": false,
+  "contains_send1_fp32": false,
+  "contains_rho0p5": false
+}

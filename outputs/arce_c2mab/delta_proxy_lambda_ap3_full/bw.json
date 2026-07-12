@@ -1,0 +1,18 @@
+{
+  "method": "ARCE-C2MAB",
+  "scenario": "Markov",
+  "frame_count": 2170,
+  "record_count": 3444,
+  "transmitted_link_count": 3321,
+  "no_send_count": 123,
+  "BW": 0.07432305253456221,
+  "bw_MB_per_frame": 0.07432305253456221,
+  "total_tx_MB": 161.281024,
+  "int4_count": 1261,
+  "packed_int4_count": 1261,
+  "all_int4_packed": true,
+  "bw_breakdown_json": "outputs/arce_c2mab/delta_proxy_lambda_ap3_full/bw_breakdown.json",
+  "avg_tokens_per_token_record": null,
+  "avg_tx_bytes_per_token": null,
+  "bad_legacy_action_ids": []
+}

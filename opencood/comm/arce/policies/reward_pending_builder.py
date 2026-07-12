@@ -204,7 +204,11 @@ def build_no_send_pending_reward_item(
         "debug_fec_recovery_ratio": 0.0,
         "complementarity_raw": 0.0,
         "complementarity_normalized": 0.0,
-        "contribution_weight": 0.0,
+        # no-send is an explicit action and should receive the same
+        # frame-level AP-proxy feedback scale as send actions. It has zero
+        # communication cost, but its perception impact must still update
+        # the policy instead of being forced to reward 0.
+        "contribution_weight": 1.0,
         "no_send_update": True,
         "channel_profile": feedback_profile,
     }

@@ -1,2 +1,0 @@
-method,scenario,frame_count,native_BW_MB_per_frame,native_total_MB,actual_BW_MB_per_frame,actual_total_MB,raw_record_count,record_count,skipped_non_comm_record_count,applied_link_count,no_send_count,where2comm_rate_avg,where2comm_rate_min,where2comm_rate_max,where2comm_rate_count,missing_arce_pre_budget_count,native_bw_rule
-V2X-VIT,Markov,20,8.650752,173.01504,0.062464,1.24928,40,20,20,20,0,,,,0,0,Dense native feature bytes before ARCE budget/loss.
