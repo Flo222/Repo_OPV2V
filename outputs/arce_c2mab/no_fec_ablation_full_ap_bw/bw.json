@@ -1,0 +1,20 @@
+{
+  "method": "ARCE-C2MAB",
+  "scenario": "Markov",
+  "frame_count": 2170,
+  "record_count": 3444,
+  "transmitted_link_count": 3382,
+  "no_send_count": 62,
+  "BW": 0.06327942488479263,
+  "bw_MB_per_frame": 0.06327942488479263,
+  "total_tx_MB": 137.316352,
+  "int4_count": 1260,
+  "packed_int4_count": 1260,
+  "all_int4_packed": true,
+  "bw_breakdown_json": "outputs/arce_c2mab/no_fec_ablation_full_ap_bw/bw_breakdown.json",
+  "reward_runtime_audit_json": "outputs/arce_c2mab/no_fec_ablation_full_ap_bw/reward_runtime_audit.json",
+  "reward_update_count": 2170,
+  "avg_tokens_per_token_record": 22746.720875221763,
+  "avg_tx_bytes_per_token": 1.7849656197805235,
+  "bad_legacy_action_ids": []
+}

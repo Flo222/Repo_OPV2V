@@ -1,0 +1,225 @@
+{
+  "raw_record_count": 259,
+  "record_count": 59,
+  "skipped_non_comm_record_count": 200,
+  "selected_count": 59,
+  "transmitted_count": 59,
+  "no_send_count": 0,
+  "total_tx_MB": 0.787456,
+  "total_rx_MB": 0.662528,
+  "total_tokens": 1337646,
+  "token_record_count": 59,
+  "avg_tokens_per_token_record": 22671.966101694914,
+  "avg_tx_bytes_per_token": 0.5886878890229552,
+  "counter": {
+    "action_id": {
+      "send1_int4_rho0_cache1_none": 14,
+      "send1_int4_rho0_cache0_none": 13,
+      "send1_fp16_rho0_cache1_none": 10,
+      "send1_int8_rho0_cache0_none": 8,
+      "send1_int8_rho0_cache1_none": 8,
+      "send1_fp16_rho0_cache0_none": 6
+    },
+    "quant_mode": {
+      "int4": 27,
+      "int8": 16,
+      "fp16": 16
+    },
+    "rho": {
+      "0": 59
+    },
+    "cache": {
+      "1": 32,
+      "0": 27
+    },
+    "source_tensor_kind": {
+      "q_tensor": 32,
+      "packed_int4": 27
+    }
+  },
+  "groups": {
+    "by_quant": {
+      "fp16": {
+        "record_count": 16,
+        "token_record_count": 16,
+        "tx_bytes": 319488.0,
+        "rx_bytes": 257024.0,
+        "tokens": 364665,
+        "tx_MB": 0.319488,
+        "rx_MB": 0.257024,
+        "avg_tx_bytes_per_record": 19968.0,
+        "avg_tokens_per_token_record": 22791.5625,
+        "avg_tx_bytes_per_token": 0.8761136933898236
+      },
+      "int4": {
+        "record_count": 27,
+        "token_record_count": 27,
+        "tx_bytes": 183296.0,
+        "rx_bytes": 158720.0,
+        "tokens": 615999,
+        "tx_MB": 0.183296,
+        "rx_MB": 0.15872,
+        "avg_tx_bytes_per_record": 6788.740740740741,
+        "avg_tokens_per_token_record": 22814.777777777777,
+        "avg_tx_bytes_per_token": 0.29755892460864386
+      },
+      "int8": {
+        "record_count": 16,
+        "token_record_count": 16,
+        "tx_bytes": 284672.0,
+        "rx_bytes": 246784.0,
+        "tokens": 356982,
+        "tx_MB": 0.284672,
+        "rx_MB": 0.246784,
+        "avg_tx_bytes_per_record": 17792.0,
+        "avg_tokens_per_token_record": 22311.375,
+        "avg_tx_bytes_per_token": 0.7974407673216016
+      }
+    },
+    "by_rho": {
+      "0": {
+        "record_count": 59,
+        "token_record_count": 59,
+        "tx_bytes": 787456.0,
+        "rx_bytes": 662528.0,
+        "tokens": 1337646,
+        "tx_MB": 0.787456,
+        "rx_MB": 0.662528,
+        "avg_tx_bytes_per_record": 13346.71186440678,
+        "avg_tokens_per_token_record": 22671.966101694914,
+        "avg_tx_bytes_per_token": 0.5886878890229552
+      }
+    },
+    "by_cache": {
+      "0": {
+        "record_count": 27,
+        "token_record_count": 27,
+        "tx_bytes": 337920.0,
+        "rx_bytes": 291840.0,
+        "tokens": 604825,
+        "tx_MB": 0.33792,
+        "rx_MB": 0.29184,
+        "avg_tx_bytes_per_record": 12515.555555555555,
+        "avg_tokens_per_token_record": 22400.925925925927,
+        "avg_tx_bytes_per_token": 0.5587070640267846
+      },
+      "1": {
+        "record_count": 32,
+        "token_record_count": 32,
+        "tx_bytes": 449536.0,
+        "rx_bytes": 370688.0,
+        "tokens": 732821,
+        "tx_MB": 0.449536,
+        "rx_MB": 0.370688,
+        "avg_tx_bytes_per_record": 14048.0,
+        "avg_tokens_per_token_record": 22900.65625,
+        "avg_tx_bytes_per_token": 0.6134322024068634
+      }
+    },
+    "by_action_id": {
+      "send1_fp16_rho0_cache0_none": {
+        "record_count": 6,
+        "token_record_count": 6,
+        "tx_bytes": 110592.0,
+        "rx_bytes": 89088.0,
+        "tokens": 134406,
+        "tx_MB": 0.110592,
+        "rx_MB": 0.089088,
+        "avg_tx_bytes_per_record": 18432.0,
+        "avg_tokens_per_token_record": 22401.0,
+        "avg_tx_bytes_per_token": 0.8228204098031338
+      },
+      "send1_fp16_rho0_cache1_none": {
+        "record_count": 10,
+        "token_record_count": 10,
+        "tx_bytes": 208896.0,
+        "rx_bytes": 167936.0,
+        "tokens": 230259,
+        "tx_MB": 0.208896,
+        "rx_MB": 0.167936,
+        "avg_tx_bytes_per_record": 20889.6,
+        "avg_tokens_per_token_record": 23025.9,
+        "avg_tx_bytes_per_token": 0.9072218675491511
+      },
+      "send1_int4_rho0_cache0_none": {
+        "record_count": 13,
+        "token_record_count": 13,
+        "tx_bytes": 84992.0,
+        "rx_bytes": 76800.0,
+        "tokens": 293485,
+        "tx_MB": 0.084992,
+        "rx_MB": 0.0768,
+        "avg_tx_bytes_per_record": 6537.846153846154,
+        "avg_tokens_per_token_record": 22575.76923076923,
+        "avg_tx_bytes_per_token": 0.2895957203945687
+      },
+      "send1_int4_rho0_cache1_none": {
+        "record_count": 14,
+        "token_record_count": 14,
+        "tx_bytes": 98304.0,
+        "rx_bytes": 81920.0,
+        "tokens": 322514,
+        "tx_MB": 0.098304,
+        "rx_MB": 0.08192,
+        "avg_tx_bytes_per_record": 7021.714285714285,
+        "avg_tokens_per_token_record": 23036.714285714286,
+        "avg_tx_bytes_per_token": 0.3048053727900184
+      },
+      "send1_int8_rho0_cache0_none": {
+        "record_count": 8,
+        "token_record_count": 8,
+        "tx_bytes": 142336.0,
+        "rx_bytes": 125952.0,
+        "tokens": 176934,
+        "tx_MB": 0.142336,
+        "rx_MB": 0.125952,
+        "avg_tx_bytes_per_record": 17792.0,
+        "avg_tokens_per_token_record": 22116.75,
+        "avg_tx_bytes_per_token": 0.8044581595397153
+      },
+      "send1_int8_rho0_cache1_none": {
+        "record_count": 8,
+        "token_record_count": 8,
+        "tx_bytes": 142336.0,
+        "rx_bytes": 120832.0,
+        "tokens": 180048,
+        "tx_MB": 0.142336,
+        "rx_MB": 0.120832,
+        "avg_tx_bytes_per_record": 17792.0,
+        "avg_tokens_per_token_record": 22506.0,
+        "avg_tx_bytes_per_token": 0.7905447436239225
+      }
+    },
+    "by_source_tensor_kind": {
+      "packed_int4": {
+        "record_count": 27,
+        "token_record_count": 27,
+        "tx_bytes": 183296.0,
+        "rx_bytes": 158720.0,
+        "tokens": 615999,
+        "tx_MB": 0.183296,
+        "rx_MB": 0.15872,
+        "avg_tx_bytes_per_record": 6788.740740740741,
+        "avg_tokens_per_token_record": 22814.777777777777,
+        "avg_tx_bytes_per_token": 0.29755892460864386
+      },
+      "q_tensor": {
+        "record_count": 32,
+        "token_record_count": 32,
+        "tx_bytes": 604160.0,
+        "rx_bytes": 503808.0,
+        "tokens": 721647,
+        "tx_MB": 0.60416,
+        "rx_MB": 0.503808,
+        "avg_tx_bytes_per_record": 18880.0,
+        "avg_tokens_per_token_record": 22551.46875,
+        "avg_tx_bytes_per_token": 0.8371960252034581
+      }
+    }
+  },
+  "bad_legacy_action_ids": [],
+  "contains_send0_fp32": false,
+  "contains_send1_fp32": false,
+  "contains_rho0p5": false,
+  "byte_accounting_audit_json": "outputs/arce_c2mab/reward_R2_ap_delta_cost_bw100/byte_accounting_audit.json"
+}

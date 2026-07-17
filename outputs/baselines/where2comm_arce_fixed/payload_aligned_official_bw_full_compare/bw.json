@@ -1,0 +1,20 @@
+{
+  "method": "Where2Comm-ARCE-Fixed",
+  "scenario": "Markov",
+  "frame_count": 2170,
+  "record_count": 3444,
+  "transmitted_link_count": 3444,
+  "no_send_count": 0,
+  "BW": 0.05852891428571429,
+  "bw_MB_per_frame": 0.05852891428571429,
+  "total_tx_MB": 127.007744,
+  "int4_count": 0,
+  "packed_int4_count": 0,
+  "all_int4_packed": null,
+  "bw_breakdown_json": "outputs/baselines/where2comm_arce_fixed/payload_aligned_official_bw_full_compare/bw_breakdown.json",
+  "reward_runtime_audit_json": "outputs/baselines/where2comm_arce_fixed/payload_aligned_official_bw_full_compare/reward_runtime_audit.json",
+  "reward_update_count": 0,
+  "avg_tokens_per_token_record": 22717.790650406503,
+  "avg_tx_bytes_per_token": 1.623308138357901,
+  "bad_legacy_action_ids": []
+}

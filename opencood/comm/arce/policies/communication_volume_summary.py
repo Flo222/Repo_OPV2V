@@ -47,22 +47,29 @@ def _is_comm_record(r: Dict[str, Any]) -> bool:
 
 
 def _extract_tx_bytes(r: Dict[str, Any]) -> float:
-    bc = r.get("budget_consistency", {}) or {}
     size = r.get("size", {}) or {}
+    bc = r.get("budget_consistency", {}) or {}
     pkt = r.get("packetization", {}) or r.get("byte_stream_packetization", {}) or {}
 
+    # Keep the same canonical priority as arce_bw_breakdown_utils.extract_tx_bytes.
     return _as_float(
-        bc.get(
-            "actual_tx_bytes",
-            bc.get(
-                "executor_actual_tx_bytes",
+        size.get(
+            "actual_transmitted_bytes",
+            size.get(
+                "transmitted_bytes",
                 size.get(
-                    "actual_transmitted_bytes",
+                    "tx_bytes",
                     r.get(
-                        "actual_tx_bytes",
+                        "actual_transmitted_bytes",
                         r.get(
                             "tx_bytes",
-                            pkt.get("actual_tx_bytes", pkt.get("transmitted_num_bytes", 0.0)),
+                            bc.get(
+                                "actual_tx_bytes",
+                                bc.get(
+                                    "executor_actual_tx_bytes",
+                                    pkt.get("actual_tx_bytes", pkt.get("transmitted_num_bytes", 0.0)),
+                                ),
+                            ),
                         ),
                     ),
                 ),
@@ -90,7 +97,15 @@ def _extract_quant_mode(r: Dict[str, Any]) -> str:
 
 def _extract_source_tensor_kind(r: Dict[str, Any]) -> str:
     pkt = r.get("packetization", {}) or r.get("byte_stream_packetization", {}) or {}
-    return str(pkt.get("source_tensor_kind", r.get("source_tensor_kind", "unknown"))).strip().lower()
+    return str(
+        pkt.get(
+            "source_tensor_kind",
+            pkt.get(
+                "quantized_tensor_kind",
+                r.get("source_tensor_kind", "unknown"),
+            ),
+        )
+    ).strip().lower()
 
 
 def summarize_bw_records(

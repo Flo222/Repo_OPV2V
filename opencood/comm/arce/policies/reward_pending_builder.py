@@ -137,6 +137,23 @@ def build_selected_pending_reward_item(
         "redundancy_ratio": float(redundancy_ratio),
         "cache_enabled": int(cache_enabled),
         "cache_quality": float(cache_quality),
+        "cav_confidence": float(
+            selected.record.get(
+                "cav_confidence",
+                selected.record.get("cav_confidence_value", 0.0),
+            )
+            or 0.0
+        ),
+        "cav_confidence_source": str(
+            selected.record.get("cav_confidence_source", "unknown")
+        ),
+        "complementarity": float(
+            selected.record.get(
+                "complementarity",
+                selected.record.get("complementarity_normalized", 0.0),
+            )
+            or 0.0
+        ),
         "debug_fec_recovery_ratio": float(debug_fec_recovery_ratio),
         "complementarity_raw": float(
             selected.record.get(
@@ -204,11 +221,10 @@ def build_no_send_pending_reward_item(
         "debug_fec_recovery_ratio": 0.0,
         "complementarity_raw": 0.0,
         "complementarity_normalized": 0.0,
-        # no-send is an explicit action and should receive the same
-        # frame-level AP-proxy feedback scale as send actions. It has zero
-        # communication cost, but its perception impact must still update
-        # the policy instead of being forced to reward 0.
-        "contribution_weight": 1.0,
+        # no-send is an explicit action, but it must not inherit positive
+        # AP-proxy gain produced by other senders in the same frame.
+        # It still updates the policy with zero communication cost.
+        "contribution_weight": 0.0,
         "no_send_update": True,
         "channel_profile": feedback_profile,
     }

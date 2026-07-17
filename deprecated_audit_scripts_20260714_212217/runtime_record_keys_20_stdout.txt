@@ -1,0 +1,10 @@
+constructing a partially connected communication graph
+resuming by loading epoch 20
+{
+  "saved": "audit_runs/reward_record_audit/runtime_record_keys_20.json",
+  "type_counter": {
+    "comm_or_proposal": 20,
+    "other": 20,
+    "reward_update": 20
+  }
+}

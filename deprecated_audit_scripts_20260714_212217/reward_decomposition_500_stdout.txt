@@ -1,0 +1,56 @@
+constructing a partially connected communication graph
+resuming by loading epoch 20
+frames: 50 reward_links: 50
+frames: 100 reward_links: 59
+frames: 150 reward_links: 59
+frames: 200 reward_links: 103
+frames: 250 reward_links: 203
+frames: 300 reward_links: 303
+frames: 350 reward_links: 403
+frames: 400 reward_links: 492
+frames: 450 reward_links: 623
+frames: 500 reward_links: 823
+{
+  "saved": "audit_runs/reward_record_audit/reward_decomposition_500.json",
+  "num_reward_updates": 500,
+  "num_link_rewards": 823,
+  "overall_reward": {
+    "n": 823,
+    "min": -0.2534974625225601,
+    "p10": -0.12460444518140745,
+    "p50": -0.04610524665565083,
+    "p90": 0.13607526262760783,
+    "max": 0.5715596441463253,
+    "mean": -0.0235156503027786,
+    "std": 0.11086826719539862,
+    "pos": 244,
+    "neg": 579,
+    "zero": 0
+  },
+  "overall_ap_term": {
+    "n": 823,
+    "min": -0.2534974625225601,
+    "p10": -0.08558642992285581,
+    "p50": -0.0014596951576501488,
+    "p90": 0.18165925179051853,
+    "max": 0.6097516441463252,
+    "mean": 0.01879505825219198,
+    "std": 0.11518945449044904,
+    "pos": 352,
+    "neg": 471,
+    "zero": 0
+  },
+  "overall_penalty_sum": {
+    "n": 823,
+    "min": 0.0,
+    "p10": 0.0302188,
+    "p50": 0.038495600000000005,
+    "p90": 0.06706720000000001,
+    "max": 0.09164320000000001,
+    "mean": 0.04231070855497053,
+    "std": 0.01918760647708261,
+    "pos": 749,
+    "neg": 0,
+    "zero": 74
+  }
+}

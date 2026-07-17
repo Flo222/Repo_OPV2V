@@ -49,6 +49,109 @@ def _get_last_corruption_info(policy: Any, action_id: str) -> Dict[str, Any]:
     return {}
 
 
+def _stats(values: List[Any]) -> Dict[str, Any]:
+    vals = []
+    for v in values:
+        try:
+            vals.append(float(v))
+        except Exception:
+            pass
+
+    if not vals:
+        return {"n": 0}
+
+    vals = sorted(vals)
+
+    def pct(q: float) -> float:
+        if len(vals) == 1:
+            return float(vals[0])
+        idx = int(round(float(q) * float(len(vals) - 1)))
+        idx = max(0, min(len(vals) - 1, idx))
+        return float(vals[idx])
+
+    mean = float(sum(vals) / max(len(vals), 1))
+    return {
+        "n": int(len(vals)),
+        "min": float(vals[0]),
+        "p10": pct(0.10),
+        "p50": pct(0.50),
+        "p90": pct(0.90),
+        "max": float(vals[-1]),
+        "mean": float(mean),
+        "pos": int(sum(1 for x in vals if x > 0.0)),
+        "neg": int(sum(1 for x in vals if x < 0.0)),
+        "zero": int(sum(1 for x in vals if x == 0.0)),
+    }
+
+
+def _summarize_group(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    fields = [
+        "reward",
+        "total_reward",
+        "ego_quality",
+        "collab_quality",
+        "raw_delta_quality",
+        "delta_term",
+        "abs_ap_term",
+        "perception_term",
+        "ap_term",
+        "cost_bytes",
+        "budget_bytes",
+        "cost_norm",
+        "cost_penalty",
+        "delay_penalty",
+        "quant_penalty",
+        "violation_penalty",
+        "normalized_cost",
+        "delay_norm",
+        "credit_weight",
+        "raw_credit_weight",
+    ]
+    return {
+        "count": int(len(rows)),
+        **{field: _stats([r.get(field) for r in rows]) for field in fields},
+    }
+
+
+def _summarize_by_key(rows: List[Dict[str, Any]], key: str) -> Dict[str, Any]:
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        name = str(row.get(key, "unknown"))
+        groups.setdefault(name, []).append(row)
+
+    out = {}
+    for name, group_rows in groups.items():
+        out[name] = {
+            "count": int(len(group_rows)),
+            "reward": _stats([r.get("reward") for r in group_rows]),
+            "ap_term": _stats([r.get("ap_term") for r in group_rows]),
+            "cost_penalty": _stats([r.get("cost_penalty") for r in group_rows]),
+            "delay_penalty": _stats([r.get("delay_penalty") for r in group_rows]),
+            "quant_penalty": _stats([r.get("quant_penalty") for r in group_rows]),
+        }
+    return out
+
+
+def _summarize_reward_terms(reward_infos: List[Dict[str, Any]]) -> Dict[str, Any]:
+    send_rows = [
+        r for r in reward_infos
+        if not bool(r.get("no_send_update", False))
+    ]
+    no_send_rows = [
+        r for r in reward_infos
+        if bool(r.get("no_send_update", False))
+    ]
+
+    return {
+        "all": _summarize_group(reward_infos),
+        "send": _summarize_group(send_rows),
+        "no_send": _summarize_group(no_send_rows),
+        "by_action_id": _summarize_by_key(reward_infos, "action_id"),
+        "by_quant_mode": _summarize_by_key(reward_infos, "quant_mode"),
+        "by_channel_state": _summarize_by_key(reward_infos, "channel_state"),
+    }
+
+
 def update_pending_rewards(
     pending: List[Dict[str, Any]],
     ego_confidence: float,
@@ -56,11 +159,14 @@ def update_pending_rewards(
     budget_bytes: Optional[float],
     get_policy_fn: Callable[[Any, Any], Any],
     reward_lambda_ap: float = 1.0,
+    reward_mode: str = "simple_delta",
+    reward_lambda_delta: Optional[float] = None,
+    reward_lambda_abs: float = 0.0,
     reward_lambda_cost: float = 0.10,
     reward_lambda_delay: float = 0.05,
-    reward_lambda_quant: float = 0.05,
-    reward_lambda_violate: float = 1.0,
-    reward_stale_max_ms: float = 400.0,
+    reward_lambda_quant: float = 0.0,
+    reward_lambda_violate: float = 0.0,
+    reward_stale_max_ms: float = 100.0,
     quant_quality_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Update policies from pending communication records.
@@ -87,17 +193,45 @@ def update_pending_rewards(
     ego_confidence = float(ego_confidence)
     collab_confidence = float(collab_confidence)
     delta_conf = float(collab_confidence) - float(ego_confidence)
+    lambda_delta_value = (
+        float(reward_lambda_delta)
+        if reward_lambda_delta is not None
+        else float(reward_lambda_ap)
+    )
 
-    raw_ws = [max(_safe_float(x.get("contribution_weight", 0.0)), 0.0) for x in pending]
+    # Credit assignment: only actual send actions share frame-level perception gain.
+    # No-send remains an explicit arm update, but it must not inherit another
+    # sender's positive AP-proxy gain.
+    send_indices = [
+        i for i, x in enumerate(pending)
+        if not bool(x.get("no_send_update", False))
+    ]
+
+    raw_ws = [0.0 for _ in pending]
+    for i in send_indices:
+        item = pending[i]
+        cav_conf = max(_safe_float(item.get("cav_confidence", 0.0)), 0.0)
+        comp = max(
+            _safe_float(
+                item.get(
+                    "complementarity",
+                    item.get("complementarity_normalized", 0.0),
+                )
+            ),
+            0.0,
+        )
+
+        score = cav_conf * comp
+        if score <= 1e-12:
+            score = max(_safe_float(item.get("contribution_weight", 0.0)), 0.0)
+        raw_ws[i] = float(score)
+
     sw = sum(raw_ws)
-
-    if pending and sw <= 1e-12:
-        if all(bool(x.get("no_send_update", False)) for x in pending):
-            raw_ws = [0.0 for _ in pending]
-            sw = 1.0
-        else:
-            raw_ws = [1.0 for _ in pending]
-            sw = float(len(pending))
+    if sw <= 1e-12 and send_indices:
+        uniform = 1.0 / float(len(send_indices))
+        for i in send_indices:
+            raw_ws[i] = uniform
+        sw = 1.0
 
     reward_infos: List[Dict[str, Any]] = []
 
@@ -106,6 +240,8 @@ def update_pending_rewards(
 
         reward, info = c2mab_ap_gain_reward(
             ap_proxy_gain=delta_conf,
+            collab_quality=collab_confidence,
+            ego_quality=ego_confidence,
             contribution_weight=contribution_weight,
             cost_bytes=_safe_float(item.get("cost_bytes", 0.0)),
             budget_bytes=_safe_float(
@@ -116,6 +252,9 @@ def update_pending_rewards(
             budget_violation=bool(item.get("budget_violation", False)),
             quant_mode=str(item.get("quant_mode", "fp32")),
             lambda_ap=float(reward_lambda_ap),
+            lambda_delta=float(lambda_delta_value),
+            lambda_abs=float(reward_lambda_abs),
+            reward_mode=str(reward_mode),
             lambda_cost=float(reward_lambda_cost),
             lambda_delay=float(reward_lambda_delay),
             lambda_quant=float(reward_lambda_quant),
@@ -175,17 +314,37 @@ def update_pending_rewards(
         info["complementarity_normalized"] = _safe_float(
             item.get("complementarity_normalized", 0.0)
         )
+        info["complementarity"] = _safe_float(item.get("complementarity", 0.0))
+        info["cav_confidence"] = _safe_float(item.get("cav_confidence", 0.0))
+        info["cav_confidence_source"] = str(
+            item.get("cav_confidence_source", "unknown")
+        )
+        info["no_send_update"] = bool(item.get("no_send_update", False))
+        info["raw_credit_weight"] = float(raw_w)
 
         reward_infos.append(info)
+
+    send_count = int(
+        sum(1 for x in reward_infos if not bool(x.get("no_send_update", False)))
+    )
+    no_send_count = int(
+        sum(1 for x in reward_infos if bool(x.get("no_send_update", False)))
+    )
 
     summary = {
         "collab_confidence": float(collab_confidence),
         "ego_confidence": float(ego_confidence),
         "delta_confidence": float(delta_conf),
+        "reward_mode": str(reward_mode),
+        "reward_lambda_delta": float(lambda_delta_value),
+        "reward_lambda_abs": float(reward_lambda_abs),
         "num_updated": len(pending),
+        "num_send_updated": int(send_count),
+        "num_no_send_updated": int(no_send_count),
         "mean_reward": float(
             sum(x["reward"] for x in reward_infos) / max(len(reward_infos), 1)
         ),
+        "reward_term_summary": _summarize_reward_terms(reward_infos),
         "link_rewards": reward_infos,
     }
     return summary

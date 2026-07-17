@@ -732,6 +732,48 @@ class ARCEFixedComm:
             return 0.0
         return float(self._system_budget_bytes() / float(num_collaborators))
 
+
+    def _record_budget_scope(self) -> str:
+        """Return the frame-budget source used for audit records."""
+        raw_cfg = getattr(self, "arce_cfg_raw", {}) or {}
+        scheduler_cfg = raw_cfg.get("scheduler", {}) or {}
+        budget_source = str(
+            scheduler_cfg.get(
+                "budget_source",
+                raw_cfg.get("budget_source", getattr(self, "budget_source", "system_budget")),
+            )
+        ).lower()
+        budget_scope = str(
+            scheduler_cfg.get(
+                "budget_scope",
+                raw_cfg.get("budget_scope", getattr(self, "budget_scope", "system_equal_split")),
+            )
+        ).lower()
+
+        if (
+            budget_source in ("channel_profiles", "channel_profile", "markov_channel")
+            or budget_scope in ("global_sum_link", "channel_profiles", "channel_profile")
+        ):
+            return "channel_profile_frame_budget"
+        return str(getattr(self, "budget_scope", "system_equal_split"))
+
+    def _record_frame_budget_bytes(self, channel_state=None) -> float:
+        """Return the frame-level budget used before fixed equal-split allocation."""
+        profile = None
+        if channel_state is not None and hasattr(self, "_profile_for_state"):
+            try:
+                profile = self._profile_for_state(channel_state)
+            except Exception:
+                profile = None
+        return float(
+            self._frame_budget_bytes_from_channel_profile(
+                profile,
+                budget_bytes=None,
+                channel_state=channel_state,
+            )
+        )
+
+
     def _frame_budget_bytes_from_channel_profile(
         self,
         channel_profile: Dict[str, Any],
@@ -826,6 +868,62 @@ class ARCEFixedComm:
         )
 
         return float(bandwidth_mbps * 1e6 / 8.0 * (tx_window_ms / 1000.0))
+
+    def _link_budget_bytes_for_state(
+        self,
+        channel_state: Optional[str],
+        num_collaborators: int,
+    ) -> float:
+        """Resolve the fixed-baseline per-link budget with the same channel config.
+
+        Fixed baseline sends every non-ego collaborator. Under global_sum_link /
+        channel_profiles, the frame-level channel budget is shared equally across
+        all fixed-send collaborators. This keeps the total frame budget comparable
+        with ARCE-C2MAB while preserving the fixed action policy.
+        """
+        if int(num_collaborators) <= 0:
+            return 0.0
+
+        raw_cfg = getattr(self, "arce_cfg_raw", {}) or {}
+        scheduler_cfg = raw_cfg.get("scheduler", {}) or {}
+        if not isinstance(scheduler_cfg, dict):
+            scheduler_cfg = {}
+
+        budget_source = str(
+            scheduler_cfg.get(
+                "budget_source",
+                raw_cfg.get("budget_source", getattr(self, "budget_source", "system_budget")),
+            )
+        ).strip().lower()
+
+        budget_scope = str(
+            scheduler_cfg.get(
+                "budget_scope",
+                raw_cfg.get("budget_scope", getattr(self, "budget_scope", "system_equal_split")),
+            )
+        ).strip().lower()
+
+        use_channel_profiles = (
+            budget_source in ("channel_profiles", "channel_profile", "profiles")
+            or budget_scope in ("global_sum_link", "channel_profiles", "channel_profile")
+        )
+
+        if use_channel_profiles:
+            state = self._normalize_state_name(channel_state)
+            profile = self._profile_for_state(state)
+            frame_budget = self._frame_budget_bytes_from_channel_profile(
+                channel_profile=profile,
+                budget_bytes=None,
+                channel_state=state,
+            )
+        else:
+            frame_budget = self._system_budget_bytes()
+
+        # Fixed baseline sends all collaborators, so split the frame budget across
+        # all non-ego links. ARCE-C2MAB can concentrate this same frame budget on
+        # a selected super-arm through its oracle.
+        return float(frame_budget / float(max(1, int(num_collaborators))))
+
     def _select_encoded_packets_by_budget(
         self,
         encoded_packets: torch.Tensor,
@@ -1899,7 +1997,7 @@ class ARCEFixedComm:
                     cav_message_mask = message_masks[global_idx]
 
                 budget_for_link = (
-                    per_link_budget_bytes
+                    self._link_budget_bytes_for_state(channel_state, num_collaborators)
                     if int(cav_idx) != int(ego_index)
                     else 0.0
                 )
@@ -1919,12 +2017,14 @@ class ARCEFixedComm:
 
                 record["external_channel_state_source"] = external_state_source
                 record["system_budget"] = {
-                    "budget_scope": "system_equal_split",
+                    "budget_scope": self._record_budget_scope(),
+                    "allocation_scope": "fixed_equal_split",
                     "system_budget_mbps": float(self.system_budget_mbps),
                     "tx_window_ms": float(self.tx_window_ms),
-                    "system_budget_bytes": float(self._system_budget_bytes()),
+                    "system_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
+                    "frame_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
                     "num_collaborators": int(num_collaborators),
-                    "per_link_budget_bytes": float(per_link_budget_bytes),
+                    "per_link_budget_bytes": float(budget_for_link),
                 }
 
                 recovered[global_idx] = feature_hat
@@ -1983,8 +2083,9 @@ class ARCEFixedComm:
                     int(agent_idx),
                 )
 
+                channel_state = None
                 budget_for_link = (
-                    per_link_budget_bytes
+                    self._link_budget_bytes_for_state(channel_state, len(collaborator_indices))
                     if int(agent_idx) != int(ego_index)
                     else 0.0
                 )
@@ -2001,12 +2102,14 @@ class ARCEFixedComm:
                 )
 
                 record["system_budget"] = {
-                    "budget_scope": "system_equal_split",
+                    "budget_scope": self._record_budget_scope(),
+                    "allocation_scope": "fixed_equal_split",
                     "system_budget_mbps": float(self.system_budget_mbps),
                     "tx_window_ms": float(self.tx_window_ms),
-                    "system_budget_bytes": float(self._system_budget_bytes()),
+                    "system_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
+                    "frame_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
                     "num_collaborators": int(len(collaborator_indices)),
-                    "per_link_budget_bytes": float(per_link_budget_bytes),
+                    "per_link_budget_bytes": float(budget_for_link),
                 }
 
                 recovered[agent_idx] = feature_hat
@@ -2038,8 +2141,9 @@ class ARCEFixedComm:
                         int(agent_idx),
                     )
 
+                    channel_state = None
                     budget_for_link = (
-                        per_link_budget_bytes
+                        self._link_budget_bytes_for_state(channel_state, len(collaborator_indices))
                         if int(agent_idx) != int(ego_index)
                         else 0.0
                     )
@@ -2056,12 +2160,14 @@ class ARCEFixedComm:
                     )
 
                     record["system_budget"] = {
-                        "budget_scope": "system_equal_split",
+                        "budget_scope": self._record_budget_scope(),
+                        "allocation_scope": "fixed_equal_split",
                         "system_budget_mbps": float(self.system_budget_mbps),
                         "tx_window_ms": float(self.tx_window_ms),
-                        "system_budget_bytes": float(self._system_budget_bytes()),
+                        "system_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
+                    "frame_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
                         "num_collaborators": int(len(collaborator_indices)),
-                        "per_link_budget_bytes": float(per_link_budget_bytes),
+                        "per_link_budget_bytes": float(budget_for_link),
                     }
 
                     recovered[b, agent_idx] = feature_hat
@@ -2155,10 +2261,12 @@ class ARCEFixedComm:
                 float(total_lost / total_encoded) if total_encoded > 0 else 0.0
             ),
             "system_budget": {
-                "budget_scope": "system_equal_split",
+                "budget_scope": self._record_budget_scope(),
+                "allocation_scope": "fixed_equal_split",
                 "system_budget_mbps": float(self.system_budget_mbps),
                 "tx_window_ms": float(self.tx_window_ms),
-                "system_budget_bytes": float(self._system_budget_bytes()),
+                "system_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
+                    "frame_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
             },
             "bernoulli_loss_rates": copy.deepcopy(self.bernoulli_loss_rates),
             "fixed_delay_ms": copy.deepcopy(self.fixed_delay_ms),
@@ -2191,7 +2299,8 @@ class ARCEFixedComm:
                 "budget_scope": self.budget_scope,
                 "system_budget_mbps": float(self.system_budget_mbps),
                 "tx_window_ms": float(self.tx_window_ms),
-                "system_budget_bytes": float(self._system_budget_bytes()),
+                "system_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
+                    "frame_budget_bytes": float(self._record_frame_budget_bytes(channel_state if "channel_state" in locals() else None)),
             },
         }
 

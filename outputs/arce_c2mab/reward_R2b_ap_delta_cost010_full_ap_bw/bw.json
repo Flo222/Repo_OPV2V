@@ -1,0 +1,20 @@
+{
+  "method": "ARCE-C2MAB",
+  "scenario": "Markov",
+  "frame_count": 2170,
+  "record_count": 3444,
+  "transmitted_link_count": 3389,
+  "no_send_count": 55,
+  "BW": 0.0617821198156682,
+  "bw_MB_per_frame": 0.0617821198156682,
+  "total_tx_MB": 134.0672,
+  "int4_count": 1359,
+  "packed_int4_count": 1359,
+  "all_int4_packed": true,
+  "bw_breakdown_json": "outputs/arce_c2mab/reward_R2b_ap_delta_cost010_full_ap_bw/bw_breakdown.json",
+  "reward_runtime_audit_json": "outputs/arce_c2mab/reward_R2b_ap_delta_cost010_full_ap_bw/reward_runtime_audit.json",
+  "reward_update_count": 2170,
+  "avg_tokens_per_token_record": 22744.37208616111,
+  "avg_tx_bytes_per_token": 1.7393100997283664,
+  "bad_legacy_action_ids": []
+}

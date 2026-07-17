@@ -90,10 +90,6 @@ from opencood.comm.arce.c2mab_common import (
     normalize_state_name as _normalize_state_name,
 )
 
-from opencood.comm.arce.c2mab_complementarity import (
-    mask_to_bool_2d,
-    confidence_advantage_complementarity,
-)
 from opencood.comm.arce.policies.quant_quality import merge_quant_quality_prior
 
 
@@ -306,25 +302,21 @@ class ARCEC2MABComm:
         )
 
 
-        reward_cfg = self.arce_cfg.get("reward", {})
+        reward_cfg = self.arce_cfg.get("reward", {}) or {}
+        self._validate_reward_config_schema(reward_cfg)
+        self.reward_mode = str(reward_cfg.get("mode", reward_cfg.get("type", "simple_delta")))
+        self.reward_lambda_delta = float(
+            reward_cfg.get("lambda_delta", reward_cfg.get("lambda_ap", 1.0))
+        )
+        self.reward_lambda_abs = float(reward_cfg.get("lambda_abs", 0.0))
+        self.reward_lambda_ap = float(reward_cfg.get("lambda_ap", self.reward_lambda_delta))
+        self.reward_lambda_cost = float(reward_cfg.get("lambda_cost", 0.10))
+        self.reward_lambda_delay = float(reward_cfg.get("lambda_delay", 0.05))
+        self.reward_lambda_quant = float(reward_cfg.get("lambda_quant", 0.0))
+        self.reward_lambda_violate = float(reward_cfg.get("lambda_violate", 0.0))
         self.reward_tau_stale_ms = float(reward_cfg.get("tau_stale_ms", 300.0))
-        self.reward_stale_max_ms = float(reward_cfg.get("stale_max_ms", 400.0))
-
-        self.reward_lambda_ap = float(
-            reward_cfg.get("lambda_ap", reward_cfg.get("reward_lambda_ap", 1.0))
-        )
-        self.reward_lambda_cost = float(
-            reward_cfg.get("lambda_cost", reward_cfg.get("reward_lambda_cost", 0.10))
-        )
-        self.reward_lambda_delay = float(
-            reward_cfg.get("lambda_delay", reward_cfg.get("reward_lambda_delay", 0.05))
-        )
-        self.reward_lambda_quant = float(
-            reward_cfg.get("lambda_quant", reward_cfg.get("reward_lambda_quant", 0.05))
-        )
-        self.reward_lambda_violate = float(
-            reward_cfg.get("lambda_violate", reward_cfg.get("reward_lambda_violate", 1.0))
-        )
+        self.reward_stale_max_ms = float(reward_cfg.get("stale_max_ms", 100.0))
+        self._print_effective_reward_config()
 
         self.policy_bank = C2MABPolicyBank(
             action_ids=self.action_ids,
@@ -521,6 +513,39 @@ class ARCEC2MABComm:
             _safe_get_nested,
         )
 
+    def _validate_reward_config_schema(self, reward_cfg):
+        """Fail fast when obsolete reward keys are present."""
+        obsolete = [
+            "alpha_q",
+            "alpha_cost",
+            "alpha_delay",
+            "alpha_violation",
+            "stale_norm_ms",
+        ]
+        present = [k for k in obsolete if k in reward_cfg]
+        if present:
+            raise ValueError(
+                "Obsolete ARCE reward config keys are no longer accepted: "
+                + ", ".join(present)
+                + ". Use lambda_ap/lambda_cost/lambda_delay/"
+                  "lambda_quant/lambda_violate/stale_max_ms instead."
+            )
+
+    def _print_effective_reward_config(self):
+        if getattr(self, "_effective_reward_config_printed", False):
+            return
+        self._effective_reward_config_printed = True
+        print("===== Effective ARCE reward config =====")
+        print("reward_mode    =", str(getattr(self, "reward_mode", "simple_delta")))
+        print("lambda_delta   =", float(getattr(self, "reward_lambda_delta", getattr(self, "reward_lambda_ap", 1.0))))
+        print("lambda_abs     =", float(getattr(self, "reward_lambda_abs", 0.0)))
+        print("lambda_ap      =", float(getattr(self, "reward_lambda_ap", 1.0)))
+        print("lambda_cost    =", float(getattr(self, "reward_lambda_cost", 0.10)))
+        print("lambda_delay   =", float(getattr(self, "reward_lambda_delay", 0.05)))
+        print("lambda_quant   =", float(getattr(self, "reward_lambda_quant", 0.0)))
+        print("lambda_violate =", float(getattr(self, "reward_lambda_violate", 0.0)))
+        print("stale_max_ms   =", float(getattr(self, "reward_stale_max_ms", 100.0)))
+
     def _make_no_send_record(
         self,
         feature: torch.Tensor,
@@ -540,21 +565,8 @@ class ARCEC2MABComm:
         )
 
 
-    def _mask_to_bool_2d(self, mask):
-        return mask_to_bool_2d(mask)
 
 
-    def _confidence_advantage_complementarity(
-        self,
-        sender_score,
-        ego_score,
-        threshold: float = 0.05,
-    ):
-        return confidence_advantage_complementarity(
-            sender_score,
-            ego_score,
-            threshold=threshold,
-        )
 
 
     def _prepare_communication_round(
@@ -993,10 +1005,13 @@ class ARCEC2MABComm:
             budget_bytes=budget_bytes,
             get_policy_fn=self.get_policy,
             reward_lambda_ap=float(getattr(self, "reward_lambda_ap", 1.0)),
+            reward_mode=str(getattr(self, "reward_mode", "simple_delta")),
+            reward_lambda_delta=float(getattr(self, "reward_lambda_delta", getattr(self, "reward_lambda_ap", 1.0))),
+            reward_lambda_abs=float(getattr(self, "reward_lambda_abs", 0.0)),
             reward_lambda_cost=float(getattr(self, "reward_lambda_cost", 0.10)),
             reward_lambda_delay=float(getattr(self, "reward_lambda_delay", 0.05)),
-            reward_lambda_quant=float(getattr(self, "reward_lambda_quant", 0.05)),
-            reward_lambda_violate=float(getattr(self, "reward_lambda_violate", 1.0)),
+            reward_lambda_quant=float(getattr(self, "reward_lambda_quant", 0.0)),
+            reward_lambda_violate=float(getattr(self, "reward_lambda_violate", 0.0)),
             reward_stale_max_ms=float(self.reward_stale_max_ms),
             quant_quality_cfg={
                 "quant_quality_prior": self.arce_cfg.get("quant_quality_prior", {})
