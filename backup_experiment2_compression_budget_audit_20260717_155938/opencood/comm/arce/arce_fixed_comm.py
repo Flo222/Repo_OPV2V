@@ -1554,34 +1554,7 @@ class ARCEFixedComm:
         )
 
         num_tx_packets = int(tx_mask.sum().item())
-
-        # Systematic FEC encoders in this repository always store source packets
-        # first and parity/repair packets afterwards. Split the budget outcome so
-        # later experiments can tell whether the budget removed original payload
-        # or only protection packets. The totals are also checked for consistency.
-        source_tx_mask = tx_mask[:num_source_packets]
-        parity_tx_mask = tx_mask[num_source_packets:num_encoded_packets]
-        num_tx_source_packets = int(source_tx_mask.sum().item())
-        num_tx_parity_packets = int(parity_tx_mask.sum().item())
-        num_source_dropped_by_budget = int(
-            num_source_packets - num_tx_source_packets
-        )
-        num_parity_dropped_by_budget = int(
-            num_parity_packets - num_tx_parity_packets
-        )
-        num_missing_by_budget = int(
-            num_source_dropped_by_budget + num_parity_dropped_by_budget
-        )
-
-        if num_tx_source_packets + num_tx_parity_packets != num_tx_packets:
-            raise RuntimeError(
-                "Budget packet accounting mismatch: "
-                "tx_source={} tx_parity={} tx_total={}.".format(
-                    num_tx_source_packets,
-                    num_tx_parity_packets,
-                    num_tx_packets,
-                )
-            )
+        num_missing_by_budget = int(num_encoded_packets - num_tx_packets)
 
         # 6. Bernoulli loss only on actually transmitted encoded packets.
         full_loss_mask = torch.ones(
@@ -1731,16 +1704,6 @@ class ARCEFixedComm:
             "actual_received_mb": float(received_bytes / 1_000_000.0),
             "actual_num_received_encoded_packets": int(num_received_encoded_packets),
             "actual_num_lost_encoded_packets": int(num_encoded_packets - num_received_encoded_packets),
-            "actual_num_transmitted_source_packets": int(num_tx_source_packets),
-            "actual_num_transmitted_parity_packets": int(num_tx_parity_packets),
-            "actual_transmitted_source_bytes": float(
-                num_tx_source_packets * packet_size_bytes
-            ),
-            "actual_transmitted_parity_bytes": float(
-                num_tx_parity_packets * packet_size_bytes
-            ),
-            "num_source_dropped_by_budget": int(num_source_dropped_by_budget),
-            "num_parity_dropped_by_budget": int(num_parity_dropped_by_budget),
             "num_missing_by_budget": int(num_missing_by_budget),
             "num_lost_by_bernoulli": int(num_lost_by_bernoulli),
             "num_direct_received_source_packets": int(num_direct_received_source_packets),
@@ -1809,14 +1772,6 @@ class ARCEFixedComm:
                     "num_parity_packets": int(num_parity_packets),
                     "num_encoded_packets": int(num_encoded_packets),
                     "num_tx_packets": int(num_tx_packets),
-                    "num_tx_source_packets": int(num_tx_source_packets),
-                    "num_tx_parity_packets": int(num_tx_parity_packets),
-                    "num_source_dropped_by_budget": int(
-                        num_source_dropped_by_budget
-                    ),
-                    "num_parity_dropped_by_budget": int(
-                        num_parity_dropped_by_budget
-                    ),
                     "num_missing_by_budget": int(num_missing_by_budget),
                     "selected_encoded_packet_ratio": float(
                         num_tx_packets / max(1, num_encoded_packets)
@@ -1830,12 +1785,6 @@ class ARCEFixedComm:
                     "num_encoded_patches": int(num_encoded_packets),
                     "num_received_patches": int(num_received_encoded_packets),
                     "num_fec_recovered_patches": int(num_fec_recovered_source_packets),
-                    "num_source_dropped_by_budget": int(
-                        num_source_dropped_by_budget
-                    ),
-                    "num_parity_dropped_by_budget": int(
-                        num_parity_dropped_by_budget
-                    ),
                     "num_missing_by_budget": int(num_missing_by_budget),
                     "num_missing_by_loss": int(num_lost_by_bernoulli),
                     "selected_patch_ratio": float(
@@ -1848,14 +1797,6 @@ class ARCEFixedComm:
                     "num_parity_packets": int(num_parity_packets),
                     "num_encoded_packets": int(num_encoded_packets),
                     "num_transmitted_packets": int(num_tx_packets),
-                    "num_transmitted_source_packets": int(num_tx_source_packets),
-                    "num_transmitted_parity_packets": int(num_tx_parity_packets),
-                    "num_source_dropped_by_budget": int(
-                        num_source_dropped_by_budget
-                    ),
-                    "num_parity_dropped_by_budget": int(
-                        num_parity_dropped_by_budget
-                    ),
                     "num_received_packets": int(num_received_encoded_packets),
                     "num_direct_received_source_packets": int(num_direct_received_source_packets),
                     "num_fec_recovered_source_packets": int(num_fec_recovered_source_packets),
@@ -1908,7 +1849,6 @@ class ARCEFixedComm:
             recovered_dense=recovered_feature,
             stream_tensor=stream_tensor,
             packet_result=packet_result,
-            source_tx_mask=source_tx_mask,
             comm_record=record,
         )
         if audit_summary is not None:

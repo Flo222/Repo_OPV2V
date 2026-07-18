@@ -1,0 +1,71 @@
+--- a/opencood/comm/arce/arce_fixed_comm.py
++++ b/opencood/comm/arce/arce_fixed_comm.py
+@@ -55,6 +55,7 @@
+     runtime_action_as_dict,
+ )
+ from opencood.compression.feature_quantizer import FeatureQuantizer
++from opencood.comm.arce.audit import CompressionAuditor
+ 
+ from opencood.comm.fec import (
+     FEC_TYPE_NONE,
+@@ -374,6 +375,11 @@
+         self._loss_call_index = 0
+         self._markov_call_index = 0
+ 
++        # Read-only diagnostics for Experiment 1. Disabled by default.
++        self.compression_auditor = CompressionAuditor(
++            self.arce_cfg_raw.get("compression_audit", {}) or {}
++        )
++
+     # ------------------------------------------------------------------
+     # Config helpers
+     # ------------------------------------------------------------------
+@@ -507,6 +513,8 @@
+         self.num_dropped_by_late = 0
+         self._loss_call_index = 0
+         self._markov_call_index = 0
++        if hasattr(self, "compression_auditor"):
++            self.compression_auditor.reset()
+ 
+     def set_channel_state(self, state: str) -> None:
+         self._markov_state_by_link["__global__"] = self._normalize_state_name(state)
+@@ -1650,6 +1658,10 @@
+             decode_result.num_direct_received_source_packets
+         )
+ 
++        # Keep the compact receive tensor for read-only compression audit.
++        # The formal output remains the dense/scattered feature below.
++        recovered_feature_compact = recovered_feature
++
+         # 7.5. Scatter compact recovered payload back to dense BEV feature map.
+         if compact_meta is not None:
+             recovered_feature = self._scatter_compact_feature(
+@@ -1820,6 +1832,28 @@
+             }
+         )
+ 
++        # Experiment-1 audit is read-only and disabled unless explicitly enabled
++        # in the temporary audit config. It never changes recovered_feature.
++        audit_summary = self.compression_auditor.record(
++            frame_id=frame_id,
++            link_id=link_id,
++            agent_index=int(agent_index),
++            ego_index=int(ego_index),
++            requested_quant_mode=quant_mode,
++            actual_quant_mode=quant_result.mode,
++            source_tensor_kind=source_tensor_kind,
++            feature_input=feature,
++            source_feature=feature_tx,
++            quant_dequantized=quant_result.dequantized,
++            recovered_compact=recovered_feature_compact,
++            recovered_dense=recovered_feature,
++            stream_tensor=stream_tensor,
++            packet_result=packet_result,
++            comm_record=record,
++        )
++        if audit_summary is not None:
++            record["compression_audit"] = audit_summary
++
+         self._append_record(record)
+ 
+         if self.keep_tensor_results:

@@ -326,6 +326,12 @@ class ARCEC2MABComm:
         self.records: List[Dict[str, Any]] = []
         self.frame_records: Dict[Any, List[Dict[str, Any]]] = {}
 
+        # Counterfactual audit controls. Normal online execution leaves these
+        # disabled, so production policy selection is unchanged.
+        self.forced_action_id: Optional[str] = None
+        self.forced_sender_index: Optional[int] = None
+        self.policy_updates_enabled = True
+
         self.default_ego_confidence = float(
             self.arce_cfg.get("initial_ego_confidence", 0.0)
         )
@@ -338,6 +344,30 @@ class ARCEC2MABComm:
 
     def get_policy(self, ego_id: Any, sender_id: Any):
         return self.policy_bank.get(ego_id, sender_id)
+
+    def set_forced_action(self, action_id: str, sender_index: int = 1) -> None:
+        """Force one sender/action and make every other sender no-send.
+
+        This is intended only for matched-state counterfactual audits. The
+        caller should restore the communication object before normal online
+        execution advances the Markov trace and policy state.
+        """
+        action_id = str(action_id)
+        if action_id not in self.action_ids:
+            raise ValueError(
+                "Unknown forced action {!r}; available actions: {}".format(
+                    action_id, ", ".join(self.action_ids)
+                )
+            )
+        self.forced_action_id = action_id
+        self.forced_sender_index = int(sender_index)
+
+    def clear_forced_action(self) -> None:
+        self.forced_action_id = None
+        self.forced_sender_index = None
+
+    def set_policy_updates_enabled(self, enabled: bool) -> None:
+        self.policy_updates_enabled = bool(enabled)
 
     def _append_record(self, record: Dict[str, Any]) -> None:
         self.records.append(copy.deepcopy(record))
@@ -354,6 +384,8 @@ class ARCEC2MABComm:
         self.policy_bank.clear()
         self.pending_reward = RewardBuffer()
         self.last_cache_quality.clear()
+        self.clear_forced_action()
+        self.set_policy_updates_enabled(True)
         if clear_records:
             self.clear_records()
 
@@ -740,7 +772,11 @@ class ARCEC2MABComm:
             local_cav_confidences=local_cav_confidences,
             local_cav_confidence_maps=local_cav_confidence_maps,
             packet_size_bytes=int(self.packet_size_bytes),
-            sender_topk_actions=int(self.sender_topk_actions),
+            sender_topk_actions=int(
+                len(self.actions)
+                if self.forced_action_id is not None
+                else self.sender_topk_actions
+            ),
             sender_force_quant_coverage=bool(self.sender_force_quant_coverage),
             sender_include_low_cost=bool(self.sender_include_low_cost),
             profile_for_state_fn=self._profile_for_state,
@@ -750,7 +786,41 @@ class ARCEC2MABComm:
             get_policy_fn=self.get_policy,
         )
 
-        oracle_result = self.oracle.select(proposals, budget_bytes=total_budget_bytes)
+        if self.forced_action_id is None:
+            oracle_result = self.oracle.select(
+                proposals, budget_bytes=total_budget_bytes
+            )
+        elif self.forced_action_id == NO_SEND_ACTION_ID:
+            oracle_result = self.oracle.select([], budget_bytes=total_budget_bytes)
+        else:
+            forced_candidates = [
+                proposal for proposal in proposals
+                if int(proposal.sender_id) == int(self.forced_sender_index)
+                and str(proposal.action_id) == str(self.forced_action_id)
+            ]
+            if not forced_candidates:
+                available = sorted(
+                    str(proposal.action_id) for proposal in proposals
+                    if int(proposal.sender_id) == int(self.forced_sender_index)
+                )
+                raise RuntimeError(
+                    "Forced action {!r} is not feasible for sender {}. "
+                    "Feasible actions: {}".format(
+                        self.forced_action_id,
+                        self.forced_sender_index,
+                        ", ".join(available) if available else "none",
+                    )
+                )
+            oracle_result = self.oracle.select(
+                forced_candidates[:1], budget_bytes=total_budget_bytes
+            )
+            if not oracle_result.get("selected"):
+                raise RuntimeError(
+                    "Forced action {!r} was feasible but the oracle did not "
+                    "select it under budget {}.".format(
+                        self.forced_action_id, total_budget_bytes
+                    )
+                )
         selected_by_sender = {
             int(p.sender_id): p for p in oracle_result["selected"]
         }
@@ -1016,6 +1086,7 @@ class ARCEC2MABComm:
             quant_quality_cfg={
                 "quant_quality_prior": self.arce_cfg.get("quant_quality_prior", {})
             },
+            apply_policy_update=bool(self.policy_updates_enabled),
         )
 
         self.last_ego_confidence = float(ego_confidence)

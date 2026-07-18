@@ -1,0 +1,2 @@
+installed_at=20260717_143127
+backup_dir=/home/server/v2x_projects/OPV2V/backup_experiment1_compression_audit_20260717_143127

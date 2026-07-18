@@ -788,51 +788,20 @@ def finalize_detection_eval(
 
 def resolve_frame_id(batch_data: Dict[str, Any], sample_index: int) -> Any:
     """
-    Resolve the dataset frame identifier used by communication audit.
+    Try to extract a frame id from OpenCOOD batch data.
 
-    Priority:
-        frame_id -> timestamp -> sample_idx -> sample_id -> loader index.
-
-    The loader index is only a deterministic fallback when the dataset does not
-    expose a native identifier.
+    If unavailable, use sample_index.
     """
     try:
         ego_data = batch_data.get("ego", {})
         for key in ("frame_id", "timestamp", "sample_idx", "sample_id"):
             if key in ego_data:
-                value = json_safe(ego_data[key])
-                # OpenCOOD uses batch size one for inference. Normalize a
-                # one-element list/tuple so filenames and JSON records contain
-                # the actual scalar id instead of ``[id]``.
-                if isinstance(value, list) and len(value) == 1:
-                    return value[0]
-                return value
+                value = ego_data[key]
+                return json_safe(value)
     except Exception:
         pass
 
     return int(sample_index)
-
-
-def attach_frame_identity_to_batch(
-    batch_data: Dict[str, Any],
-    frame_id: Any,
-    sample_index: int,
-) -> None:
-    """Expose the resolved id to the model without changing model outputs.
-
-    ``inference_arce`` historically added a fallback id only after the model
-    forward, so ARCE's internal audit record still contained ``frame_id=None``.
-    This helper writes metadata keys into the ego data dictionary before the
-    forward call. Model layers ignore these keys; communication modules can read
-    them for deterministic per-frame logging.
-    """
-    if not isinstance(batch_data, dict):
-        return
-    ego_data = batch_data.get("ego", None)
-    if not isinstance(ego_data, dict):
-        return
-    ego_data["frame_id"] = frame_id
-    ego_data["audit_sample_index"] = int(sample_index)
 
 
 def maybe_save_prediction_npy(
@@ -995,11 +964,6 @@ def main(opt: argparse.Namespace) -> None:
 
             batch_data = to_device(batch_data, device)
             frame_id = resolve_frame_id(batch_data, sample_index)
-            attach_frame_identity_to_batch(
-                batch_data=batch_data,
-                frame_id=frame_id,
-                sample_index=sample_index,
-            )
 
             pred_box_tensor, pred_score, gt_box_tensor = run_inference_one(
                 batch_data=batch_data,

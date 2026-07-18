@@ -189,6 +189,20 @@ def enrich_selected_execution_record(
         ),
     }
 
+    selected_score = next(
+        (
+            dict(item)
+            for item in (oracle_result.get("ranked", []) or [])
+            if str(item.get("sender_id", "")) == str(getattr(selected, "sender_id", ""))
+            and str(item.get("action_id", "")) == str(getattr(selected, "action_id", ""))
+        ),
+        None,
+    )
+    if selected_score is not None:
+        # Keep the selected oracle score in normal records so convergence
+        # audits can distinguish learned UCB bonus from warm-up exploration.
+        record["dc2mab"]["selection_score"] = selected_score
+
     # Top-level context fields are intentionally duplicated for lightweight
     # audits and final experiment summaries.
     for key in (

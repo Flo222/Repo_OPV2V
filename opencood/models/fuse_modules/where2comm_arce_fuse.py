@@ -200,11 +200,48 @@ class Where2commArce(nn.Module):
             arce_info = {"raw_arce_info": arce_info}
 
         with torch.no_grad():
-            delta = (x_after.detach() - x_before.detach()).abs()
+            before = x_before.detach().float()
+            after = x_after.detach().float()
+            signed_delta = after - before
+            delta = signed_delta.abs()
             arce_info["arce_feature_delta"] = {
                 "max_abs": float(delta.max().detach().cpu()),
                 "mean_abs": float(delta.mean().detach().cpu()),
+                "rms": float(
+                    torch.sqrt(torch.mean(signed_delta * signed_delta)).detach().cpu()
+                ),
                 "nz_ratio": float((delta > 1e-6).float().mean().detach().cpu()),
+                "before_rms": float(
+                    torch.sqrt(torch.mean(before * before)).detach().cpu()
+                ),
+                "after_rms": float(
+                    torch.sqrt(torch.mean(after * after)).detach().cpu()
+                ),
+                "per_agent": [
+                    {
+                        "agent_index": int(agent_index),
+                        "before_rms": float(
+                            torch.sqrt(torch.mean(before[agent_index] ** 2)).detach().cpu()
+                        ),
+                        "after_rms": float(
+                            torch.sqrt(torch.mean(after[agent_index] ** 2)).detach().cpu()
+                        ),
+                        "delta_rms": float(
+                            torch.sqrt(
+                                torch.mean(signed_delta[agent_index] ** 2)
+                            ).detach().cpu()
+                        ),
+                        "before_nz_ratio": float(
+                            (before[agent_index].abs() > 1e-12)
+                            .float().mean().detach().cpu()
+                        ),
+                        "after_nz_ratio": float(
+                            (after[agent_index].abs() > 1e-12)
+                            .float().mean().detach().cpu()
+                        ),
+                    }
+                    for agent_index in range(int(before.shape[0]))
+                ],
             }
         return arce_info
 

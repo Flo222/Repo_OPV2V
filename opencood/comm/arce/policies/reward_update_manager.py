@@ -168,6 +168,7 @@ def update_pending_rewards(
     reward_lambda_violate: float = 0.0,
     reward_stale_max_ms: float = 100.0,
     quant_quality_cfg: Optional[Dict[str, Any]] = None,
+    apply_policy_update: bool = True,
 ) -> Dict[str, Any]:
     """Update policies from pending communication records.
 
@@ -269,12 +270,14 @@ def update_pending_rewards(
         action_id = str(item["action_id"])
         channel_profile = _build_channel_profile(item)
 
-        feedback_weight = policy.update(
-            action_id,
-            context_vector,
-            reward,
-            channel_profile=channel_profile,
-        )
+        feedback_weight = 0.0
+        if apply_policy_update:
+            feedback_weight = policy.update(
+                action_id,
+                context_vector,
+                reward,
+                channel_profile=channel_profile,
+            )
         policy_t_after = int(getattr(policy, "t", -1))
 
         corruption_info = _get_last_corruption_info(policy, action_id)
@@ -286,6 +289,7 @@ def update_pending_rewards(
             "policy_t_before": int(policy_t_before),
             "policy_t_after": int(policy_t_after),
             "policy_t_delta": int(policy_t_after - policy_t_before),
+            "policy_update_applied": bool(apply_policy_update),
             "feedback_weight": float(feedback_weight),
             "feedback_corruption_C": float(
                 corruption_info.get("feedback_corruption_C", 0.0)
@@ -338,6 +342,7 @@ def update_pending_rewards(
         "reward_mode": str(reward_mode),
         "reward_lambda_delta": float(lambda_delta_value),
         "reward_lambda_abs": float(reward_lambda_abs),
+        "policy_update_applied": bool(apply_policy_update),
         "num_updated": len(pending),
         "num_send_updated": int(send_count),
         "num_no_send_updated": int(no_send_count),

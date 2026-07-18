@@ -13,6 +13,11 @@ RUN_BW="${RUN_BW:-1}"
 MAX_FRAMES="${MAX_FRAMES:--1}"
 SCENARIO="${SCENARIO:-Markov}"
 PROGRESS_INTERVAL="${PROGRESS_INTERVAL:-50}"
+SINGLE_PASS_AP_BW="${SINGLE_PASS_AP_BW:-1}"
+WINDOW_SIZE="${WINDOW_SIZE:-100}"
+WINDOW_STRIDE="${WINDOW_STRIDE:-100}"
+WARMUP_FRAMES="${WARMUP_FRAMES:-500}"
+GLOBAL_SORT_DETECTIONS="${GLOBAL_SORT_DETECTIONS:-0}"
 
 export OUT_DIR
 export METHOD_NAME
@@ -29,10 +34,38 @@ echo "RUN_AP: $RUN_AP"
 echo "RUN_BW: $RUN_BW"
 echo "MAX_FRAMES: $MAX_FRAMES"
 echo "Scenario: $SCENARIO"
+echo "Single-pass AP+BW: $SINGLE_PASS_AP_BW"
 echo
 
 echo "===== save config snapshot ====="
 cp "$MODEL_DIR/config.yaml" "$OUT_DIR/config.yaml"
+
+if [ "$RUN_AP" = "1" ] && [ "$RUN_BW" = "1" ] && [ "$SINGLE_PASS_AP_BW" = "1" ]; then
+  echo
+  echo "===== Run AP+BW on one online trajectory: $METHOD_NAME ====="
+  EXTRA_ARGS=()
+  if [ "$GLOBAL_SORT_DETECTIONS" = "1" ]; then
+    EXTRA_ARGS+=(--global_sort_detections)
+  fi
+  PYTHONUNBUFFERED=1 python opencood/tools/arce_online_eval.py \
+    --model_dir "$MODEL_DIR" \
+    --out_dir "$OUT_DIR" \
+    --method "$METHOD_NAME" \
+    --scenario "$SCENARIO" \
+    --fusion_method intermediate \
+    --max_frames "$MAX_FRAMES" \
+    --progress_interval "$PROGRESS_INTERVAL" \
+    --window_size "$WINDOW_SIZE" \
+    --window_stride "$WINDOW_STRIDE" \
+    --warmup_frames "$WARMUP_FRAMES" \
+    "${EXTRA_ARGS[@]}" \
+    2>&1 | tee "$OUT_DIR/online_eval.log"
+
+  echo
+  echo "===== Finished single-pass ARCE evaluation ====="
+  echo "Output dir: $OUT_DIR"
+  exit 0
+fi
 
 if [ "$RUN_AP" = "1" ]; then
   echo

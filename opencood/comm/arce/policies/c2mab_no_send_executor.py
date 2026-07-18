@@ -70,6 +70,9 @@ def execute_no_send_sender(
         sender_idx,
         action,
     )
+    rec["channel_state"] = str(link_states.get(sender_idx, "medium"))
+    rec["channel_profile"] = dict(no_send_profile)
+    rec["link_budget_bytes"] = float(no_send_link_budget)
     rec["system_budget"] = build_no_send_system_budget_record(
         budget_scope=str(budget_scope_cfg),
         budget_source=str(budget_source_cfg),

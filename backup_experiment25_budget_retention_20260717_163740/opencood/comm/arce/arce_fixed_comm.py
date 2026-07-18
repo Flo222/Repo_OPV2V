@@ -1908,7 +1908,6 @@ class ARCEFixedComm:
             recovered_dense=recovered_feature,
             stream_tensor=stream_tensor,
             packet_result=packet_result,
-            source_tx_mask=source_tx_mask,
             comm_record=record,
         )
         if audit_summary is not None:
