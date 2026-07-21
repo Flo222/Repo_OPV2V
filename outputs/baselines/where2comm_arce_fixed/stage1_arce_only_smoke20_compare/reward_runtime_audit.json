@@ -1,0 +1,24 @@
+{
+  "frame_count": 20,
+  "reward_update_count": 0,
+  "summary": {
+    "frame_count": 20,
+    "reward_update_count": 0,
+    "delta_confidence": {
+      "n": 0
+    },
+    "mean_reward": {
+      "n": 0
+    },
+    "num_updated": {
+      "n": 0
+    },
+    "num_send_updated": {
+      "n": 0
+    },
+    "num_no_send_updated": {
+      "n": 0
+    }
+  },
+  "rows": []
+}

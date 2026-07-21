@@ -5,5 +5,6 @@ normal inference.
 """
 
 from .compression_auditor import CompressionAuditor
+from .fec_recovery_auditor import FECRecoveryAuditor
 
-__all__ = ["CompressionAuditor"]
+__all__ = ["CompressionAuditor", "FECRecoveryAuditor"]

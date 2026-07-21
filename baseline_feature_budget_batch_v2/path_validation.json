@@ -1,0 +1,214 @@
+{
+  "rows": [
+    {
+      "dataset": "OPV2V",
+      "baseline": "Where2Comm",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/where2comm_markov_trueloss_fp32_rho0_cache0",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 1,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/where2comm_markov_trueloss_fp32_rho0_cache0/net_epoch20.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "OPV2V",
+      "baseline": "V2X-ViT",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 20,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch1.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch10.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch11.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch12.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch13.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch14.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch16.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch18.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch2.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch20.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch3.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch4.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch5.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch6.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch7.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch8.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval/net_epoch9.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "OPV2V",
+      "baseline": "RoCooper",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_opv2v_2026_06_22_12_52_04",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 1,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_opv2v_2026_06_22_12_52_04/net_epoch30.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "OPV2V",
+      "baseline": "CoopDiff",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 6,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval/net_epoch16.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval/net_epoch18.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval/net_epoch20.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "OPV2V",
+      "baseline": "CoSDH",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 21,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch1.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch10.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch11.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch12.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch13.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch14.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch16.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch18.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch2.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch20.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch3.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch4.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch5.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch6.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch7.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch8.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch9.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16/net_epoch_bestval_at11.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "V2X-Real",
+      "baseline": "V2X-ViT",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 10,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch1.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch11.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch13.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch3.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch5.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch7.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval/net_epoch9.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "V2X-Real",
+      "baseline": "Where2Comm",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 10,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch1.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch11.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch13.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch3.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch5.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch7.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval/net_epoch9.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "V2X-Real",
+      "baseline": "CoSDH",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 10,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch1.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch11.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch13.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch3.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch5.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch7.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval/net_epoch9.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "V2X-Real",
+      "baseline": "RoCooper",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 10,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch1.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch11.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch13.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch3.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch5.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch7.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39/net_epoch9.pth"
+      ],
+      "pass": true
+    },
+    {
+      "dataset": "V2X-Real",
+      "baseline": "CoopDiff",
+      "model_dir": "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval",
+      "dir_exists": true,
+      "config_exists": true,
+      "checkpoint_count": 10,
+      "checkpoints": [
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch1.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch11.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch13.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch15.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch17.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch19.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch3.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch5.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch7.pth",
+        "/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval/net_epoch9.pth"
+      ],
+      "pass": true
+    }
+  ],
+  "all_pass": true
+}

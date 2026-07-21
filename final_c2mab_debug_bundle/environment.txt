@@ -1,0 +1,8 @@
+Python: 3.7.11 (default, Jul 27 2021, 14:32:16) 
+[GCC 7.5.0]
+PyTorch: 1.12.0
+CUDA available: True
+CUDA runtime: 11.3
+cuDNN: 8302
+PyYAML: 6.0.1
+NumPy: 1.21.5

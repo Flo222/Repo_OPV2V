@@ -53,6 +53,10 @@ def build_c2mab_executor_cfg(
 
     executor_arce_cfg["mode"] = "fixed"
     executor_arce_cfg["policy"] = "fixed"
+    executor_arce_cfg["priority_layout_enabled"] = True
+    compact_cfg = _dict_or_empty(executor_arce_cfg.get("compact_sparse", None))
+    compact_cfg["priority_layout_enabled"] = True
+    executor_arce_cfg["compact_sparse"] = compact_cfg
     executor_arce_cfg = apply_payload_native_transport_to_arce_cfg(executor_arce_cfg)
 
     quant_cfg = _dict_or_empty(executor_arce_cfg.get("quantization", None))

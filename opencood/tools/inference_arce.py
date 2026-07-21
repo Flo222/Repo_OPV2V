@@ -236,13 +236,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 def set_random_seed(seed: int) -> None:
     """
-    Set torch random seed.
+    Set reproducible inference seeds.
+
+    Besides seeding random generators, disable CuDNN autotuning so repeated
+    Experiment-3 conditions produce the same model feature and compact payload.
     """
+    import random
+    import numpy as np
+
     seed = int(seed)
+
+    random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
 
     if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
+
+    if hasattr(torch, "use_deterministic_algorithms"):
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except TypeError:
+            # Older PyTorch versions do not support warn_only.
+            try:
+                torch.use_deterministic_algorithms(True)
+            except Exception:
+                pass
 
 
 def str_to_bool(value: Optional[str]) -> Optional[bool]:

@@ -1,0 +1,11 @@
+dataset	baseline	model_dir	fusion_method	hook_specs	extra_metadata_bytes
+OPV2V	Where2Comm	/home/server/v2x_projects/OPV2V/opencood/logs/where2comm_markov_trueloss_fp32_rho0_cache0	intermediate	fusion_net.fuse_modules.0@input[0]	0
+OPV2V	V2X-ViT	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_opv2v_2026_05_13_20_33_54_arce_eval	intermediate	fusion_net.encoder.layers.0.0@input[0]	12
+OPV2V	RoCooper	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_opv2v_2026_06_22_12_52_04	intermediate	comm_module@input[0]	0
+OPV2V	CoopDiff	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_opv2v_e30_mapped_from_teacher_e20_markov_eval	intermediate	fuse_modules.0@input[0],fuse_modules.1@input[0],fuse_modules.2@input[0]	0
+OPV2V	CoSDH	/home/server/v2x_projects/OPV2V/opencood/logs/opv2v_cosdh_markov_byte_2026_06_16	intermediatelate	fusion_net.0@input[0],fusion_net.1@input[0],fusion_net.2@input[0]	0
+V2X-Real	V2X-ViT	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_v2xvit_v2xreal_markov_eval	intermediate	fusion_net.encoder.layers.0.0@input[0]	12
+V2X-Real	Where2Comm	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_where2comm_v2xreal_markov_eval	intermediate	fusion_net.fuse_modules.0@input[0]	0
+V2X-Real	CoSDH	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_cosdh_markov_v2xreal_eval	intermediatelate	fusion_net.0@input[0],fusion_net.1@input[0],fusion_net.2@input[0]	0
+V2X-Real	RoCooper	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_rocooper_markov_v2xreal_vc_2026_06_29_16_37_39	intermediate	comm_module@input[0]	0
+V2X-Real	CoopDiff	/home/server/v2x_projects/OPV2V/opencood/logs/point_pillar_diffstudent_v2xreal_vc_mapped_from_teacher_partialvfe_backbone20_markov_eval	intermediate	fuse_modules.0@input[0],fuse_modules.1@input[0],fuse_modules.2@input[0]	0

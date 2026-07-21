@@ -1,0 +1,149 @@
+{
+  "window_size": 100,
+  "window_stride": 100,
+  "windows": [
+    {
+      "start_frame": 0,
+      "end_frame": 99,
+      "frame_count": 100,
+      "ap@0.3": 0.7952953959666529,
+      "ap@0.5": 0.7616888121134364,
+      "ap@0.7": 0.5448239878851182,
+      "total_tx_MB": 3.378176,
+      "bw_MB_per_frame": 0.03378176,
+      "reward": {
+        "n": 0
+      },
+      "action_entropy": 0.0,
+      "action_entropy_by_state": {
+        "medium": 0.0,
+        "bad": 0.0,
+        "good": 0.0
+      },
+      "action_counter": {
+        "unknown": 59
+      },
+      "quant_counter": {
+        "fp32": 59
+      },
+      "channel_state_counter": {
+        "medium": 27,
+        "bad": 28,
+        "good": 4
+      },
+      "ucb_mean": {
+        "n": 0
+      },
+      "ucb_bonus": {
+        "n": 0
+      },
+      "ucb": {
+        "n": 0
+      },
+      "oracle_exploration_bonus": {
+        "n": 0
+      },
+      "oracle_selection_score": {
+        "n": 0
+      },
+      "ucb_bonus_abs_over_mean_abs": null
+    }
+  ],
+  "phase_summary": {
+    "all": {
+      "start_frame": 0,
+      "end_frame": 99,
+      "frame_count": 100,
+      "ap@0.3": 0.7952953959666529,
+      "ap@0.5": 0.7616888121134364,
+      "ap@0.7": 0.5448239878851182,
+      "total_tx_MB": 3.378176,
+      "bw_MB_per_frame": 0.03378176,
+      "reward": {
+        "n": 0
+      },
+      "action_entropy": 0.0,
+      "action_entropy_by_state": {
+        "medium": 0.0,
+        "bad": 0.0,
+        "good": 0.0
+      },
+      "action_counter": {
+        "unknown": 59
+      },
+      "quant_counter": {
+        "fp32": 59
+      },
+      "channel_state_counter": {
+        "medium": 27,
+        "bad": 28,
+        "good": 4
+      },
+      "ucb_mean": {
+        "n": 0
+      },
+      "ucb_bonus": {
+        "n": 0
+      },
+      "ucb": {
+        "n": 0
+      },
+      "oracle_exploration_bonus": {
+        "n": 0
+      },
+      "oracle_selection_score": {
+        "n": 0
+      },
+      "ucb_bonus_abs_over_mean_abs": null
+    },
+    "warmup": {
+      "start_frame": 0,
+      "end_frame": 99,
+      "frame_count": 100,
+      "ap@0.3": 0.7952953959666529,
+      "ap@0.5": 0.7616888121134364,
+      "ap@0.7": 0.5448239878851182,
+      "total_tx_MB": 3.378176,
+      "bw_MB_per_frame": 0.03378176,
+      "reward": {
+        "n": 0
+      },
+      "action_entropy": 0.0,
+      "action_entropy_by_state": {
+        "medium": 0.0,
+        "bad": 0.0,
+        "good": 0.0
+      },
+      "action_counter": {
+        "unknown": 59
+      },
+      "quant_counter": {
+        "fp32": 59
+      },
+      "channel_state_counter": {
+        "medium": 27,
+        "bad": 28,
+        "good": 4
+      },
+      "ucb_mean": {
+        "n": 0
+      },
+      "ucb_bonus": {
+        "n": 0
+      },
+      "ucb": {
+        "n": 0
+      },
+      "oracle_exploration_bonus": {
+        "n": 0
+      },
+      "oracle_selection_score": {
+        "n": 0
+      },
+      "ucb_bonus_abs_over_mean_abs": null
+    },
+    "steady_state_candidate": null,
+    "warmup_frames": 100,
+    "warmup_is_provisional": true
+  }
+}

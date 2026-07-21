@@ -55,7 +55,7 @@ from opencood.comm.arce.policies.action_adapter import (
     runtime_action_as_dict,
 )
 from opencood.compression.feature_quantizer import FeatureQuantizer
-from opencood.comm.arce.audit import CompressionAuditor
+from opencood.comm.arce.audit import CompressionAuditor, FECRecoveryAuditor
 
 from opencood.comm.fec import (
     FEC_TYPE_NONE,
@@ -379,6 +379,10 @@ class ARCEFixedComm:
         self.compression_auditor = CompressionAuditor(
             self.arce_cfg_raw.get("compression_audit", {}) or {}
         )
+        # Read-only diagnostics for Experiment 3. Disabled by default.
+        self.fec_recovery_auditor = FECRecoveryAuditor(
+            self.arce_cfg_raw.get("fec_recovery_audit", {}) or {}
+        )
 
     # ------------------------------------------------------------------
     # Config helpers
@@ -515,6 +519,8 @@ class ARCEFixedComm:
         self._markov_call_index = 0
         if hasattr(self, "compression_auditor"):
             self.compression_auditor.reset()
+        if hasattr(self, "fec_recovery_auditor"):
+            self.fec_recovery_auditor.reset()
 
     def set_channel_state(self, state: str) -> None:
         self._markov_state_by_link["__global__"] = self._normalize_state_name(state)
@@ -1099,12 +1105,67 @@ class ARCEFixedComm:
 
 
 
-    def _compact_feature_by_message_mask(self, feature, message_mask, action=None, budget_bytes=None, channel_profile=None):
+    @staticmethod
+    def _to_spatial_map(value, feature, interpolation_mode):
+        if value is None or not torch.is_tensor(value):
+            return None
+
+        C, H, W = feature.shape
+        spatial = value.to(device=feature.device)
+        if spatial.dim() == 3:
+            spatial = spatial[0] if spatial.shape[0] == 1 else spatial.float().mean(dim=0)
+        elif spatial.dim() != 2:
+            return None
+
+        if spatial.shape[-2:] != (H, W):
+            kwargs = {
+                "input": spatial.view(1, 1, spatial.shape[-2], spatial.shape[-1]).float(),
+                "size": (H, W),
+                "mode": interpolation_mode,
+            }
+            if interpolation_mode != "nearest":
+                kwargs["align_corners"] = False
+            spatial = torch.nn.functional.interpolate(**kwargs)[0, 0]
+        return spatial
+
+    @staticmethod
+    def _descending_order(values):
+        try:
+            return torch.argsort(values, descending=True, stable=True)
+        except TypeError:
+            return torch.argsort(values, descending=True)
+
+    @staticmethod
+    def _compact_meta_for_record(compact_meta):
+        if not isinstance(compact_meta, dict):
+            return None
+
+        record_meta = {
+            key: copy.deepcopy(value)
+            for key, value in compact_meta.items()
+            if key not in ("indices", "priority")
+        }
+        indices = compact_meta.get("indices")
+        if torch.is_tensor(indices):
+            ids = indices.detach().to(device="cpu", dtype=torch.int64).flatten()
+            record_meta["unit_id_checksum"] = int(ids.sum().item()) if ids.numel() else 0
+            record_meta["unit_ids_preview"] = ids[:16].tolist()
+        return record_meta
+
+    def _compact_feature_by_message_mask(
+        self,
+        feature,
+        message_mask,
+        priority_map=None,
+        action=None,
+        budget_bytes=None,
+        channel_profile=None,
+    ):
         """
         Budget-aware compact packing for Where2comm messages.
 
-        It uses Where2comm confidence scores to rank BEV tokens and selects top-K
-        tokens that fit the current link/frame budget under the chosen quant/rho action.
+        The binary Where2Comm mask defines the candidate set. The continuous
+        sender-side confidence map only orders candidates inside that set.
         """
         try:
             cfg = (getattr(self, "arce_cfg_raw", {}) or {}).get("compact_sparse", {}) or {}
@@ -1124,39 +1185,58 @@ class ARCEFixedComm:
             return feature, None
 
         C, H, W = feature.shape
-        score = message_mask.to(device=feature.device)
+        priority_layout_enabled = bool(
+            cfg.get(
+                "priority_layout_enabled",
+                (getattr(self, "arce_cfg_raw", {}) or {}).get(
+                    "priority_layout_enabled", False
+                ),
+            )
+        )
+        if priority_layout_enabled:
+            candidate2d = self._to_spatial_map(message_mask, feature, "nearest")
+            if candidate2d is None:
+                return feature, None
 
-        if score.dim() == 3:
-            if score.shape[0] == 1:
-                score2d = score[0]
-            else:
-                score2d = score.float().mean(dim=0)
-        elif score.dim() == 2:
-            score2d = score
+            require_native_priority = bool(cfg.get("require_native_priority", True))
+            priority2d = self._to_spatial_map(priority_map, feature, "bilinear")
+            if priority2d is None:
+                if require_native_priority:
+                    raise ValueError(
+                        "compact_sparse requires a sender-side priority_map separate "
+                        "from the binary candidate mask."
+                    )
+                priority2d = candidate2d.float()
+
+            candidate_threshold = float(cfg.get("candidate_threshold", 0.5))
+            flat_candidate = candidate2d.reshape(-1).float()
+            flat_priority = priority2d.reshape(-1).float()
+            cand = torch.nonzero(
+                flat_candidate > candidate_threshold,
+                as_tuple=False,
+            ).flatten()
+
         else:
-            return feature, None
-
-        if score2d.shape[-2:] != (H, W):
-            score2d = torch.nn.functional.interpolate(
-                score2d.view(1, 1, score2d.shape[-2], score2d.shape[-1]).float(),
-                size=(H, W),
-                mode="bilinear",
-                align_corners=False,
-            )[0, 0]
-
-        flat_score = score2d.reshape(-1).float()
-
-        # Candidate set: all positions with score > threshold.
-        # If threshold=0, this means all positive-confidence locations.
-        threshold = float(cfg.get("threshold", 0.0))
-        cand = torch.nonzero(flat_score > threshold, as_tuple=False).flatten()
-        if cand.numel() == 0:
-            cand = torch.arange(H * W, device=feature.device)
-
-        # Sort by confidence descending.
-        scores = flat_score[cand]
-        order = torch.argsort(scores, descending=True)
-        cand = cand[order]
+            score2d = self._to_spatial_map(
+                priority_map if torch.is_tensor(priority_map) else message_mask,
+                feature,
+                "bilinear",
+            )
+            if score2d is None:
+                return feature, None
+            candidate_threshold = float(cfg.get("threshold", 0.0))
+            flat_candidate = score2d.reshape(-1).float()
+            flat_priority = flat_candidate
+            cand = torch.nonzero(
+                flat_candidate > candidate_threshold,
+                as_tuple=False,
+            ).flatten()
+            if cand.numel() == 0:
+                cand = torch.arange(H * W, device=feature.device)
+        scores = flat_priority[cand]
+        if bool(cfg.get("sort_by_score", True)):
+            cand = cand[self._descending_order(scores)]
+            scores = flat_priority[cand]
 
         # Compute budget-aware top-K.
         # budget_bytes can be passed by executor; if absent, use full candidate set.
@@ -1209,27 +1289,50 @@ class ARCEFixedComm:
 
         selected = cand[:K_budget]
 
-        # Mask-alignment instrumentation.
-        # After Step 4, message_mask should be _confidence_maps * raw_masks.
-        # Therefore selected positions with score <= threshold indicate leakage
-        # outside the Where2Comm binary candidate region.
-        selected_scores = flat_score[selected] if selected.numel() > 0 else flat_score.new_empty((0,))
-        selected_positive = selected_scores > threshold
-        selected_inside = int(selected_positive.sum().item())
+        selected_scores = (
+            flat_priority[selected]
+            if selected.numel() > 0
+            else flat_priority.new_empty((0,))
+        )
+        selected_inside = int(
+            (flat_candidate[selected] > candidate_threshold).sum().item()
+        )
         selected_total = int(selected.numel())
         selected_outside = int(selected_total - selected_inside)
 
         flat_feature = feature.reshape(C, H * W)
-        compact_feature = flat_feature[:, selected].contiguous().view(C, int(selected.numel()), 1)
+        if priority_layout_enabled:
+            compact_feature = (
+                flat_feature[:, selected].transpose(0, 1).contiguous()
+            )
+            layout, channel_dim = "KC", 1
+            candidate_source = "where2comm_binary_mask"
+            priority_source = "where2comm_sender_confidence"
+        else:
+            compact_feature = (
+                flat_feature[:, selected]
+                .contiguous()
+                .view(C, int(selected.numel()), 1)
+            )
+            layout, channel_dim = "CK1", 0
+            candidate_source = "legacy_masked_confidence"
+            priority_source = "legacy_masked_confidence"
 
         compact_meta = {
             "enabled": True,
+            "empty_candidate": bool(selected.numel() == 0),
             "indices": selected,
+            "priority": selected_scores,
+            "layout": layout,
+            "channel_dim": int(channel_dim),
+            "priority_layout_enabled": bool(priority_layout_enabled),
+            "candidate_source": candidate_source,
+            "priority_source": priority_source,
             "original_shape": (int(C), int(H), int(W)),
             "num_tokens": int(selected.numel()),
             "num_total_tokens": int(H * W),
             "mask_ratio": float(selected.numel() / max(H * W, 1)),
-            "threshold": float(threshold),
+            "candidate_threshold": float(candidate_threshold),
             "budget_aware_topk": bool(dynamic_topk),
             "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
             "estimated_payload_budget_bytes": used_budget_bytes,
@@ -1250,7 +1353,7 @@ class ARCEFixedComm:
 
     def _scatter_compact_feature(self, compact_feature, compact_meta, reference_feature):
         """
-        Scatter recovered compact message [C,K,1] back to dense [C,H,W].
+        Scatter recovered compact message [K,C] back to dense [C,H,W].
         Missing/unreceived tokens are already zero-filled in compact_feature.
         """
         if compact_meta is None or not compact_meta.get("enabled", False):
@@ -1263,13 +1366,23 @@ class ARCEFixedComm:
         C, H, W = reference_feature.shape
         out = torch.zeros_like(reference_feature)
 
-        vals = compact_feature.reshape(C, -1)
-        K = min(vals.shape[1], indices.numel())
-        if K <= 0:
-            return out
-
         out_flat = out.reshape(C, H * W)
-        out_flat[:, indices[:K].to(out_flat.device)] = vals[:, :K].to(out_flat.dtype)
+        if compact_meta.get("layout") == "KC":
+            vals = compact_feature.reshape(-1, C)
+            K = min(vals.shape[0], indices.numel())
+            if K <= 0:
+                return out
+            out_flat[:, indices[:K].to(out_flat.device)] = (
+                vals[:K].transpose(0, 1).to(out_flat.dtype)
+            )
+        else:
+            vals = compact_feature.reshape(C, -1)
+            K = min(vals.shape[1], indices.numel())
+            if K <= 0:
+                return out
+            out_flat[:, indices[:K].to(out_flat.device)] = (
+                vals[:, :K].to(out_flat.dtype)
+            )
         return out
 
     def communicate_feature(
@@ -1283,6 +1396,7 @@ class ARCEFixedComm:
         action_override: Optional[ARCEAction] = None,
         budget_bytes: Optional[float] = None,
         message_mask: Optional[torch.Tensor] = None,
+        priority_map: Optional[torch.Tensor] = None,
         complementarity: float = 0.0,
         update_cache: bool = True,
         return_result: bool = False,
@@ -1492,6 +1606,7 @@ class ARCEFixedComm:
         feature_tx, compact_meta = self._compact_feature_by_message_mask(
             feature_tx,
             message_mask,
+            priority_map=priority_map,
             action=action,
             budget_bytes=self._frame_budget_bytes_from_channel_profile(
                 channel_profile=channel_profile,
@@ -1501,13 +1616,109 @@ class ARCEFixedComm:
             channel_profile=channel_profile,
         )
 
+        if (
+            isinstance(compact_meta, dict)
+            and compact_meta.get("priority_layout_enabled")
+            and compact_meta.get("empty_candidate")
+        ):
+            recovered_feature = torch.zeros_like(feature)
+            frame_budget_bytes = (
+                self._frame_budget_bytes_from_channel_profile(
+                    channel_profile,
+                    budget_bytes,
+                    active_channel_state,
+                )
+            )
+            if update_cache:
+                self._update_prev_feature_cache(
+                    feature, link_id, agent_index, ego_index
+                )
+
+            record = copy.deepcopy(base_record)
+            record.update({
+                "bypassed": False,
+                "action_source": action_source,
+                "action": action_dict,
+                "no_send": False,
+                "no_effective_send": True,
+                "empty_candidate": True,
+                "empty_candidate_reason":
+                    "where2comm_candidate_mask_empty",
+                "temporal_source": temporal_source,
+                "output_shape": tuple(recovered_feature.shape),
+                "output_dtype": str(recovered_feature.dtype),
+                "compact_sparse":
+                    self._compact_meta_for_record(compact_meta),
+                "quantization": {
+                    "mode": str(self._get_action_quant_mode(action)),
+                    "skipped": True,
+                    "reason": "empty_candidate",
+                },
+                "packetization": {
+                    "mode": "byte_stream",
+                    "num_packets": 0,
+                },
+                "packet": {
+                    "num_source_packets": 0,
+                    "num_encoded_packets": 0,
+                    "num_transmitted_packets": 0,
+                    "num_received_packets": 0,
+                },
+                "bandwidth_selection": {
+                    "mode": "empty_candidate",
+                    "budget_bytes": float(frame_budget_bytes),
+                    "num_tx_packets": 0,
+                    "num_missing_by_budget": 0,
+                },
+                "size": {
+                    "raw_numel": int(feature.numel()),
+                    "raw_bytes_fp32_reference":
+                        float(feature.numel() * 4),
+                    "compressed_bytes": 0.0,
+                    "actual_num_source_packets": 0,
+                    "actual_num_encoded_packets": 0,
+                    "actual_transmitted_bytes": 0.0,
+                    "actual_received_bytes": 0.0,
+                    "bandwidth_budget_bytes":
+                        float(frame_budget_bytes),
+                },
+                "quality": {"q_recv": 0.0, "q_cache": 0.0},
+                "tx_bytes": 0.0,
+                "rx_bytes": 0.0,
+                "transmitted_bytes": 0.0,
+                "received_bytes": 0.0,
+                "actual_transmitted_bytes": 0.0,
+                "actual_received_bytes": 0.0,
+                "raw_bytes":
+                    int(feature.numel() * feature.element_size()),
+                "compressed_bytes": 0.0,
+                "encoded_bytes": 0.0,
+                "effective_received_bytes": 0.0,
+                "late": False,
+                "dropped_by_late": False,
+            })
+            self._append_record(record)
+            result = ARCECommResult(recovered_feature, record)
+            return (
+                result
+                if return_result
+                else (recovered_feature, record)
+            )
+
         # 2. Quantize first.
         quantizer = self._build_quantizer(action)
         quant_mode = self._get_action_quant_mode(action)
-        quant_result = quantizer.quantize_feature(
-            feature_tx,
-            mode=quant_mode,
-        )
+        if compact_meta is not None and compact_meta.get("layout") == "KC":
+            quant_result = quantizer.quantize(
+                feature_tx,
+                mode=quant_mode,
+                channel_dim=1,
+            )
+        else:
+            quant_result = quantizer.quantize_feature(
+                feature_tx,
+                mode=quant_mode,
+            )
 
         if quant_result.packed_tensor is not None:
             stream_tensor = quant_result.packed_tensor
@@ -1672,6 +1883,35 @@ class ARCEFixedComm:
                 output_dtype=feature.dtype,
             )
 
+        # Experiment-3 read-only counterfactual: reconstruct the payload using
+        # only directly received systematic source packets. FEC output used by
+        # normal inference remains unchanged.
+        direct_recovered_feature_compact = None
+        if getattr(self, "fec_recovery_auditor", None) is not None and self.fec_recovery_auditor.enabled:
+            direct_source_receive_mask = (
+                receive_mask[:num_source_packets] & source_tx_mask
+            )
+            direct_source_packets = source_packets.clone()
+            direct_source_packets[~direct_source_receive_mask] = 0
+            direct_stream_tensor = self.byte_packetizer.unpacketize(
+                packets=direct_source_packets,
+                meta=packet_result,
+            )
+            if source_tensor_kind == "packed_int4":
+                direct_recovered_feature_compact = quantizer.unpack_and_dequantize_int4(
+                    packed_tensor=direct_stream_tensor,
+                    meta=quant_result.meta,
+                    original_numel=int(quant_result.q_tensor.numel()),
+                    shape=tuple(int(x) for x in quant_result.q_tensor.shape),
+                    output_dtype=feature.dtype,
+                )
+            else:
+                direct_recovered_feature_compact = quantizer.dequantize(
+                    q_tensor=direct_stream_tensor,
+                    meta=quant_result.meta,
+                    output_dtype=feature.dtype,
+                )
+
         if update_cache:
             self._update_prev_feature_cache(
                 feature=feature,
@@ -1777,7 +2017,7 @@ class ARCEFixedComm:
                 },
                 "packetization": packet_result.to_meta_dict(),
 
-                "compact_sparse": copy.deepcopy(compact_meta) if compact_meta is not None else None,
+                "compact_sparse": self._compact_meta_for_record(compact_meta),
                 "transport": {
                     "transport_mode": str(getattr(self, "transport_mode", "compact_sparse")),
                     "mask_used_by_arce": bool(compact_meta is not None),
@@ -1909,10 +2149,78 @@ class ARCEFixedComm:
             stream_tensor=stream_tensor,
             packet_result=packet_result,
             source_tx_mask=source_tx_mask,
+            budget_accounting={
+                "accounting_version": 2,
+                "bandwidth_budget_bytes": float(frame_budget_bytes),
+                "packet_size_bytes": int(packet_size_bytes),
+                "num_source_packets": int(num_source_packets),
+                "num_parity_packets": int(num_parity_packets),
+                "num_encoded_packets": int(num_encoded_packets),
+                "num_transmitted_packets": int(num_tx_packets),
+                "num_transmitted_source_packets": int(num_tx_source_packets),
+                "num_transmitted_parity_packets": int(num_tx_parity_packets),
+                "num_source_dropped_by_budget": int(num_source_dropped_by_budget),
+                "num_parity_dropped_by_budget": int(num_parity_dropped_by_budget),
+                "num_missing_by_budget": int(num_missing_by_budget),
+                "actual_transmitted_bytes": float(transmitted_bytes),
+                "actual_transmitted_source_bytes": float(
+                    num_tx_source_packets * packet_size_bytes
+                ),
+                "actual_transmitted_parity_bytes": float(
+                    num_tx_parity_packets * packet_size_bytes
+                ),
+                "num_lost_by_bernoulli": int(num_lost_by_bernoulli),
+                "num_direct_received_source_packets": int(
+                    num_direct_received_source_packets
+                ),
+                "num_fec_recovered_source_packets": int(
+                    num_fec_recovered_source_packets
+                ),
+                "num_recovered_source_packets": int(num_recovered_source_packets),
+                "num_missing_source_packets": int(num_missing_source_packets),
+            },
             comm_record=record,
         )
         if audit_summary is not None:
             record["compression_audit"] = audit_summary
+
+        fec_audit_summary = None
+        if getattr(self, "fec_recovery_auditor", None) is not None and self.fec_recovery_auditor.enabled:
+            if direct_recovered_feature_compact is None:
+                raise RuntimeError("Experiment-3 direct-only tensor was not constructed.")
+            fec_audit_summary = self.fec_recovery_auditor.record(
+                frame_id=frame_id,
+                link_id=link_id,
+                ego_index=int(ego_index),
+                agent_index=int(agent_index),
+                quant_mode=str(quant_result.mode),
+                fec_type=str(fec_runtime_cfg.get("fec_type", fec_runtime_cfg.get("type", "none"))),
+                redundancy_ratio=float(fec_runtime_cfg.get("redundancy_ratio", 0.0)),
+                plr=float(channel_loss_info.get("plr", 0.0)),
+                quant_dequantized=quant_result.dequantized,
+                direct_recovered_compact=direct_recovered_feature_compact,
+                fec_recovered_compact=recovered_feature_compact,
+                source_tx_mask=source_tx_mask,
+                parity_tx_mask=parity_tx_mask,
+                source_receive_mask=(receive_mask[:num_source_packets] & source_tx_mask),
+                parity_receive_mask=(receive_mask[num_source_packets:num_encoded_packets] & parity_tx_mask),
+                num_source_packets=int(num_source_packets),
+                num_parity_packets=int(num_parity_packets),
+                num_encoded_packets=int(num_encoded_packets),
+                num_tx_source_packets=int(num_tx_source_packets),
+                num_tx_parity_packets=int(num_tx_parity_packets),
+                num_source_dropped_by_budget=int(num_source_dropped_by_budget),
+                num_parity_dropped_by_budget=int(num_parity_dropped_by_budget),
+                num_direct_received_source_packets=int(num_direct_received_source_packets),
+                num_fec_recovered_source_packets=int(num_fec_recovered_source_packets),
+                num_missing_source_packets=int(num_missing_source_packets),
+                bandwidth_budget_bytes=float(frame_budget_bytes),
+                actual_transmitted_bytes=float(transmitted_bytes),
+                actual_received_bytes=float(received_bytes),
+                packet_size_bytes=int(packet_size_bytes),
+            )
+            if fec_audit_summary is not None:
+                record["fec_recovery_audit"] = fec_audit_summary
 
         self._append_record(record)
 
@@ -2012,6 +2320,7 @@ class ARCEFixedComm:
         update_cache: bool = True,
         return_records: bool = True,
         message_masks: Optional[torch.Tensor] = None,
+        priority_maps: Optional[torch.Tensor] = None,
     ):
         """
         Communicate OpenCOOD flattened CAV features.
@@ -2022,6 +2331,7 @@ class ARCEFixedComm:
         features = _require_tensor(features, "features")
         if is_payload_native_transport(getattr(self, "transport_mode", "")):
             message_masks = None
+            priority_maps = None
 
         if features.dim() != 4:
             raise ValueError(
@@ -2090,6 +2400,10 @@ class ARCEFixedComm:
                 if message_masks is not None:
                     cav_message_mask = message_masks[global_idx]
 
+                cav_priority_map = None
+                if priority_maps is not None:
+                    cav_priority_map = priority_maps[global_idx]
+
                 budget_for_link = (
                     self._link_budget_bytes_for_state(channel_state, num_collaborators)
                     if int(cav_idx) != int(ego_index)
@@ -2105,6 +2419,7 @@ class ARCEFixedComm:
                     channel_state=channel_state,
                     budget_bytes=budget_for_link,
                     message_mask=cav_message_mask,
+                    priority_map=cav_priority_map,
                     update_cache=update_cache,
                     return_result=False,
                 )

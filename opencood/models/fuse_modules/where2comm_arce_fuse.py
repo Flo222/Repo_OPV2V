@@ -144,8 +144,8 @@ class Where2commArce(nn.Module):
     def _maybe_arce_comm(
         self,
         x: torch.Tensor,
-        communication_masks: torch.Tensor,
-        raw_masks: Optional[torch.Tensor],
+        candidate_masks: Optional[torch.Tensor],
+        priority_maps: Optional[torch.Tensor],
         record_len: torch.Tensor,
         data_dict: Optional[Dict[str, Any]],
         frame_id: Optional[int],
@@ -159,10 +159,17 @@ class Where2commArce(nn.Module):
         # message and must not consume Where2Comm-specific masks. Other modes may
         # still use Where2Comm mask-native payloads for fixed baselines.
         transport_mode = str(getattr(self.arce_comm, "transport_mode", "")).strip().lower()
+        priority_layout_enabled = bool(
+            getattr(self.arce_comm, "priority_layout_enabled", False)
+        )
         if transport_mode == "payload_native":
-            message_masks = None
-        else:
-            message_masks = raw_masks if raw_masks is not None else communication_masks
+            candidate_masks = None
+            priority_maps = None
+        elif not priority_layout_enabled:
+            candidate_masks = (
+                priority_maps if priority_maps is not None else candidate_masks
+            )
+            priority_maps = None
 
         # Dispatch only kwargs supported by the active ARCE implementation.
         # ARCEC2MABComm supports local_cav_confidences; ARCEFixedComm does not.
@@ -179,7 +186,11 @@ class Where2commArce(nn.Module):
             "return_records": True,
         }
         if "message_masks" in params:
-            kwargs["message_masks"] = message_masks
+            # Backward-compatible parameter name: this tensor is strictly the
+            # binary candidate mask, never the continuous priority map.
+            kwargs["message_masks"] = candidate_masks
+        if priority_layout_enabled and "priority_maps" in params:
+            kwargs["priority_maps"] = priority_maps
         if "local_cav_confidences" in params:
             kwargs["local_cav_confidences"] = local_cav_confidences
         if "local_cav_confidence_maps" in params:
@@ -269,13 +280,17 @@ class Where2commArce(nn.Module):
                         message_scores = _confidence_maps * raw_masks
                         if x.shape[-1] != communication_masks.shape[-1] or x.shape[-2] != communication_masks.shape[-2]:
                             communication_masks = F.interpolate(communication_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
-                            raw_masks = F.interpolate(raw_masks, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
+                            raw_masks = F.interpolate(
+                                raw_masks.float(),
+                                size=(x.shape[-2], x.shape[-1]),
+                                mode="nearest",
+                            ).to(raw_masks.dtype)
                             message_scores = F.interpolate(message_scores, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
                     x = x * communication_masks
                     x_before_arce = x.detach().clone()
                     x, arce_info = self._maybe_arce_comm(
                         x,
-                        communication_masks,
+                        raw_masks,
                         message_scores,
                         record_len,
                         data_dict,
@@ -319,7 +334,7 @@ class Where2commArce(nn.Module):
             x_before_arce = x.detach().clone()
             x, arce_info = self._maybe_arce_comm(
                 x,
-                communication_masks,
+                raw_masks,
                 message_scores,
                 record_len,
                 data_dict,

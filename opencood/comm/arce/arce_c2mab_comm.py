@@ -102,6 +102,7 @@ class ARCEC2MABComm:
 
         self.transport_mode = normalize_transport_mode(self.arce_cfg)
         self.arce_cfg = apply_payload_native_transport_to_arce_cfg(self.arce_cfg)
+        self.priority_layout_enabled = True
 
         executor_cfg = build_c2mab_executor_cfg(cfg, self.arce_cfg)
         self.executor = ARCEFixedComm(executor_cfg)
@@ -716,6 +717,7 @@ class ARCEC2MABComm:
         update_cache: bool = True,
         return_records: bool = True,
         message_masks: Optional[torch.Tensor] = None,
+        priority_maps: Optional[torch.Tensor] = None,
 
         local_cav_confidences: Optional[torch.Tensor] = None,
         local_cav_confidence_maps: Optional[torch.Tensor] = None,
@@ -746,6 +748,9 @@ class ARCEC2MABComm:
         link_budgets = round_ctx["link_budgets"]
         runtime_message_masks = (
             None if is_payload_native_transport(self.arce_cfg) else message_masks
+        )
+        runtime_priority_maps = (
+            None if is_payload_native_transport(self.arce_cfg) else priority_maps
         )
 
         proposals, no_send_candidates = build_c2mab_proposals(
@@ -895,6 +900,11 @@ class ARCEC2MABComm:
                         if runtime_message_masks is not None
                         else None
                     ),
+                    priority_map=(
+                        runtime_priority_maps[sender_idx]
+                        if runtime_priority_maps is not None
+                        else None
+                    ),
                     complementarity=float(getattr(selected, "complementarity", 0.0)),
                     update_cache=update_cache,
                     return_result=False,
@@ -991,6 +1001,7 @@ class ARCEC2MABComm:
         update_cache: bool = True,
         return_records: bool = True,
         message_masks: Optional[torch.Tensor] = None,
+        priority_maps: Optional[torch.Tensor] = None,
 
         local_cav_confidences: Optional[torch.Tensor] = None,
         local_cav_confidence_maps: Optional[torch.Tensor] = None,
@@ -1004,6 +1015,7 @@ class ARCEC2MABComm:
 
         if is_payload_native_transport(self.arce_cfg):
             message_masks = None
+            priority_maps = None
 
         outputs = []
         all_records = []
@@ -1015,6 +1027,10 @@ class ARCEC2MABComm:
             group_masks = None
             if message_masks is not None:
                 group_masks = message_masks[offset: offset + n]
+
+            group_priority_maps = None
+            if priority_maps is not None:
+                group_priority_maps = priority_maps[offset: offset + n]
 
             group_local_cav_confidences = None
             if local_cav_confidences is not None:
@@ -1039,6 +1055,7 @@ class ARCEC2MABComm:
                 update_cache=update_cache,
                 return_records=True,
                 message_masks=group_masks,
+                priority_maps=group_priority_maps,
 
                 local_cav_confidences=group_local_cav_confidences,
                 local_cav_confidence_maps=group_local_cav_confidence_maps,
