@@ -4,9 +4,7 @@ from __future__ import print_function
 import argparse
 import json
 
-import torch
-import yaml
-
+from opencood.hypes_yaml import yaml_utils
 from opencood.tools import train_utils
 
 
@@ -15,8 +13,7 @@ def main():
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
 
-    with open(args.config, "r") as f:
-        hypes = yaml.safe_load(f)
+    hypes = yaml_utils.load_yaml(args.config, None)
 
     model = train_utils.create_model(hypes)
     adapter = getattr(model, "payload_transport", None)
