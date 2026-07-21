@@ -9,19 +9,7 @@ from opencood.models.sub_modules.downsample_conv import DownsampleConv
 from opencood.models.sub_modules.naive_compress import NaiveCompressor
 from opencood.models.fuse_modules.v2xvit_basic import V2XTransformer
 
-try:
-    from opencood.comm.arce.arce_fixed_comm import ARCEFixedComm
-    _ARCE_IMPORT_ERROR = None
-except Exception as e:
-    ARCEFixedComm = None
-    _ARCE_IMPORT_ERROR = e
-
-try:
-    from opencood.comm.arce.arce_c2mab_comm import ARCEC2MABComm
-    _ARCE_C2MAB_IMPORT_ERROR = None
-except Exception as e:
-    ARCEC2MABComm = None
-    _ARCE_C2MAB_IMPORT_ERROR = e
+from opencood.models.sub_modules.v2xvit_native_payload_adapter import V2XViTNativePayloadAdapter
 
 ID_TO_CHANNEL_STATE = {
     0: "good",
@@ -80,46 +68,20 @@ class PointPillarTransformerOpv2vArce(nn.Module):
             self.naive_compressor = NaiveCompressor(256, args['compression'])
 
         # -------------------------
-        # ARCE communication layer
+        # Unified baseline-native payload bridge.
+        #
+        # V2X-ViT must finish shrink/native compression first. The adapter
+        # transports only [sum(record_len), C, H, W], before regroup padding
+        # and before the 3 priors are repeated over HxW.
         # -------------------------
         self.arce_cfg = args.get('arce', {}) or {}
-        self.arce_enabled = bool(self.arce_cfg.get('enabled', False))
-
-        if self.arce_enabled:
-            arce_mode = str(
-                self.arce_cfg.get("mode", self.arce_cfg.get("policy", "fixed"))
-            ).strip().lower()
-            arce_policy = str(
-                self.arce_cfg.get("policy", arce_mode)
-            ).strip().lower()
-
-            use_dc2mab = (
-                arce_mode in ("dc2mab", "c2mab")
-                or arce_policy in ("dc2mab_sender_ego", "c2mab_sender_ego")
-            )
-
-            if use_dc2mab:
-                if ARCEC2MABComm is None:
-                    raise ImportError(
-                        "ARCE DC2MAB is enabled, but ARCEC2MABComm cannot be imported from "
-                        "opencood.comm.arce.arce_c2mab_comm. "
-                        f"Original import error: {_ARCE_C2MAB_IMPORT_ERROR}"
-                    )
-                self.arce_comm = ARCEC2MABComm(self.arce_cfg)
-                self.arce_comm_type = "dc2mab"
-            else:
-                if ARCEFixedComm is None:
-                    raise ImportError(
-                        "ARCE is enabled, but ARCEFixedComm cannot be imported from "
-                        "opencood.comm.arce.arce_fixed_comm. "
-                        "Please create opencood/comm/arce/arce_fixed_comm.py first. "
-                        f"Original import error: {_ARCE_IMPORT_ERROR}"
-                    )
-                self.arce_comm = ARCEFixedComm(self.arce_cfg)
-                self.arce_comm_type = "fixed_or_random"
-        else:
-            self.arce_comm = None
-            self.arce_comm_type = "disabled"
+        self.payload_transport = V2XViTNativePayloadAdapter(
+            self.arce_cfg,
+            dataset_name="OPV2V",
+        )
+        self.arce_enabled = self.payload_transport.enabled
+        self.arce_comm = self.payload_transport.executor
+        self.arce_comm_type = self.payload_transport.executor_type
 
         # -------------------------
         # V2X-ViT fusion transformer
@@ -276,63 +238,12 @@ class PointPillarTransformerOpv2vArce(nn.Module):
         return torch.cat([matrix, pad], dim=1)
 
     def _run_arce_comm(self, spatial_features_2d, record_len, data_dict):
-        """
-        Run ARCE communication layer on intermediate BEV features.
-
-        Input:
-            spatial_features_2d: [sum(record_len), C, H, W]
-            record_len: [B]
-
-        Output:
-            spatial_features_2d: impaired / recovered features with same shape
-            comm_info: communication statistics for logging
-        """
-        if not self.arce_enabled:
-            comm_info = {
-                "enabled": False,
-                "mode": "disabled",
-            }
-            return spatial_features_2d, comm_info
-
-        if self.arce_comm is None:
-            comm_info = {
-                "enabled": True,
-                "mode": "enabled_but_missing_arce_comm",
-            }
-            return spatial_features_2d, comm_info
-
-        if hasattr(self.arce_comm, "communicate_flattened_features"):
-            arce_out = self.arce_comm.communicate_flattened_features(
-                features=spatial_features_2d,
-                record_len=record_len,
-                data_dict=data_dict,
-                ego_index=0,
-                update_cache=True,
-                return_records=True,
-            )
-            if isinstance(arce_out, tuple):
-                spatial_features_2d, comm_info = arce_out
-            else:
-                spatial_features_2d = arce_out
-                comm_info = {
-                    "enabled": True,
-                    "mode": getattr(self, "arce_comm_type", "unknown"),
-                    "note": "ARCE comm returned tensor only.",
-                }
-        else:
-            spatial_features_2d, comm_info = self.arce_comm(
-                spatial_features_2d,
-                record_len,
-                data_dict=data_dict,
-            )
-
-        if comm_info is None:
-            comm_info = {
-                "enabled": True,
-                "mode": "enabled_but_no_info",
-            }
-
-        return spatial_features_2d, comm_info
+        """Transport V2X-ViT's post-compressor method-native payload."""
+        return self.payload_transport.communicate(
+            features=spatial_features_2d,
+            record_len=record_len,
+            data_dict=data_dict,
+        )
 
     def forward(self, data_dict):
         """
