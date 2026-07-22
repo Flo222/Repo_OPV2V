@@ -89,7 +89,46 @@ class NativePayload:
 
     @property
     def value_bytes(self) -> int:
-        return int(self.values.numel() * self.values.element_size())
+        """Complete model tensor bytes, including ego features."""
+        return int(
+            self.values.numel()
+            * self.values.element_size()
+        )
+
+    @property
+    def bytes_per_agent(self) -> int:
+        """Native dense feature bytes for one real CAV."""
+        total_agents = sum(self.record_len_list)
+        if total_agents <= 0:
+            return 0
+        if int(self.values.shape[0]) != total_agents:
+            raise ValueError(
+                "values.shape[0]={} does not match "
+                "sum(record_len)={}".format(
+                    int(self.values.shape[0]),
+                    total_agents,
+                )
+            )
+        return int(
+            self.values[0].numel()
+            * self.values.element_size()
+        )
+
+    @property
+    def non_ego_value_bytes(self) -> int:
+        """Feature bytes actually offered to sender-to-ego wireless links."""
+        return int(
+            self.collaborator_count
+            * self.bytes_per_agent
+        )
+
+    @property
+    def total_wire_bytes_estimate(self) -> int:
+        """Non-ego feature values plus the declared per-link auxiliaries."""
+        return int(
+            self.non_ego_value_bytes
+            + self.total_aux_bytes_estimate
+        )
 
     @property
     def per_link_aux_bytes(self) -> int:
@@ -113,9 +152,24 @@ class NativePayload:
             "dtype": str(self.values.dtype),
             "record_len": self.record_len_list,
             "collaborator_count": int(self.collaborator_count),
-            "value_bytes_before_channel": int(self.value_bytes),
-            "per_link_aux_bytes_estimate": int(self.per_link_aux_bytes),
-            "total_aux_bytes_estimate": int(self.total_aux_bytes_estimate),
+            "model_tensor_bytes_including_ego": int(
+                self.value_bytes
+            ),
+            "bytes_per_agent": int(
+                self.bytes_per_agent
+            ),
+            "non_ego_feature_bytes_before_channel": int(
+                self.non_ego_value_bytes
+            ),
+            "per_link_aux_bytes_estimate": int(
+                self.per_link_aux_bytes
+            ),
+            "total_aux_bytes_estimate": int(
+                self.total_aux_bytes_estimate
+            ),
+            "total_wire_bytes_estimate_before_quant": int(
+                self.total_wire_bytes_estimate
+            ),
             "metadata": copy.deepcopy(self.metadata),
         }
 
