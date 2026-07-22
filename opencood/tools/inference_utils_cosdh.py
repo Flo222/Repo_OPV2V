@@ -14,6 +14,62 @@ from opencood.utils.box_utils import create_bbx, project_box3d, nms_rotated
 from opencood.utils.camera_utils import indices_to_depth
 from sklearn.metrics import mean_squared_error
 
+
+def _paper_native_intermediate_late_outputs(batch_data, model):
+    """Build native late heads first, then make one joint frame UCB call.
+
+    Computing non-ego local heads before ego intermediate fusion does not
+    change CoSDH's mathematical inputs. It only makes all sender payload
+    segments available so the existing UCB executor can be invoked exactly
+    once and enforce one shared frame budget.
+    """
+    output_dict = OrderedDict()
+    non_ego_items = [
+        (cav_id, cav_content)
+        for cav_id, cav_content in batch_data.items()
+        if cav_id != "ego"
+    ]
+    late_outputs = []
+
+    for local_idx, (cav_id, cav_content) in enumerate(
+        non_ego_items, start=1
+    ):
+        cav_content["_ego_flag"] = False
+        cav_content["_comm_link_key"] = str(cav_id)
+        cav_content["_comm_local_idx"] = int(local_idx)
+        late_outputs.append(model(cav_content))
+
+    ego_content = batch_data["ego"]
+    ego_content["_ego_flag"] = True
+    ego_content["_comm_link_key"] = "ego"
+    ego_content["_comm_local_idx"] = 0
+    ego_content["_cosdh_paper_late_outputs"] = late_outputs
+    ego_content["_cosdh_paper_late_cav_ids"] = [
+        str(cav_id) for cav_id, _ in non_ego_items
+    ]
+
+    try:
+        ego_output = model(ego_content)
+    finally:
+        ego_content.pop("_cosdh_paper_late_outputs", None)
+        ego_content.pop("_cosdh_paper_late_cav_ids", None)
+
+    recovered_late = ego_output.pop(
+        "_cosdh_recovered_late_outputs", late_outputs
+    )
+    if len(recovered_late) != len(non_ego_items):
+        raise RuntimeError(
+            "Recovered late output count {} does not match non-ego count {}"
+            .format(len(recovered_late), len(non_ego_items))
+        )
+
+    output_dict["ego"] = ego_output
+    for (cav_id, _), cav_output in zip(
+        non_ego_items, recovered_late
+    ):
+        output_dict[cav_id] = cav_output
+    return output_dict
+
 def inference_late_fusion(batch_data, model, dataset):
     """Model inference for intermediate-late CoSDH fusion.
 
@@ -21,70 +77,76 @@ def inference_late_fusion(batch_data, model, dataset):
     CoSDH fusion module.  Non-ego late dense detection messages are damaged
     here, after each non-ego CAV produces its single-agent output.
     """
-    output_dict = OrderedDict()
+    if bool(getattr(model, "cosdh_paper_native_enabled", False)) \
+            and not model.training:
+        output_dict = _paper_native_intermediate_late_outputs(
+            batch_data, model
+        )
+    else:
+        output_dict = OrderedDict()
 
-    try:
-        from opencood.models.comm_modules.cosdh_late_message_channel import \
-            apply_late_markov_to_output_dict
-    except Exception:
-        apply_late_markov_to_output_dict = None
+        try:
+            from opencood.models.comm_modules.cosdh_late_message_channel import \
+                apply_late_markov_to_output_dict
+        except Exception:
+            apply_late_markov_to_output_dict = None
 
-    # Dedicated late-message channels need an explicit per-sample frame reset.
-    # Shared late/intermediate channels keep the frame started inside ego
-    # forward(), so start_late_comm_frame() is a no-op in that case.
-    if hasattr(model, "start_late_comm_frame"):
-        model.start_late_comm_frame()
+        # Dedicated late-message channels need an explicit per-sample frame reset.
+        # Shared late/intermediate channels keep the frame started inside ego
+        # forward(), so start_late_comm_frame() is a no-op in that case.
+        if hasattr(model, "start_late_comm_frame"):
+            model.start_late_comm_frame()
 
-    # Make the order explicit: ego first starts the intermediate Markov frame,
-    # then non-ego late messages optionally share the same physical link
-    # session with intermediate fusion when configured to do so.
-    cav_items = []
-    if 'ego' in batch_data:
-        cav_items.append(('ego', batch_data['ego']))
-    for cav_id, cav_content in batch_data.items():
-        if cav_id != 'ego':
-            cav_items.append((cav_id, cav_content))
+        # Make the order explicit: ego first starts the intermediate Markov frame,
+        # then non-ego late messages optionally share the same physical link
+        # session with intermediate fusion when configured to do so.
+        cav_items = []
+        if 'ego' in batch_data:
+            cav_items.append(('ego', batch_data['ego']))
+        for cav_id, cav_content in batch_data.items():
+            if cav_id != 'ego':
+                cav_items.append((cav_id, cav_content))
 
-    for local_idx, (cav_id, cav_content) in enumerate(cav_items):
-        cav_content["_ego_flag"] = cav_id == 'ego'
-        cav_content["_comm_link_key"] = str(cav_id)
-        cav_content["_comm_local_idx"] = local_idx
+        for local_idx, (cav_id, cav_content) in enumerate(cav_items):
+            cav_content["_ego_flag"] = cav_id == 'ego'
+            cav_content["_comm_link_key"] = str(cav_id)
+            cav_content["_comm_local_idx"] = local_idx
 
-        cav_output = model(cav_content)
+            cav_output = model(cav_content)
 
-        if cav_id != 'ego' and apply_late_markov_to_output_dict is not None:
-            share_with_intermediate = bool(
-                getattr(model, "cosdh_late_markov_share_profile", False)
-            )
-            channel = getattr(model, "cosdh_late_markov_channel", None)
-            if share_with_intermediate and hasattr(model, "cosdh_markov_channel"):
-                channel = getattr(model, "cosdh_markov_channel")
-            elif channel is None:
-                channel = getattr(model, "cosdh_markov_channel", None)
-
-            if channel is not None and bool(getattr(channel, "enabled", False)):
-                model_name = model.__class__.__name__.lower()
-                if "v2xreal" in model_name:
-                    verbose_prefix = "CoSDH-Markov-Late-V2XReal"
-                else:
-                    verbose_prefix = "CoSDH-Markov-Late-OPV2V"
-
-                if share_with_intermediate and \
-                        hasattr(channel, "_resolve_link_key"):
-                    link_key = channel._resolve_link_key(0, local_idx)
-                elif share_with_intermediate:
-                    link_key = 'link_' + str(cav_id)
-                else:
-                    link_key = 'late_' + str(cav_id)
-
-                cav_output = apply_late_markov_to_output_dict(
-                    cav_output,
-                    channel,
-                    link_key=link_key,
-                    verbose_prefix=verbose_prefix,
+            if cav_id != 'ego' and apply_late_markov_to_output_dict is not None:
+                share_with_intermediate = bool(
+                    getattr(model, "cosdh_late_markov_share_profile", False)
                 )
+                channel = getattr(model, "cosdh_late_markov_channel", None)
+                if share_with_intermediate and hasattr(model, "cosdh_markov_channel"):
+                    channel = getattr(model, "cosdh_markov_channel")
+                elif channel is None:
+                    channel = getattr(model, "cosdh_markov_channel", None)
 
-        output_dict[cav_id] = cav_output
+                if channel is not None and bool(getattr(channel, "enabled", False)):
+                    model_name = model.__class__.__name__.lower()
+                    if "v2xreal" in model_name:
+                        verbose_prefix = "CoSDH-Markov-Late-V2XReal"
+                    else:
+                        verbose_prefix = "CoSDH-Markov-Late-OPV2V"
+
+                    if share_with_intermediate and \
+                            hasattr(channel, "_resolve_link_key"):
+                        link_key = channel._resolve_link_key(0, local_idx)
+                    elif share_with_intermediate:
+                        link_key = 'link_' + str(cav_id)
+                    else:
+                        link_key = 'late_' + str(cav_id)
+
+                    cav_output = apply_late_markov_to_output_dict(
+                        cav_output,
+                        channel,
+                        link_key=link_key,
+                        verbose_prefix=verbose_prefix,
+                    )
+
+            output_dict[cav_id] = cav_output
 
     post_process_result = dataset.post_process(batch_data, output_dict)
     if not isinstance(post_process_result, tuple):

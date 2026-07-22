@@ -11,6 +11,7 @@ from opencood.models.sub_modules.downsample_conv import DownsampleConv
 from opencood.models.sub_modules.naive_compress_cosdh import NaiveCompressor
 from opencood.models.fuse_modules.fusion_in_one_cosdh_markov import Where2comm
 from opencood.models.comm_modules.cosdh_markov_byte_channel import CosDHMarkovByteChannel
+from opencood.models.sub_modules.cosdh_paper_native_adapter import CosDHPaperNativeFrameTransport, run_cosdh_paper_native_ego
 from opencood.utils.transformation_utils_cosdh import normalize_pairwise_tfm
 
 
@@ -106,6 +107,32 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
                 self.naive_compressor_list.append(NaiveCompressor(args['feat_dim'][i],
                                                                     args['compression']))
             print(f"compression_ratio: {self.compression_ratio}")
+
+        # Paper-native CoSDH bridge. This adapter is the only component that
+        # knows how to serialize CoSDH messages; ARCE/UCB remains unchanged.
+        self.cosdh_paper_native_cfg = copy.deepcopy(
+            args.get('cosdh_paper_native', {})
+        )
+        self.cosdh_paper_native_enabled = bool(
+            self.cosdh_paper_native_cfg.get('enabled', False)
+        )
+        self.cosdh_paper_native_in_train = bool(
+            self.cosdh_paper_native_cfg.get('paper_native_in_train', False)
+        )
+        self.cosdh_output_style = "v2xreal"
+        self.cosdh_paper_transport = CosDHPaperNativeFrameTransport(
+            arce_cfg=args.get('arce', {}),
+            paper_cfg=self.cosdh_paper_native_cfg,
+            dataset_name="V2X-Real",
+        )
+        self.latest_paper_native_info = {}
+
+        # Both datasets use one physical sender-to-ego frame budget for all
+        # three intermediate scales and the late message.
+        if self.cosdh_paper_native_enabled:
+            self.cosdh_late_markov_share_profile = True
+            self.cosdh_late_markov_channel = self.cosdh_markov_channel
+
 
         # V2X-Real is a three-class detection task.  Its postprocessor/loss
         # expect psm channels = anchor_number * num_class * num_class and
@@ -240,6 +267,25 @@ class PointPillarCosdhMarkovV2xreal(nn.Module):
             spatial_features_2d_single = self.shrink_conv(spatial_features_2d_single)
         
         psm_single = self.cls_head(spatial_features_2d_single)
+        
+
+        if (
+            self.cosdh_paper_native_enabled
+            and ego_flag
+            and (
+                not self.training
+                or self.cosdh_paper_native_in_train
+            )
+        ):
+            return run_cosdh_paper_native_ego(
+                model=self,
+                data_dict=data_dict,
+                spatial_features=spatial_features,
+                psm_single=psm_single,
+                record_len=record_len,
+                normalized_affine_matrix=normalized_affine_matrix,
+                req_mask=req_mask,
+            )
         
         # multiscale fusion
         feature_list = self.backbone.get_multiscale_feature(spatial_features)

@@ -6,6 +6,7 @@
 # Please make sure your pairwise_t_matrix is normalized before using it.
 
 import numpy as np
+import random
 import torch
 from torch import nn
 from icecream import ic
@@ -474,6 +475,168 @@ class Where2comm(nn.Module):
         cum_sum_len = torch.cumsum(record_len, dim=0)
         split_x = torch.tensor_split(x, cum_sum_len[:-1].cpu())
         return split_x
+
+    def _paper_native_supply_mask(self, confidence_maps):
+        """Generate CoSDH's original sender-local supply mask."""
+        maps = confidence_maps.sigmoid().max(dim=1, keepdim=True)[0]
+        communication = self.naive_communication
+        if bool(getattr(communication, "smooth", False)):
+            maps = communication.gaussian_filter(maps)
+
+        n, _, h, w = maps.shape
+        if self.training:
+            k = int(h * w * random.uniform(0, 1))
+            if k <= 0:
+                return torch.zeros_like(maps)
+            flat = maps.reshape(n, h * w)
+            indices = torch.topk(flat, k=k, sorted=False).indices
+            mask = torch.zeros_like(flat)
+            mask.scatter_(1, indices, 1.0)
+            return mask.reshape(n, 1, h, w)
+
+        k_ratio = float(getattr(communication, "k_ratio", 0) or 0)
+        if k_ratio > 0:
+            k = int(h * w * k_ratio)
+            if k <= 0:
+                return torch.zeros_like(maps)
+            flat = maps.reshape(n, h * w)
+            indices = torch.topk(flat, k=k, sorted=False).indices
+            mask = torch.zeros_like(flat)
+            mask.scatter_(1, indices, 1.0)
+            return mask.reshape(n, 1, h, w)
+
+        threshold = float(getattr(communication, "threshold", 0) or 0)
+        if threshold > 0:
+            return (maps > threshold).to(maps.dtype)
+        return torch.ones_like(maps)
+
+    def prepare_paper_native_encoded(
+        self,
+        x,
+        psm_single,
+        record_len,
+        normalized_affine_matrix,
+        compressor,
+        req_mask=None,
+        fp16_wire=True,
+        nonzero_epsilon=0.0,
+    ):
+        """CoSDH paper order: selection -> encoder -> FP16 -> wire.
+
+        The supply mask is generated in each sender's local frame. Ego's
+        demand mask is transformed into each sender frame before multiplication.
+        No coordinate transform is applied to the feature before transmission.
+        """
+        _, _, feature_h, feature_w = x.shape
+        batch_features = self.regroup(x, record_len)
+        batch_confidences = self.regroup(psm_single, record_len)
+
+        if req_mask is not None and torch.is_tensor(req_mask):
+            if int(req_mask.shape[0]) == int(sum(
+                int(v) for v in record_len.detach().cpu().tolist()
+            )):
+                batch_requests = self.regroup(req_mask, record_len)
+            else:
+                batch_requests = None
+        else:
+            batch_requests = None
+
+        selection_masks = []
+        rates = []
+        for batch_idx, confidence in enumerate(batch_confidences):
+            cav_num = int(record_len[batch_idx])
+            supply = self._paper_native_supply_mask(confidence)
+            _, _, conf_h, conf_w = supply.shape
+
+            if batch_requests is None:
+                demand_sender = torch.ones_like(supply)
+            else:
+                ego_demand = batch_requests[batch_idx][0:1].float()
+                if tuple(ego_demand.shape[-2:]) != (conf_h, conf_w):
+                    ego_demand = F.interpolate(
+                        ego_demand,
+                        size=(conf_h, conf_w),
+                        mode="nearest",
+                    )
+                repeated = ego_demand.repeat(cav_num, 1, 1, 1)
+                t_matrix = normalized_affine_matrix[batch_idx][
+                    :cav_num, :cav_num
+                ]
+                # t_matrix[target, source]. Ego demand is in source=0 and is
+                # transformed into every sender target frame.
+                ego_to_sender = t_matrix[:cav_num, 0, :, :]
+                demand_sender = warp_affine_simple(
+                    repeated,
+                    ego_to_sender,
+                    (conf_h, conf_w),
+                )
+                demand_sender = (demand_sender > 0.5).to(supply.dtype)
+
+            if self.fully:
+                selected = torch.ones_like(supply)
+            else:
+                selected = supply * demand_sender
+
+            # Ego keeps its full local feature and is never transmitted.
+            selected[0] = 1.0
+
+            if tuple(selected.shape[-2:]) != (feature_h, feature_w):
+                selected = F.interpolate(
+                    selected,
+                    size=(feature_h, feature_w),
+                    mode="nearest",
+                )
+            selection_masks.append(selected)
+
+            if cav_num > 1:
+                rates.append(
+                    float(
+                        selected[1:].sum().item()
+                        / float((cav_num - 1) * feature_h * feature_w)
+                    )
+                )
+            else:
+                rates.append(0.0)
+
+        selection_mask = torch.cat(selection_masks, dim=0)
+        sparse_sender_feature = x * selection_mask
+        encoded = compressor.encoder(sparse_sender_feature)
+        if fp16_wire:
+            # Preserve the paper's FP16 message baseline while keeping a
+            # float32 tensor interface for existing ARCE quantizers.
+            encoded = encoded.to(torch.float16).to(torch.float32)
+
+        scalar_mask = encoded.abs() > float(nonzero_epsilon)
+        communication_rate = sum(rates) / float(max(len(rates), 1))
+        return encoded, scalar_mask, communication_rate, selection_mask
+
+    def fuse_paper_native_received(
+        self,
+        local_raw_features,
+        recovered_encoded,
+        record_len,
+        normalized_affine_matrix,
+        compressor,
+    ):
+        """Paper receiver: decoder -> coordinate transform -> max fusion."""
+        decoded = compressor.decoder(recovered_encoded.float())
+
+        # Ego never traverses the wire or autoencoder in the paper equations;
+        # retain the original local F_i^(l).
+        offset = 0
+        for cav_num in [
+            int(v)
+            for v in record_len.detach().cpu().reshape(-1).tolist()
+        ]:
+            decoded[offset] = local_raw_features[offset]
+            offset += cav_num
+
+        return self.fuse_modules(
+            decoded,
+            record_len,
+            normalized_affine_matrix,
+            use_warp_feature=True,
+        )
 
     def forward(self, x, psm_single, record_len, normalized_affine_matrix, req_mask=None, scale_idx=0, num_scales=1, apply_markov=True):
         """
