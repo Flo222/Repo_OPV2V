@@ -15,7 +15,7 @@ from opencood.utils.camera_utils import indices_to_depth
 from sklearn.metrics import mean_squared_error
 
 
-def _paper_native_intermediate_late_outputs(batch_data, model):
+def _paper_native_intermediate_late_outputs(batch_data, model, dataset):
     """Build native late heads first, then make one joint frame UCB call.
 
     Computing non-ego local heads before ego intermediate fusion does not
@@ -24,11 +24,84 @@ def _paper_native_intermediate_late_outputs(batch_data, model):
     once and enforce one shared frame budget.
     """
     output_dict = OrderedDict()
-    non_ego_items = [
-        (cav_id, cav_content)
-        for cav_id, cav_content in batch_data.items()
-        if cav_id != "ego"
-    ]
+
+    # IntermediateLateFusionDataset keeps one input entry for each
+    # scene agent. The main ego's record_len, however, includes only
+    # agents within comm_range. Use the same distance filter as the
+    # dataset's native post_process before constructing late messages.
+    comm_range = float(
+        getattr(dataset, "params", {}).get(
+            "comm_range", float("inf")
+        )
+    )
+
+    non_ego_items = []
+    filtered_out_ids = []
+
+    for cav_id, cav_content in batch_data.items():
+        if cav_id == "ego":
+            continue
+
+        transformation = cav_content.get(
+            "transformation_matrix", None
+        )
+        if transformation is None:
+            raise KeyError(
+                "Non-ego CAV {} has no transformation_matrix"
+                .format(cav_id)
+            )
+
+        if torch.is_tensor(transformation):
+            matrix = transformation.detach().cpu().numpy()
+        else:
+            matrix = np.asarray(transformation)
+
+        # Be tolerant of an optional leading batch dimension.
+        while matrix.ndim > 2:
+            matrix = matrix[0]
+
+        if matrix.shape != (4, 4):
+            raise ValueError(
+                "Unexpected transformation_matrix shape {} for CAV {}"
+                .format(matrix.shape, cav_id)
+            )
+
+        tx = float(matrix[0, 3])
+        ty = float(matrix[1, 3])
+        distance = float((tx * tx + ty * ty) ** 0.5)
+
+        if distance <= comm_range:
+            non_ego_items.append((cav_id, cav_content))
+        else:
+            filtered_out_ids.append(str(cav_id))
+
+    # The selected Late senders must exactly match the collaborators
+    # represented in the ego Intermediate input.
+    ego_record_len = batch_data["ego"].get("record_len", None)
+    if ego_record_len is not None:
+        if torch.is_tensor(ego_record_len):
+            cav_num = int(
+                ego_record_len.detach().reshape(-1)[0].item()
+            )
+        else:
+            cav_num = int(
+                np.asarray(ego_record_len).reshape(-1)[0]
+            )
+
+        expected_collaborators = max(0, cav_num - 1)
+
+        if len(non_ego_items) != expected_collaborators:
+            raise RuntimeError(
+                "Communication-range filtering selected {} Late "
+                "senders, but ego record_len expects {}. "
+                "filtered_out_ids={}"
+                .format(
+                    len(non_ego_items),
+                    expected_collaborators,
+                    filtered_out_ids,
+                )
+            )
+
     late_outputs = []
 
     for local_idx, (cav_id, cav_content) in enumerate(
@@ -80,7 +153,7 @@ def inference_late_fusion(batch_data, model, dataset):
     if bool(getattr(model, "cosdh_paper_native_enabled", False)) \
             and not model.training:
         output_dict = _paper_native_intermediate_late_outputs(
-            batch_data, model
+            batch_data, model, dataset
         )
     else:
         output_dict = OrderedDict()
@@ -97,7 +170,71 @@ def inference_late_fusion(batch_data, model, dataset):
         if hasattr(model, "start_late_comm_frame"):
             model.start_late_comm_frame()
 
-        # Make the order explicit: ego first starts the intermediate Markov frame,
+        # COSDH_OFFICIAL_FIXED_MARKOV_INFERENCE
+    fixed_markov_transport = getattr(
+        model, 'cosdh_official_fixed_markov_transport', None
+    )
+    fixed_markov_enabled = bool(
+        fixed_markov_transport is not None
+        and bool(getattr(fixed_markov_transport, 'enabled', False))
+    )
+    if fixed_markov_enabled:
+        from opencood.models.comm_modules.\
+            cosdh_official_fixed_markov_postprocess import (
+                prepare_non_ego_late_candidates,
+                candidate_post_process_fixed_markov,
+            )
+
+        ego_content = batch_data['ego']
+        fixed_markov_transport.start_frame(
+            record_len=ego_content.get('record_len', None),
+            link_key_aliases=ego_content.get('cav_id_list', None),
+            data_dict=ego_content,
+        )
+
+        # Prepare sender-side Late candidates before the ego call so all
+        # Intermediate scales and Late records share one per-link byte stream.
+        local_idx = 1
+        for cav_id, cav_content in batch_data.items():
+            if cav_id == 'ego':
+                continue
+            cav_content['_ego_flag'] = False
+            cav_content['_comm_link_key'] = str(cav_id)
+            cav_content['_comm_local_idx'] = local_idx
+            output_dict[cav_id] = model(cav_content)
+            local_idx += 1
+
+        prepare_non_ego_late_candidates(
+            dataset, batch_data, output_dict, fixed_markov_transport
+        )
+
+        ego_content['_ego_flag'] = True
+        ego_content['_comm_link_key'] = 'ego'
+        ego_content['_comm_local_idx'] = 0
+        output_dict['ego'] = model(ego_content)
+
+        post_process_result = candidate_post_process_fixed_markov(
+            dataset,
+            batch_data,
+            output_dict,
+            fixed_markov_transport,
+        )
+        if len(post_process_result) == 4:
+            pred_box_tensor, pred_score, gt_box_tensor, gt_label_tensor = \
+                post_process_result
+        else:
+            pred_box_tensor, pred_score, gt_box_tensor = post_process_result
+            gt_label_tensor = None
+        return_dict = {
+            'pred_box_tensor': pred_box_tensor,
+            'pred_score': pred_score,
+            'gt_box_tensor': gt_box_tensor,
+        }
+        if gt_label_tensor is not None:
+            return_dict['gt_label_tensor'] = gt_label_tensor
+        return return_dict
+
+    # Make the order explicit: ego first starts the intermediate Markov frame,
         # then non-ego late messages optionally share the same physical link
         # session with intermediate fusion when configured to do so.
         cav_items = []
@@ -113,6 +250,24 @@ def inference_late_fusion(batch_data, model, dataset):
             cav_content["_comm_local_idx"] = local_idx
 
             cav_output = model(cav_content)
+
+            legacy_transport = getattr(
+                model, 'cosdh_legacy_native_transport', None
+            )
+            if (
+                cav_id != 'ego'
+                and legacy_transport is not None
+                and bool(getattr(legacy_transport, 'enabled', False))
+                and bool(getattr(legacy_transport, 'late_enabled', False))
+                # COSDH_LEGACY_DENSE_LATE_GUARD
+                and str(getattr(
+                    legacy_transport, 'late_payload_type', 'dense_heads'
+                )).lower() != 'candidate_records'
+            ):
+                cav_output = legacy_transport.roundtrip_late_output(
+                    cav_output,
+                    cav_id=cav_id,
+                )
 
             if cav_id != 'ego' and apply_late_markov_to_output_dict is not None:
                 share_with_intermediate = bool(
@@ -148,7 +303,30 @@ def inference_late_fusion(batch_data, model, dataset):
 
             output_dict[cav_id] = cav_output
 
-    post_process_result = dataset.post_process(batch_data, output_dict)
+    # COSDH_LEGACY_CANDIDATE_IDEAL
+    legacy_transport = getattr(
+        model, 'cosdh_legacy_native_transport', None
+    )
+    candidate_ideal = bool(
+        legacy_transport is not None
+        and bool(getattr(legacy_transport, 'enabled', False))
+        and bool(getattr(legacy_transport, 'late_enabled', False))
+        and str(getattr(
+            legacy_transport, 'late_payload_type', 'dense_heads'
+        )).lower() == 'candidate_records'
+    )
+    if candidate_ideal:
+        from opencood.models.comm_modules.\
+            cosdh_legacy_candidate_postprocess import \
+            candidate_post_process_ideal
+        post_process_result = candidate_post_process_ideal(
+            dataset,
+            batch_data,
+            output_dict,
+            legacy_transport,
+        )
+    else:
+        post_process_result = dataset.post_process(batch_data, output_dict)
     if not isinstance(post_process_result, tuple):
         raise RuntimeError(
             "dataset.post_process is expected to return a tuple, got "

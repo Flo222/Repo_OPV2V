@@ -403,10 +403,12 @@ class CosDHPaperNativeFrameTransport(object):
                 "CoSDH byte-stream inference currently requires batch_size=1"
             )
         cav_num = int(lengths[0])
-        if len(late_outputs) != max(0, cav_num - 1):
+        expected_collaborators = max(0, cav_num - 1)
+
+        if len(late_outputs) != expected_collaborators:
             raise ValueError(
                 "late output count {} does not match collaborators {}".format(
-                    len(late_outputs), max(0, cav_num - 1)
+                    len(late_outputs), expected_collaborators
                 )
             )
 

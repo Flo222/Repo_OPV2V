@@ -1,0 +1,1284 @@
+diff --git a/opencood/comm/arce/policies/ap_proxy_features.py b/opencood/comm/arce/policies/ap_proxy_features.py
+index 2ebb02a..c507b80 100644
+--- a/opencood/comm/arce/policies/ap_proxy_features.py
++++ b/opencood/comm/arce/policies/ap_proxy_features.py
+@@ -1,10 +1,11 @@
+ from __future__ import annotations
+ 
+-from typing import Dict
++from typing import Dict, Optional, Sequence
+ 
+ import torch
+ 
+ 
++# Kept unchanged so previously trained v2 models remain loadable.
+ DENSE_AP_PROXY_FEATURES = [
+     "dense_mean_conf",
+     "dense_max_conf",
+@@ -17,39 +18,349 @@ DENSE_AP_PROXY_FEATURES = [
+     "dense_top50_mean",
+ ]
+ 
++PSM_V3_EXTRA_FEATURES = [
++    "dense_p50",
++    "dense_p75",
++    "dense_p90",
++    "dense_p95",
++    "dense_p99",
++    "dense_entropy_mean",
++    "dense_ratio_gt_03",
++    "dense_ratio_gt_05",
++    "dense_ratio_gt_07",
++    "dense_grad_x_abs_mean",
++    "dense_grad_y_abs_mean",
++]
++
++REGRESSION_AP_PROXY_FEATURES = [
++    "reg_abs_mean",
++    "reg_abs_std",
++    "reg_abs_max",
++    "reg_rms",
++    "reg_abs_p50",
++    "reg_abs_p90",
++    "reg_abs_p99",
++    "reg_conf_weighted_abs_mean",
++    "reg_conf_weighted_rms",
++]
++
++HEAD_AP_PROXY_FEATURES = (
++    list(DENSE_AP_PROXY_FEATURES)
++    + list(PSM_V3_EXTRA_FEATURES)
++    + list(REGRESSION_AP_PROXY_FEATURES)
++)
++
++PAIRED_SPATIAL_AP_PROXY_FEATURES = [
++    "spatial_prob_l1_mean",
++    "spatial_prob_rms",
++    "spatial_prob_max_abs",
++    "spatial_prob_gain_mean",
++    "spatial_prob_loss_mean",
++    "spatial_prob_gain_sum",
++    "spatial_prob_loss_sum",
++    "spatial_prob_change_ratio_001",
++    "spatial_prob_change_ratio_005",
++    "spatial_prob_change_ratio_010",
++    "spatial_prob_cosine",
++    "spatial_top50_overlap",
++    "reg_diff_abs_mean",
++    "reg_diff_rms",
++    "reg_diff_abs_max",
++]
++
++
++def _zero_features(names) -> Dict[str, float]:
++    return {str(name): 0.0 for name in names}
++
++
++def _finite_scalar(value: torch.Tensor) -> float:
++    result = float(value.detach().cpu().item())
++    return result if result == result and abs(result) != float("inf") else 0.0
++
++
++def _quantiles(
++    flat: torch.Tensor,
++    values: Sequence[float],
++) -> Sequence[float]:
++    if flat.numel() == 0:
++        return [0.0 for _ in values]
++    quantiles = torch.as_tensor(
++        list(values),
++        dtype=flat.dtype,
++        device=flat.device,
++    )
++    result = torch.quantile(flat, quantiles)
++    return [_finite_scalar(item) for item in result]
++
++
++def _dense_probability_map(psm: torch.Tensor) -> torch.Tensor:
++    prob = torch.sigmoid(psm.detach()).float()
++    if prob.dim() == 4:
++        return prob.max(dim=1)[0]
++    if prob.dim() == 3:
++        return prob
++    if prob.dim() == 2:
++        return prob.unsqueeze(0)
++    return prob.reshape(1, 1, -1)
++
+ 
+ def dense_ap_proxy_features(psm: torch.Tensor) -> Dict[str, float]:
+-    """Extract the canonical class-collapsed dense-head proxy features."""
++    """Extract the canonical v2 class-collapsed dense-head features."""
+     with torch.no_grad():
+-        prob = torch.sigmoid(psm.detach()).float()
+-        if prob.dim() == 4:
+-            dense = prob.max(dim=1)[0]
+-        else:
+-            dense = prob.reshape(prob.shape[0], -1)
++        dense = _dense_probability_map(psm)
+         flat = dense.reshape(-1)
+ 
+         if flat.numel() == 0:
+-            return {name: 0.0 for name in DENSE_AP_PROXY_FEATURES}
++            return _zero_features(DENSE_AP_PROXY_FEATURES)
+ 
+         top10 = torch.topk(flat, k=min(10, int(flat.numel()))).values
+         top50 = torch.topk(flat, k=min(50, int(flat.numel()))).values
+         return {
+-            "dense_mean_conf": float(flat.mean().cpu().item()),
+-            "dense_max_conf": float(flat.max().cpu().item()),
+-            "dense_sum_conf": float(flat.sum().cpu().item()),
+-            "dense_std_conf": float(flat.std(unbiased=False).cpu().item()),
+-            "dense_count_gt_03": float((flat > 0.3).sum().cpu().item()),
+-            "dense_count_gt_05": float((flat > 0.5).sum().cpu().item()),
+-            "dense_count_gt_07": float((flat > 0.7).sum().cpu().item()),
+-            "dense_top10_mean": float(top10.mean().cpu().item()),
+-            "dense_top50_mean": float(top50.mean().cpu().item()),
++            "dense_mean_conf": _finite_scalar(flat.mean()),
++            "dense_max_conf": _finite_scalar(flat.max()),
++            "dense_sum_conf": _finite_scalar(flat.sum()),
++            "dense_std_conf": _finite_scalar(flat.std(unbiased=False)),
++            "dense_count_gt_03": _finite_scalar((flat > 0.3).sum()),
++            "dense_count_gt_05": _finite_scalar((flat > 0.5).sum()),
++            "dense_count_gt_07": _finite_scalar((flat > 0.7).sum()),
++            "dense_top10_mean": _finite_scalar(top10.mean()),
++            "dense_top50_mean": _finite_scalar(top50.mean()),
++        }
++
++
++def _psm_v3_extra_features(psm: torch.Tensor) -> Dict[str, float]:
++    with torch.no_grad():
++        dense = _dense_probability_map(psm)
++        flat = dense.reshape(-1)
++        if flat.numel() == 0:
++            return _zero_features(PSM_V3_EXTRA_FEATURES)
++
++        eps = 1e-6
++        clipped = flat.clamp(min=eps, max=1.0 - eps)
++        entropy = -(
++            clipped * clipped.log()
++            + (1.0 - clipped) * (1.0 - clipped).log()
++        )
++        p50, p75, p90, p95, p99 = _quantiles(
++            flat,
++            (0.50, 0.75, 0.90, 0.95, 0.99),
++        )
++        grad_x = (
++            (dense[..., 1:] - dense[..., :-1]).abs()
++            if dense.shape[-1] > 1
++            else dense.new_zeros((0,))
++        )
++        grad_y = (
++            (dense[..., 1:, :] - dense[..., :-1, :]).abs()
++            if dense.dim() >= 3 and dense.shape[-2] > 1
++            else dense.new_zeros((0,))
++        )
++        count = float(flat.numel())
++        return {
++            "dense_p50": p50,
++            "dense_p75": p75,
++            "dense_p90": p90,
++            "dense_p95": p95,
++            "dense_p99": p99,
++            "dense_entropy_mean": _finite_scalar(entropy.mean()),
++            "dense_ratio_gt_03": float((flat > 0.3).sum().item()) / count,
++            "dense_ratio_gt_05": float((flat > 0.5).sum().item()) / count,
++            "dense_ratio_gt_07": float((flat > 0.7).sum().item()) / count,
++            "dense_grad_x_abs_mean": (
++                _finite_scalar(grad_x.mean()) if grad_x.numel() else 0.0
++            ),
++            "dense_grad_y_abs_mean": (
++                _finite_scalar(grad_y.mean()) if grad_y.numel() else 0.0
++            ),
++        }
++
++
++def _regression_features(
++    psm: torch.Tensor,
++    rm: Optional[torch.Tensor],
++) -> Dict[str, float]:
++    if not torch.is_tensor(rm) or rm.numel() == 0:
++        return _zero_features(REGRESSION_AP_PROXY_FEATURES)
++
++    with torch.no_grad():
++        reg = rm.detach().float()
++        abs_reg = reg.abs()
++        flat = abs_reg.reshape(-1)
++        p50, p90, p99 = _quantiles(flat, (0.50, 0.90, 0.99))
++        result = {
++            "reg_abs_mean": _finite_scalar(flat.mean()),
++            "reg_abs_std": _finite_scalar(flat.std(unbiased=False)),
++            "reg_abs_max": _finite_scalar(flat.max()),
++            "reg_rms": _finite_scalar(torch.sqrt((reg * reg).mean())),
++            "reg_abs_p50": p50,
++            "reg_abs_p90": p90,
++            "reg_abs_p99": p99,
++            "reg_conf_weighted_abs_mean": 0.0,
++            "reg_conf_weighted_rms": 0.0,
+         }
+ 
++        if (
++            reg.dim() == 4
++            and psm.dim() == 4
++            and reg.shape[0] == psm.shape[0]
++            and reg.shape[-2:] == psm.shape[-2:]
++            and psm.shape[1] > 0
++            and reg.shape[1] == psm.shape[1] * 7
++        ):
++            batch, anchors, height, width = psm.shape
++            reg_by_anchor = reg.reshape(batch, anchors, 7, height, width)
++            weights = torch.sigmoid(psm.detach()).float().unsqueeze(2)
++            weight_sum = weights.sum() * 7.0
++            if float(weight_sum.cpu().item()) > 1e-12:
++                result["reg_conf_weighted_abs_mean"] = _finite_scalar(
++                    (reg_by_anchor.abs() * weights).sum() / weight_sum
++                )
++                result["reg_conf_weighted_rms"] = _finite_scalar(
++                    torch.sqrt(
++                        (reg_by_anchor.pow(2) * weights).sum() / weight_sum
++                    )
++                )
++        return result
++
++
++def head_ap_proxy_features(
++    psm: torch.Tensor,
++    rm: Optional[torch.Tensor],
++) -> Dict[str, float]:
++    """Features available identically in model forward and offline audit."""
++    features = dense_ap_proxy_features(psm)
++    features.update(_psm_v3_extra_features(psm))
++    features.update(_regression_features(psm, rm))
++    return features
++
++
++def _spatial_pair_features(
++    collab_psm: torch.Tensor,
++    collab_rm: Optional[torch.Tensor],
++    ego_psm: torch.Tensor,
++    ego_rm: Optional[torch.Tensor],
++) -> Dict[str, float]:
++    zeros = _zero_features(PAIRED_SPATIAL_AP_PROXY_FEATURES)
++    if tuple(collab_psm.shape) != tuple(ego_psm.shape):
++        return zeros
++
++    with torch.no_grad():
++        collab = _dense_probability_map(collab_psm)
++        ego = _dense_probability_map(ego_psm)
++        if tuple(collab.shape) != tuple(ego.shape) or collab.numel() == 0:
++            return zeros
++
++        diff = collab - ego
++        abs_diff = diff.abs()
++        positive = diff.clamp(min=0.0)
++        negative = (-diff).clamp(min=0.0)
++        collab_flat = collab.reshape(-1)
++        ego_flat = ego.reshape(-1)
++        denominator = (
++            torch.linalg.vector_norm(collab_flat)
++            * torch.linalg.vector_norm(ego_flat)
++        )
++        cosine = (
++            _finite_scalar(torch.dot(collab_flat, ego_flat) / denominator)
++            if float(denominator.cpu().item()) > 1e-12
++            else 0.0
++        )
++
++        topk = min(50, int(collab_flat.numel()))
++        if topk > 0:
++            collab_top = set(
++                int(x)
++                for x in torch.topk(collab_flat, k=topk).indices.cpu().tolist()
++            )
++            ego_top = set(
++                int(x)
++                for x in torch.topk(ego_flat, k=topk).indices.cpu().tolist()
++            )
++            top_overlap = float(len(collab_top.intersection(ego_top))) / topk
++        else:
++            top_overlap = 0.0
++
++        result = {
++            "spatial_prob_l1_mean": _finite_scalar(abs_diff.mean()),
++            "spatial_prob_rms": _finite_scalar(
++                torch.sqrt((diff * diff).mean())
++            ),
++            "spatial_prob_max_abs": _finite_scalar(abs_diff.max()),
++            "spatial_prob_gain_mean": _finite_scalar(positive.mean()),
++            "spatial_prob_loss_mean": _finite_scalar(negative.mean()),
++            "spatial_prob_gain_sum": _finite_scalar(positive.sum()),
++            "spatial_prob_loss_sum": _finite_scalar(negative.sum()),
++            "spatial_prob_change_ratio_001": _finite_scalar(
++                (abs_diff > 0.01).float().mean()
++            ),
++            "spatial_prob_change_ratio_005": _finite_scalar(
++                (abs_diff > 0.05).float().mean()
++            ),
++            "spatial_prob_change_ratio_010": _finite_scalar(
++                (abs_diff > 0.10).float().mean()
++            ),
++            "spatial_prob_cosine": cosine,
++            "spatial_top50_overlap": top_overlap,
++            "reg_diff_abs_mean": 0.0,
++            "reg_diff_rms": 0.0,
++            "reg_diff_abs_max": 0.0,
++        }
++
++        if (
++            torch.is_tensor(collab_rm)
++            and torch.is_tensor(ego_rm)
++            and tuple(collab_rm.shape) == tuple(ego_rm.shape)
++            and collab_rm.numel() > 0
++        ):
++            reg_diff = collab_rm.detach().float() - ego_rm.detach().float()
++            result["reg_diff_abs_mean"] = _finite_scalar(reg_diff.abs().mean())
++            result["reg_diff_rms"] = _finite_scalar(
++                torch.sqrt((reg_diff * reg_diff).mean())
++            )
++            result["reg_diff_abs_max"] = _finite_scalar(reg_diff.abs().max())
++        return result
++
++
++def paired_head_ap_proxy_features(
++    collab_psm: torch.Tensor,
++    collab_rm: Optional[torch.Tensor],
++    ego_psm: torch.Tensor,
++    ego_rm: Optional[torch.Tensor],
++    collab_head_features: Optional[Dict[str, float]] = None,
++    ego_head_features: Optional[Dict[str, float]] = None,
++) -> Dict[str, float]:
++    collab = (
++        head_ap_proxy_features(collab_psm, collab_rm)
++        if collab_head_features is None
++        else collab_head_features
++    )
++    ego = (
++        head_ap_proxy_features(ego_psm, ego_rm)
++        if ego_head_features is None
++        else ego_head_features
++    )
++
++    features = {}
++    for name in HEAD_AP_PROXY_FEATURES:
++        features["collab_" + name] = float(collab[name])
++        features["ego_" + name] = float(ego[name])
++        features["diff_" + name] = float(collab[name]) - float(ego[name])
++    features.update(
++        _spatial_pair_features(
++            collab_psm,
++            collab_rm,
++            ego_psm,
++            ego_rm,
++        )
++    )
++    return features
++
+ 
+ def paired_delta_ap_proxy_features(
+     collab_psm: torch.Tensor,
+     ego_psm: torch.Tensor,
+ ) -> Dict[str, float]:
++    """Backward-compatible v2 paired feature API."""
+     collab = dense_ap_proxy_features(collab_psm)
+     ego = dense_ap_proxy_features(ego_psm)
+ 
+diff --git a/opencood/models/point_pillar_where2comm_arce.py b/opencood/models/point_pillar_where2comm_arce.py
+index bea00f5..6b5ef1b 100644
+--- a/opencood/models/point_pillar_where2comm_arce.py
++++ b/opencood/models/point_pillar_where2comm_arce.py
+@@ -20,8 +20,12 @@ import torch.nn as nn
+ 
+ from opencood.comm.arce.c2mab_local_confidence import local_cav_confidences_from_psm, local_cav_confidence_maps_from_psm
+ from opencood.comm.arce.policies.ap_proxy_features import (
++    DENSE_AP_PROXY_FEATURES,
++    HEAD_AP_PROXY_FEATURES,
+     dense_ap_proxy_features,
++    head_ap_proxy_features,
+     paired_delta_ap_proxy_features,
++    paired_head_ap_proxy_features,
+     psm_is_identity,
+ )
+ 
+@@ -303,10 +307,52 @@ class PointPillarWhere2commArce(nn.Module):
+             if require_model:
+                 raise
+ 
+-    def _delta_reward_features_from_psm(self, collab_psm, ego_psm):
+-        return paired_delta_ap_proxy_features(collab_psm, ego_psm)
++    def _delta_reward_features_from_heads(
++        self,
++        collab_psm,
++        collab_rm,
++        ego_psm,
++        ego_rm,
++        collab_head_features=None,
++        ego_head_features=None,
++    ):
++        v2_features = (
++            ["collab_" + name for name in DENSE_AP_PROXY_FEATURES]
++            + ["ego_" + name for name in DENSE_AP_PROXY_FEATURES]
++            + ["diff_" + name for name in DENSE_AP_PROXY_FEATURES]
++        )
++        required = set(getattr(self, "delta_ap_proxy_feature_cols", []))
++        if required and required.issubset(set(v2_features)):
++            return paired_delta_ap_proxy_features(collab_psm, ego_psm)
++
++        if not all(
++            name in (collab_head_features or {})
++            for name in HEAD_AP_PROXY_FEATURES
++        ):
++            collab_head_features = None
++        if not all(
++            name in (ego_head_features or {})
++            for name in HEAD_AP_PROXY_FEATURES
++        ):
++            ego_head_features = None
++        return paired_head_ap_proxy_features(
++            collab_psm,
++            collab_rm,
++            ego_psm,
++            ego_rm,
++            collab_head_features=collab_head_features,
++            ego_head_features=ego_head_features,
++        )
+ 
+-    def _predict_delta_ap_proxy_gain(self, collab_psm, ego_psm):
++    def _predict_delta_ap_proxy_gain(
++        self,
++        collab_psm,
++        collab_rm,
++        ego_psm,
++        ego_rm,
++        collab_head_features=None,
++        ego_head_features=None,
++    ):
+         debug = {
+             "delta_ap_proxy_enabled": bool(getattr(self, "delta_ap_proxy_enabled", False)),
+             "delta_ap_proxy_used": False,
+@@ -316,10 +362,20 @@ class PointPillarWhere2commArce(nn.Module):
+             "delta_ap_hat": None,
+         }
+ 
+-        feats = self._delta_reward_features_from_psm(collab_psm, ego_psm)
++        feats = self._delta_reward_features_from_heads(
++            collab_psm,
++            collab_rm,
++            ego_psm,
++            ego_rm,
++            collab_head_features=collab_head_features,
++            ego_head_features=ego_head_features,
++        )
+         debug.update({k: float(v) for k, v in feats.items()})
+ 
+-        if psm_is_identity(collab_psm, ego_psm):
++        if (
++            psm_is_identity(collab_psm, ego_psm)
++            and psm_is_identity(collab_rm, ego_rm)
++        ):
+             debug["delta_ap_proxy_used"] = False
+             debug["source"] = "identity_no_send"
+             debug["delta_ap_hat"] = 0.0
+@@ -346,15 +402,18 @@ class PointPillarWhere2commArce(nn.Module):
+             debug["delta_ap_proxy_predict_error"] = "{}: {}".format(type(exc).__name__, exc)
+             return None, debug
+ 
+-    def _dense_reward_features_from_psm(self, psm):
++    def _dense_reward_features_from_heads(self, psm, rm):
+         """
+         Extract dense-head features available before post-processing.
+ 
+         These features match audit_runs/step8_ap_proxy_reward/ap_proxy_dense_rf.pkl.
+         """
+-        return dense_ap_proxy_features(psm)
++        required = set(getattr(self, "ap_proxy_feature_cols", []))
++        if required and required.issubset(set(DENSE_AP_PROXY_FEATURES)):
++            return dense_ap_proxy_features(psm)
++        return head_ap_proxy_features(psm, rm)
+ 
+-    def _predict_ap_proxy_confidence(self, psm):
++    def _predict_ap_proxy_confidence(self, psm, rm):
+         """
+         Return:
+             collab_confidence, debug_info
+@@ -362,7 +421,7 @@ class PointPillarWhere2commArce(nn.Module):
+         If AP proxy is available, collab_confidence = AP_hat.
+         Otherwise, collab_confidence = original dense mean confidence.
+         """
+-        dense_feats = self._dense_reward_features_from_psm(psm)
++        dense_feats = self._dense_reward_features_from_heads(psm, rm)
+         fallback_conf = float(dense_feats.get("dense_mean_conf", 0.0))
+ 
+         debug = {
+@@ -527,11 +586,14 @@ class PointPillarWhere2commArce(nn.Module):
+                 #   collab_confidence = AP_hat(fused psm)
+                 #   ego_confidence    = AP_hat(ego-only psm_single)
+                 # so update_with_proxy_reward uses a proxy AP gain.
+-                collab_confidence, ap_proxy_debug = self._predict_ap_proxy_confidence(psm)
++                collab_confidence, ap_proxy_debug = (
++                    self._predict_ap_proxy_confidence(psm, rm)
++                )
+ 
+                 ego_confidence = None
+                 ego_ap_proxy_debug = None
+                 ego_psm_for_delta = None
++                ego_rm_for_delta = None
+                 try:
+                     with torch.no_grad():
+                         if torch.is_tensor(record_len):
+@@ -554,8 +616,15 @@ class PointPillarWhere2commArce(nn.Module):
+                                 device=psm_single.device,
+                             )
+                             ego_psm_single = psm_single.index_select(0, _ego_idx_tensor)
++                            ego_rm_single = rm_single.index_select(0, _ego_idx_tensor)
+                             ego_psm_for_delta = ego_psm_single
+-                            ego_confidence, ego_ap_proxy_debug = self._predict_ap_proxy_confidence(ego_psm_single)
++                            ego_rm_for_delta = ego_rm_single
++                            ego_confidence, ego_ap_proxy_debug = (
++                                self._predict_ap_proxy_confidence(
++                                    ego_psm_single,
++                                    ego_rm_single,
++                                )
++                            )
+                 except Exception as _ego_exc:
+                     ego_confidence = None
+                     ego_ap_proxy_debug = {
+@@ -568,9 +637,19 @@ class PointPillarWhere2commArce(nn.Module):
+                     "delta_ap_proxy_used": False,
+                 }
+                 try:
+-                    if ego_psm_for_delta is not None:
++                    if (
++                        ego_psm_for_delta is not None
++                        and ego_rm_for_delta is not None
++                    ):
+                         delta_confidence_override, delta_ap_proxy_debug = (
+-                            self._predict_delta_ap_proxy_gain(psm, ego_psm_for_delta)
++                            self._predict_delta_ap_proxy_gain(
++                                psm,
++                                rm,
++                                ego_psm_for_delta,
++                                ego_rm_for_delta,
++                                collab_head_features=ap_proxy_debug,
++                                ego_head_features=ego_ap_proxy_debug,
++                            )
+                         )
+                 except Exception as _delta_exc:
+                     delta_ap_proxy_debug = {
+diff --git a/opencood/tools/audit_arce_counterfactual.py b/opencood/tools/audit_arce_counterfactual.py
+index 27365cb..3d83fc1 100644
+--- a/opencood/tools/audit_arce_counterfactual.py
++++ b/opencood/tools/audit_arce_counterfactual.py
+@@ -40,8 +40,9 @@ from opencood.tools.arce_online_eval import (
+ )
+ from opencood.utils import eval_utils
+ from opencood.comm.arce.policies.ap_proxy_features import (
+-    DENSE_AP_PROXY_FEATURES,
+-    paired_delta_ap_proxy_features,
++    HEAD_AP_PROXY_FEATURES,
++    PAIRED_SPATIAL_AP_PROXY_FEATURES,
++    paired_head_ap_proxy_features,
+ )
+ 
+ 
+@@ -76,6 +77,26 @@ def _record_len(batch: Dict[str, Any]) -> int:
+     return int(value)
+ 
+ 
++def _sequence_position(dataset: Any, frame_index: int) -> Tuple[int, int]:
++    """Map a global dataset index to the OPV2V scenario and local frame."""
++    boundaries = getattr(dataset, "len_record", None)
++    if not isinstance(boundaries, (list, tuple)) or not boundaries:
++        return 0, int(frame_index)
++
++    previous = 0
++    for sequence_id, boundary in enumerate(boundaries):
++        boundary = int(boundary)
++        if int(frame_index) < boundary:
++            return int(sequence_id), int(frame_index) - int(previous)
++        previous = boundary
++    raise IndexError(
++        "frame_index {} exceeds dataset len_record {}".format(
++            frame_index,
++            list(boundaries),
++        )
++    )
++
++
+ def _run_model(batch, model, dataset):
+     output = model(batch["ego"])
+     output_dict = OrderedDict([("ego", output)])
+@@ -220,7 +241,10 @@ def _spearman(xs: Iterable[Any], ys: Iterable[Any]) -> Optional[float]:
+     )
+ 
+ 
+-def _frame_ranking(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
++def _frame_ranking(
++    rows: List[Dict[str, Any]],
++    tie_tolerance: float = 0.01,
++) -> Dict[str, Any]:
+     valid = [
+         row for row in rows
+         if _float(row.get("proxy_delta_quality")) is not None
+@@ -238,7 +262,7 @@ def _frame_ranking(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+                 float(valid[i]["proxy_delta_quality"])
+                 - float(valid[j]["proxy_delta_quality"])
+             )
+-            if abs(true_diff) <= 1e-9 or abs(proxy_diff) <= 1e-9:
++            if abs(true_diff) <= float(tie_tolerance):
+                 continue
+             comparable += 1
+             correct += int(true_diff * proxy_diff > 0.0)
+@@ -265,6 +289,7 @@ def _frame_ranking(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+         ),
+         "pairwise_comparable": comparable,
+         "pairwise_correct": correct,
++        "tie_tolerance": float(tie_tolerance),
+         "pairwise_accuracy": (
+             float(correct / comparable) if comparable > 0 else None
+         ),
+@@ -274,9 +299,40 @@ def _frame_ranking(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+             bool(true_top["action_id"] == proxy_top["action_id"])
+             if true_top and proxy_top and top1_is_comparable else None
+         ),
++        "top_set_match": (
++            bool(
++                float(proxy_top["true_quality_mean_0357"])
++                >= float(true_top["true_quality_mean_0357"])
++                - float(tie_tolerance)
++            )
++            if true_top and proxy_top and top1_is_comparable else None
++        ),
++        "selected_action_regret": (
++            max(
++                0.0,
++                float(true_top["true_quality_mean_0357"])
++                - float(proxy_top["true_quality_mean_0357"]),
++            )
++            if true_top and proxy_top and top1_is_comparable else None
++        ),
+     }
+ 
+ 
++def _majority_sign_accuracy(
++    rows: List[Dict[str, Any]],
++    value_name: str,
++) -> Optional[float]:
++    signs = [
++        _sign(row.get(value_name))
++        for row in rows
++        if _sign(row.get(value_name)) != 0
++    ]
++    if not signs:
++        return None
++    positive = sum(sign > 0 for sign in signs) / len(signs)
++    return float(max(positive, 1.0 - positive))
++
++
+ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+     actions = [action for frame in frame_rows for action in frame["actions"]]
+     send = [action for action in actions if not action.get("no_send", False)]
+@@ -291,6 +347,14 @@ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+         and _sign(action.get("proxy_action_delta")) != 0
+     ]
+     ranking = [frame.get("ranking", {}) for frame in frame_rows]
++    global_majority = _majority_sign_accuracy(
++        send,
++        "true_global_delta_quality",
++    )
++    marginal_majority = _majority_sign_accuracy(
++        send,
++        "true_delta_quality",
++    )
+     by_state = defaultdict(list)
+     for action in actions:
+         by_state[str(action.get("channel_state", "unknown"))].append(action)
+@@ -429,6 +493,7 @@ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+             )
+             if global_sign_valid else None
+         ),
++        "sign_majority_baseline": global_majority,
+         "sign_comparable": len(global_sign_valid),
+         "marginal_sign_accuracy": (
+             float(
+@@ -440,6 +505,7 @@ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+             )
+             if action_sign_valid else None
+         ),
++        "marginal_sign_majority_baseline": marginal_majority,
+         "marginal_sign_comparable": len(action_sign_valid),
+         "ranking_pairwise_accuracy": _stats(
+             row.get("pairwise_accuracy") for row in ranking
+@@ -453,6 +519,25 @@ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+             if any(row.get("top1_match") is not None for row in ranking)
+             else None
+         ),
++        "ranking_top_set_match_rate": (
++            float(
++                sum(bool(row.get("top_set_match")) for row in ranking)
++                / max(
++                    sum(
++                        row.get("top_set_match") is not None
++                        for row in ranking
++                    ),
++                    1,
++                )
++            )
++            if any(
++                row.get("top_set_match") is not None for row in ranking
++            )
++            else None
++        ),
++        "ranking_selected_action_regret": _stats(
++            row.get("selected_action_regret") for row in ranking
++        ),
+         "online_selected_true_regret": _stats(
+             frame.get("online_selected_true_regret") for frame in frame_rows
+         ),
+@@ -502,12 +587,15 @@ def _write_proxy_dataset(
+     frame_rows: List[Dict[str, Any]],
+ ) -> int:
+     feature_cols = (
+-        ["collab_" + name for name in DENSE_AP_PROXY_FEATURES]
+-        + ["ego_" + name for name in DENSE_AP_PROXY_FEATURES]
+-        + ["diff_" + name for name in DENSE_AP_PROXY_FEATURES]
++        ["collab_" + name for name in HEAD_AP_PROXY_FEATURES]
++        + ["ego_" + name for name in HEAD_AP_PROXY_FEATURES]
++        + ["diff_" + name for name in HEAD_AP_PROXY_FEATURES]
++        + list(PAIRED_SPATIAL_AP_PROXY_FEATURES)
+     )
+     fieldnames = [
+         "frame_idx",
++        "sequence_id",
++        "sequence_frame_idx",
+         "sender_index",
+         "action_id",
+         "executed_action_id",
+@@ -536,6 +624,8 @@ def _write_proxy_dataset(
+                 continue
+             row = {
+                 "frame_idx": int(frame["frame_index"]),
++                "sequence_id": int(frame["sequence_id"]),
++                "sequence_frame_idx": int(frame["sequence_frame_index"]),
+                 "sender_index": int(frame["sender_index"]),
+                 "action_id": action.get("action_id"),
+                 "executed_action_id": action.get("executed_action_id"),
+@@ -716,9 +806,11 @@ def main():
+                             output["ego_rm"],
+                         )
+                         update = _reward_update(output)
+-                        proxy_features = paired_delta_ap_proxy_features(
++                        proxy_features = paired_head_ap_proxy_features(
+                             output["psm"],
++                            output["rm"],
+                             output["ego_psm"],
++                            output["ego_rm"],
+                         )
+                         scores = (
+                             pred_scores.detach().float().view(-1)
+@@ -815,8 +907,14 @@ def main():
+                         if row.get("channel_state") is not None
+                     )
+                 )
++                sequence_id, sequence_frame_index = _sequence_position(
++                    dataset,
++                    frame_index,
++                )
+                 frame_rows.append({
+                     "frame_index": int(frame_index),
++                    "sequence_id": int(sequence_id),
++                    "sequence_frame_index": int(sequence_frame_index),
+                     "sender_index": int(args.sender_index),
+                     "channel_states": valid_states,
+                     "matched_channel_state": len(valid_states) <= 1,
+@@ -905,6 +1003,7 @@ def main():
+     payload = {
+         "model_dir": args.model_dir,
+         "protocol": "online_state_matched_single_sender_counterfactual",
++        "feature_definition": "canonical_psm_rm_head_v3",
+         "sender_index": int(args.sender_index),
+         "action_ids": action_ids,
+         "summary": _summary(frame_rows),
+diff --git a/opencood/tools/merge_counterfactual_proxy_datasets.py b/opencood/tools/merge_counterfactual_proxy_datasets.py
+new file mode 100644
+index 0000000..42b813e
+--- /dev/null
++++ b/opencood/tools/merge_counterfactual_proxy_datasets.py
+@@ -0,0 +1,121 @@
++#!/usr/bin/env python
++from __future__ import annotations
++
++import argparse
++import csv
++import json
++from collections import Counter
++from pathlib import Path
++from typing import Dict, List, Sequence, Tuple
++
++
++KEY_COLUMNS = (
++    "sequence_id",
++    "frame_idx",
++    "sender_index",
++    "action_id",
++)
++
++
++def _read_csv(path: Path) -> Tuple[List[str], List[Dict[str, str]]]:
++    with path.open("r", newline="", encoding="utf-8-sig") as handle:
++        reader = csv.DictReader(handle)
++        return list(reader.fieldnames or []), list(reader)
++
++
++def _key(row: Dict[str, str]) -> Tuple[int, int, int, str]:
++    return (
++        int(row["sequence_id"]),
++        int(row["frame_idx"]),
++        int(row["sender_index"]),
++        str(row["action_id"]),
++    )
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--inputs", nargs="+", required=True)
++    parser.add_argument("--out_csv", required=True)
++    parser.add_argument("--out_meta", required=True)
++    args = parser.parse_args()
++
++    fieldnames = None
++    merged: Dict[Tuple[int, int, int, str], Dict[str, str]] = {}
++    source_counts = {}
++    duplicate_count = 0
++
++    for raw_path in args.inputs:
++        path = Path(raw_path)
++        current_fields, rows = _read_csv(path)
++        missing_keys = sorted(set(KEY_COLUMNS).difference(current_fields))
++        if missing_keys:
++            raise RuntimeError(
++                "{} missing key columns {}".format(path, missing_keys)
++            )
++        if fieldnames is None:
++            fieldnames = current_fields
++        elif current_fields != fieldnames:
++            raise RuntimeError(
++                "CSV schema mismatch for {}.".format(path)
++            )
++        source_counts[str(path)] = len(rows)
++        for row in rows:
++            key = _key(row)
++            previous = merged.get(key)
++            if previous is None:
++                merged[key] = row
++            elif previous == row:
++                duplicate_count += 1
++            else:
++                raise RuntimeError(
++                    "Conflicting duplicate counterfactual row: {}".format(key)
++                )
++
++    if not fieldnames or not merged:
++        raise RuntimeError("No counterfactual rows were loaded.")
++
++    sorted_rows = [merged[key] for key in sorted(merged)]
++    out_csv = Path(args.out_csv)
++    out_csv.parent.mkdir(parents=True, exist_ok=True)
++    with out_csv.open("w", newline="", encoding="utf-8") as handle:
++        writer = csv.DictWriter(handle, fieldnames=fieldnames)
++        writer.writeheader()
++        writer.writerows(sorted_rows)
++
++    frame_sender_keys = {
++        (
++            int(row["sequence_id"]),
++            int(row["frame_idx"]),
++            int(row["sender_index"]),
++        )
++        for row in sorted_rows
++    }
++    meta = {
++        "feature_definition": "canonical_psm_rm_head_v3",
++        "sources": source_counts,
++        "rows": len(sorted_rows),
++        "identical_duplicates_skipped": duplicate_count,
++        "sequences": sorted(
++            {int(row["sequence_id"]) for row in sorted_rows}
++        ),
++        "sender_counter": dict(
++            Counter(str(row["sender_index"]) for row in sorted_rows)
++        ),
++        "action_counter": dict(
++            Counter(str(row["action_id"]) for row in sorted_rows)
++        ),
++        "frame_sender_groups": len(frame_sender_keys),
++    }
++    out_meta = Path(args.out_meta)
++    out_meta.parent.mkdir(parents=True, exist_ok=True)
++    out_meta.write_text(
++        json.dumps(meta, indent=2, ensure_ascii=False),
++        encoding="utf-8",
++    )
++    print(json.dumps(meta, indent=2, ensure_ascii=False))
++    print("saved:", out_csv)
++    print("saved:", out_meta)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/opencood/tools/train_counterfactual_ap_proxies.py b/opencood/tools/train_counterfactual_ap_proxies.py
+index e965fb0..3e98a91 100644
+--- a/opencood/tools/train_counterfactual_ap_proxies.py
++++ b/opencood/tools/train_counterfactual_ap_proxies.py
+@@ -14,16 +14,18 @@ from sklearn.ensemble import RandomForestRegressor
+ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+ 
+ from opencood.comm.arce.policies.ap_proxy_features import (
+-    DENSE_AP_PROXY_FEATURES,
++    HEAD_AP_PROXY_FEATURES,
++    PAIRED_SPATIAL_AP_PROXY_FEATURES,
+ )
+ 
+ 
+-ABS_MODEL_FEATURES = list(DENSE_AP_PROXY_FEATURES)
+-ABS_CSV_FEATURES = ["collab_" + name for name in DENSE_AP_PROXY_FEATURES]
++ABS_MODEL_FEATURES = list(HEAD_AP_PROXY_FEATURES)
++ABS_CSV_FEATURES = ["collab_" + name for name in HEAD_AP_PROXY_FEATURES]
+ DELTA_FEATURES = (
+     ABS_CSV_FEATURES
+-    + ["ego_" + name for name in DENSE_AP_PROXY_FEATURES]
+-    + ["diff_" + name for name in DENSE_AP_PROXY_FEATURES]
++    + ["ego_" + name for name in HEAD_AP_PROXY_FEATURES]
++    + ["diff_" + name for name in HEAD_AP_PROXY_FEATURES]
++    + list(PAIRED_SPATIAL_AP_PROXY_FEATURES)
+ )
+ 
+ 
+@@ -82,10 +84,28 @@ def _regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, flo
+     }
+ 
+ 
++def _majority_sign_accuracy(values: np.ndarray, eps: float) -> float:
++    comparable = np.abs(values) > float(eps)
++    signs = np.sign(values[comparable])
++    if signs.size == 0:
++        return float("nan")
++    positive = float(np.mean(signs > 0.0))
++    return max(positive, 1.0 - positive)
++
++
++def _frame_key(row: Dict[str, str]) -> Tuple[int, int, int]:
++    return (
++        int(row["sequence_id"]),
++        int(row["frame_idx"]),
++        int(row["sender_index"]),
++    )
++
++
+ def _delta_action_metrics(
+     rows: Sequence[Dict[str, str]],
+     y_true: np.ndarray,
+     y_pred: np.ndarray,
++    tie_tolerance: float,
+ ) -> Dict[str, Any]:
+     send_indices = [
+         index
+@@ -101,15 +121,18 @@ def _delta_action_metrics(
+         if int(np.sum(comparable)) > 0
+         else float("nan")
+     )
++    global_majority = _majority_sign_accuracy(true_send, 1e-9)
+ 
+-    by_frame: Dict[int, List[int]] = {}
++    by_frame: Dict[Tuple[int, int, int], List[int]] = {}
+     for index, row in enumerate(rows):
+-        by_frame.setdefault(int(row["frame_idx"]), []).append(index)
++        by_frame.setdefault(_frame_key(row), []).append(index)
+ 
+     pair_correct = 0
+     pair_total = 0
+-    top1_hits = 0
++    exact_top1_hits = 0
++    top_set_hits = 0
+     frame_spearman = []
++    regrets = []
+     marginal_true = []
+     marginal_pred = []
+     for indices in by_frame.values():
+@@ -134,34 +157,51 @@ def _delta_action_metrics(
+                     float(rows[index]["label_true_delta_quality_mean_0357"])
+                 )
+                 marginal_pred.append(float(frame_pred[local]) - baseline_pred)
+-        top1_hits += int(
+-            indices[int(np.argmax(frame_true))]
+-            == indices[int(np.argmax(frame_pred))]
++
++        predicted_local = int(np.argmax(frame_pred))
++        true_local = int(np.argmax(frame_true))
++        true_best = float(np.max(frame_true))
++        predicted_true = float(frame_true[predicted_local])
++        exact_top1_hits += int(predicted_local == true_local)
++        top_set_hits += int(
++            predicted_true >= true_best - float(tie_tolerance)
+         )
++        regrets.append(max(0.0, true_best - predicted_true))
++
+         corr = _correlation(_rankdata(frame_true), _rankdata(frame_pred))
+         if math.isfinite(corr):
+             frame_spearman.append(corr)
+         for left in range(len(indices)):
+             for right in range(left + 1, len(indices)):
+                 true_diff = float(frame_true[left] - frame_true[right])
+-                if abs(true_diff) <= 1e-9:
++                if abs(true_diff) <= float(tie_tolerance):
+                     continue
+                 pred_diff = float(frame_pred[left] - frame_pred[right])
+                 pair_total += 1
+-                pair_correct += int(np.sign(true_diff) == np.sign(pred_diff))
++                pair_correct += int(true_diff * pred_diff > 0.0)
+ 
+-    no_send_pred = [
+-        float(y_pred[index])
+-        for index, row in enumerate(rows)
+-        if str(row.get("action_id", "")).startswith("send0_")
+-        or str(row.get("no_send", "")).strip().lower() in {"true", "1"}
+-    ]
+     marginal_true_array = np.asarray(marginal_true, dtype=np.float64)
+     marginal_pred_array = np.asarray(marginal_pred, dtype=np.float64)
+     marginal_comparable = np.abs(marginal_true_array) > 1e-9
++    marginal_sign_accuracy = (
++        float(
++            np.mean(
++                np.sign(marginal_true_array[marginal_comparable])
++                == np.sign(marginal_pred_array[marginal_comparable])
++            )
++        )
++        if int(np.sum(marginal_comparable)) > 0
++        else float("nan")
++    )
++    marginal_majority = _majority_sign_accuracy(
++        marginal_true_array,
++        1e-9,
++    )
+     return {
+         "send_only": _regression_metrics(true_send, pred_send),
+         "global_send_sign_accuracy": global_sign_accuracy,
++        "global_send_majority_sign_baseline": global_majority,
++        "global_send_sign_lift": global_sign_accuracy - global_majority,
+         "global_send_sign_comparable": int(np.sum(comparable)),
+         "centered_marginal_pearson": _correlation(
+             marginal_true_array,
+@@ -171,55 +211,76 @@ def _delta_action_metrics(
+             _rankdata(marginal_true_array),
+             _rankdata(marginal_pred_array),
+         ),
+-        "centered_marginal_sign_accuracy": (
+-            float(
+-                np.mean(
+-                    np.sign(marginal_true_array[marginal_comparable])
+-                    == np.sign(marginal_pred_array[marginal_comparable])
+-                )
+-            )
+-            if int(np.sum(marginal_comparable)) > 0
+-            else float("nan")
++        "centered_marginal_sign_accuracy": marginal_sign_accuracy,
++        "centered_marginal_majority_sign_baseline": marginal_majority,
++        "centered_marginal_sign_lift": (
++            marginal_sign_accuracy - marginal_majority
+         ),
+         "centered_marginal_sign_comparable": int(
+             np.sum(marginal_comparable)
+         ),
+-        "pairwise_ranking_accuracy": (
++        "tie_tolerance": float(tie_tolerance),
++        "tie_aware_pairwise_ranking_accuracy": (
+             float(pair_correct) / float(pair_total) if pair_total else float("nan")
+         ),
+-        "pairwise_comparisons": int(pair_total),
++        "tie_aware_pairwise_comparisons": int(pair_total),
+         "frame_ranking_spearman_mean": (
+             float(np.mean(frame_spearman)) if frame_spearman else float("nan")
+         ),
+-        "top1_match_rate": (
+-            float(top1_hits) / float(len(by_frame)) if by_frame else float("nan")
++        "exact_top1_match_rate": (
++            float(exact_top1_hits) / float(len(by_frame))
++            if by_frame else float("nan")
+         ),
+-        "num_validation_frames": int(len(by_frame)),
+-        "no_send_global_prediction_abs_mean": (
+-            float(np.mean(np.abs(no_send_pred))) if no_send_pred else float("nan")
++        "top_set_match_rate": (
++            float(top_set_hits) / float(len(by_frame))
++            if by_frame else float("nan")
++        ),
++        "selected_action_regret_mean": (
++            float(np.mean(regrets)) if regrets else float("nan")
+         ),
++        "selected_action_regret_p90": (
++            float(np.quantile(regrets, 0.90)) if regrets else float("nan")
++        ),
++        "num_validation_frames": int(len(by_frame)),
+     }
+ 
+ 
+-def _temporal_split(
++def _sequence_holdout_split(
+     rows: Sequence[Dict[str, str]],
+     validation_fraction: float,
+-) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[int], List[int]]:
+-    frame_ids = sorted({int(row["frame_idx"]) for row in rows})
+-    if len(frame_ids) < 5:
+-        raise ValueError("At least five audited frames are required.")
+-    validation_count = max(1, int(math.ceil(len(frame_ids) * validation_fraction)))
+-    if validation_count >= len(frame_ids):
+-        raise ValueError("Validation split leaves no training frames.")
+-    train_frames = frame_ids[:-validation_count]
+-    validation_frames = frame_ids[-validation_count:]
+-    train_set = set(train_frames)
+-    validation_set = set(validation_frames)
+-    train_rows = [row for row in rows if int(row["frame_idx"]) in train_set]
++) -> Tuple[
++    List[Dict[str, str]],
++    List[Dict[str, str]],
++    List[int],
++    List[int],
++]:
++    sequence_ids = sorted({int(row["sequence_id"]) for row in rows})
++    if len(sequence_ids) < 3:
++        raise ValueError(
++            "Sequence holdout requires at least three sequence_id values."
++        )
++    validation_count = max(
++        1,
++        int(math.ceil(len(sequence_ids) * validation_fraction)),
++    )
++    if validation_count >= len(sequence_ids):
++        raise ValueError("Validation split leaves no training sequences.")
++    train_sequences = sequence_ids[:-validation_count]
++    validation_sequences = sequence_ids[-validation_count:]
++    train_set = set(train_sequences)
++    validation_set = set(validation_sequences)
++    train_rows = [
++        row for row in rows if int(row["sequence_id"]) in train_set
++    ]
+     validation_rows = [
+-        row for row in rows if int(row["frame_idx"]) in validation_set
++        row for row in rows if int(row["sequence_id"]) in validation_set
+     ]
+-    return train_rows, validation_rows, train_frames, validation_frames
++    return (
++        train_rows,
++        validation_rows,
++        train_sequences,
++        validation_sequences,
++    )
+ 
+ 
+ def _fit_model(args: argparse.Namespace, x: np.ndarray, y: np.ndarray):
+@@ -249,7 +310,8 @@ def _save_model(
+                 "feature_cols": list(feature_cols),
+                 "label_col": str(label_col),
+                 "proxy_type": str(proxy_type),
+-                "feature_definition": "canonical_class_max_dense_psm_v2",
++                "feature_definition": "canonical_psm_rm_head_v3",
++                "input_schema_version": 3,
+             },
+             handle,
+         )
+@@ -272,6 +334,7 @@ def main() -> None:
+     parser.add_argument("--out_delta_model", required=True)
+     parser.add_argument("--out_meta", required=True)
+     parser.add_argument("--validation_fraction", type=float, default=0.2)
++    parser.add_argument("--tie_tolerance", type=float, default=0.01)
+     parser.add_argument("--seed", type=int, default=2026)
+     parser.add_argument("--n_estimators", type=int, default=500)
+     parser.add_argument("--max_depth", type=int, default=10)
+@@ -282,6 +345,9 @@ def main() -> None:
+     required = set(
+         [
+             "frame_idx",
++            "sequence_id",
++            "sequence_frame_idx",
++            "sender_index",
+             "true_quality_mean_0357",
+             "label_true_global_delta_quality_mean_0357",
+             "label_true_delta_quality_mean_0357",
+@@ -291,17 +357,28 @@ def main() -> None:
+     )
+     missing = sorted(required.difference(rows[0].keys() if rows else []))
+     if missing:
+-        raise RuntimeError("Missing counterfactual dataset columns: {}".format(missing))
++        raise RuntimeError(
++            "Missing v3 counterfactual dataset columns: {}".format(missing)
++        )
+ 
+-    train_rows, validation_rows, train_frames, validation_frames = _temporal_split(
++    (
++        train_rows,
++        validation_rows,
++        train_sequences,
++        validation_sequences,
++    ) = _sequence_holdout_split(
+         rows,
+         float(args.validation_fraction),
+     )
+     abs_train_x, abs_train_y = _matrix(
+-        train_rows, ABS_CSV_FEATURES, "true_quality_mean_0357"
++        train_rows,
++        ABS_CSV_FEATURES,
++        "true_quality_mean_0357",
+     )
+     abs_val_x, abs_val_y = _matrix(
+-        validation_rows, ABS_CSV_FEATURES, "true_quality_mean_0357"
++        validation_rows,
++        ABS_CSV_FEATURES,
++        "true_quality_mean_0357",
+     )
+     delta_train_x, delta_train_y = _matrix(
+         train_rows,
+@@ -336,16 +413,27 @@ def main() -> None:
+         "paired_delta_ap_proxy",
+     )
+ 
++    train_frame_keys = sorted({_frame_key(row) for row in train_rows})
++    validation_frame_keys = sorted(
++        {_frame_key(row) for row in validation_rows}
++    )
+     meta = {
+         "source_csv": str(args.csv),
+-        "feature_definition": "canonical_class_max_dense_psm_v2",
+-        "split": "temporal_frame_holdout",
++        "feature_definition": "canonical_psm_rm_head_v3",
++        "split": "sequence_holdout",
+         "num_rows": int(len(rows)),
+-        "num_frames": int(len(train_frames) + len(validation_frames)),
++        "num_sequences": int(
++            len(train_sequences) + len(validation_sequences)
++        ),
++        "num_frame_sender_groups": int(
++            len(train_frame_keys) + len(validation_frame_keys)
++        ),
+         "train_rows": int(len(train_rows)),
+         "validation_rows": int(len(validation_rows)),
+-        "train_frames": train_frames,
+-        "validation_frames": validation_frames,
++        "train_frame_sender_groups": int(len(train_frame_keys)),
++        "validation_frame_sender_groups": int(len(validation_frame_keys)),
++        "train_sequences": train_sequences,
++        "validation_sequences": validation_sequences,
+         "absolute_proxy": {
+             "csv_feature_cols": ABS_CSV_FEATURES,
+             "model_feature_cols": ABS_MODEL_FEATURES,
+@@ -366,11 +454,13 @@ def main() -> None:
+                 validation_rows,
+                 delta_val_y,
+                 delta_val_pred,
++                float(args.tie_tolerance),
+             ),
+         },
+         "params": {
+             "seed": int(args.seed),
+             "validation_fraction": float(args.validation_fraction),
++            "tie_tolerance": float(args.tie_tolerance),
+             "n_estimators": int(args.n_estimators),
+             "max_depth": int(args.max_depth),
+             "min_samples_leaf": int(args.min_samples_leaf),

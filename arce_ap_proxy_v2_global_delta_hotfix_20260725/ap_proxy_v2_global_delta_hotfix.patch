@@ -1,0 +1,338 @@
+diff --git a/opencood/tools/audit_arce_counterfactual.py b/opencood/tools/audit_arce_counterfactual.py
+index 29c3e06..27365cb 100644
+--- a/opencood/tools/audit_arce_counterfactual.py
++++ b/opencood/tools/audit_arce_counterfactual.py
+@@ -94,6 +94,18 @@ def _quality(pred_boxes, pred_scores, gt_boxes) -> Dict[str, float]:
+     return _frame_quality(stat)
+ 
+ 
++def _quality_from_heads(dataset, batch, psm, rm) -> Dict[str, float]:
++    output_dict = OrderedDict([
++        ("ego", {"psm": psm, "rm": rm}),
++    ])
++    pred_boxes, pred_scores, gt_boxes = inference_utils._post_process_compatible(
++        batch,
++        output_dict,
++        dataset,
++    )
++    return _quality(pred_boxes, pred_scores, gt_boxes)
++
++
+ def _tensor_summary(value: Any) -> Dict[str, Any]:
+     if not torch.is_tensor(value):
+         return {"available": False}
+@@ -268,11 +280,16 @@ def _frame_ranking(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+     actions = [action for frame in frame_rows for action in frame["actions"]]
+     send = [action for action in actions if not action.get("no_send", False)]
+-    sign_valid = [
++    global_sign_valid = [
+         action for action in send
+-        if _sign(action.get("true_delta_quality")) != 0
++        if _sign(action.get("true_global_delta_quality")) != 0
+         and _sign(action.get("proxy_delta_quality")) != 0
+     ]
++    action_sign_valid = [
++        action for action in send
++        if _sign(action.get("true_delta_quality")) != 0
++        and _sign(action.get("proxy_action_delta")) != 0
++    ]
+     ranking = [frame.get("ranking", {}) for frame in frame_rows]
+     by_state = defaultdict(list)
+     for action in actions:
+@@ -320,15 +337,33 @@ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+         return {
+             "count": len(rows),
+             "true_quality": _stats(row.get("true_quality_mean_0357") for row in rows),
+-            "true_delta": _stats(row.get("true_delta_quality") for row in rows),
+-            "proxy_delta": _stats(row.get("proxy_delta_quality") for row in rows),
++            "true_action_delta": _stats(
++                row.get("true_delta_quality") for row in rows
++            ),
++            "true_global_delta": _stats(
++                row.get("true_global_delta_quality") for row in rows
++            ),
++            "proxy_global_delta": _stats(
++                row.get("proxy_delta_quality") for row in rows
++            ),
++            "proxy_action_delta": _stats(
++                row.get("proxy_action_delta") for row in rows
++            ),
+             "tx_bytes": _stats(row.get("tx_bytes") for row in rows),
+-            "proxy_true_delta_pearson": _pearson(
++            "proxy_true_global_delta_pearson": _pearson(
+                 [row.get("proxy_delta_quality") for row in rows],
+-                [row.get("true_delta_quality") for row in rows],
++                [row.get("true_global_delta_quality") for row in rows],
+             ),
+-            "proxy_true_delta_spearman": _spearman(
++            "proxy_true_global_delta_spearman": _spearman(
+                 [row.get("proxy_delta_quality") for row in rows],
++                [row.get("true_global_delta_quality") for row in rows],
++            ),
++            "centered_proxy_true_action_delta_pearson": _pearson(
++                [row.get("proxy_action_delta") for row in rows],
++                [row.get("true_delta_quality") for row in rows],
++            ),
++            "centered_proxy_true_action_delta_spearman": _spearman(
++                [row.get("proxy_action_delta") for row in rows],
+                 [row.get("true_delta_quality") for row in rows],
+             ),
+             "proxy_true_quality_pearson": _pearson(
+@@ -387,14 +422,25 @@ def _summary(frame_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+         "sign_accuracy": (
+             float(
+                 sum(
+-                    _sign(row["true_delta_quality"])
++                    _sign(row["true_global_delta_quality"])
+                     == _sign(row["proxy_delta_quality"])
+-                    for row in sign_valid
+-                ) / len(sign_valid)
++                    for row in global_sign_valid
++                ) / len(global_sign_valid)
++            )
++            if global_sign_valid else None
++        ),
++        "sign_comparable": len(global_sign_valid),
++        "marginal_sign_accuracy": (
++            float(
++                sum(
++                    _sign(row["true_delta_quality"])
++                    == _sign(row["proxy_action_delta"])
++                    for row in action_sign_valid
++                ) / len(action_sign_valid)
+             )
+-            if sign_valid else None
++            if action_sign_valid else None
+         ),
+-        "sign_comparable": len(sign_valid),
++        "marginal_sign_comparable": len(action_sign_valid),
+         "ranking_pairwise_accuracy": _stats(
+             row.get("pairwise_accuracy") for row in ranking
+         ),
+@@ -471,10 +517,13 @@ def _write_proxy_dataset(
+         "no_send",
+         "tx_bytes",
+         "true_quality_mean_0357",
++        "true_ego_quality_mean_0357",
++        "label_true_global_delta_quality_mean_0357",
+         "label_true_delta_quality_mean_0357",
+         "proxy_collab_quality",
+         "proxy_ego_quality",
+         "proxy_delta_quality",
++        "proxy_action_delta",
+         "proxy_source",
+     ] + feature_cols
+ 
+@@ -498,12 +547,19 @@ def _write_proxy_dataset(
+                 "true_quality_mean_0357": action.get(
+                     "true_quality_mean_0357"
+                 ),
++                "true_ego_quality_mean_0357": action.get(
++                    "true_ego_quality_mean_0357"
++                ),
++                "label_true_global_delta_quality_mean_0357": action.get(
++                    "true_global_delta_quality"
++                ),
+                 "label_true_delta_quality_mean_0357": action.get(
+                     "true_delta_quality"
+                 ),
+                 "proxy_collab_quality": action.get("proxy_collab_quality"),
+                 "proxy_ego_quality": action.get("proxy_ego_quality"),
+                 "proxy_delta_quality": action.get("proxy_delta_quality"),
++                "proxy_action_delta": action.get("proxy_action_delta"),
+                 "proxy_source": action.get("proxy_source"),
+             }
+             for name in feature_cols:
+@@ -653,6 +709,12 @@ def main():
+                         quality = _quality(
+                             pred_boxes, pred_scores, gt_boxes
+                         )
++                        ego_quality = _quality_from_heads(
++                            dataset,
++                            batch,
++                            output["ego_psm"],
++                            output["ego_rm"],
++                        )
+                         update = _reward_update(output)
+                         proxy_features = paired_delta_ap_proxy_features(
+                             output["psm"],
+@@ -683,6 +745,9 @@ def main():
+                                 if scores is not None and scores.numel() else None
+                             ),
+                             "true_quality_mean_0357": quality["quality_mean_0357"],
++                            "true_ego_quality_mean_0357": ego_quality[
++                                "quality_mean_0357"
++                            ],
+                             **quality,
+                             "proxy_collab_quality": update.get("collab_confidence"),
+                             "proxy_ego_quality": update.get("ego_confidence"),
+@@ -721,12 +786,25 @@ def main():
+                 no_send_psm = psm_by_action.get(no_send_id)
+                 if no_send_row is not None and "error" not in no_send_row:
+                     baseline_quality = float(no_send_row["true_quality_mean_0357"])
++                    baseline_proxy = _float(
++                        no_send_row.get("proxy_delta_quality")
++                    )
+                     for row in action_rows:
+                         if "error" in row:
+                             continue
+                         row["true_delta_quality"] = float(
+                             row["true_quality_mean_0357"] - baseline_quality
+                         )
++                        row["true_global_delta_quality"] = float(
++                            row["true_quality_mean_0357"]
++                            - row["true_ego_quality_mean_0357"]
++                        )
++                        row_proxy = _float(row.get("proxy_delta_quality"))
++                        row["proxy_action_delta"] = (
++                            float(row_proxy - baseline_proxy)
++                            if row_proxy is not None and baseline_proxy is not None
++                            else None
++                        )
+                         row["psm_vs_no_send"] = _tensor_diff(
+                             psm_by_action.get(row["action_id"]), no_send_psm
+                         )
+diff --git a/opencood/tools/train_counterfactual_ap_proxies.py b/opencood/tools/train_counterfactual_ap_proxies.py
+index 6444d42..e965fb0 100644
+--- a/opencood/tools/train_counterfactual_ap_proxies.py
++++ b/opencood/tools/train_counterfactual_ap_proxies.py
+@@ -96,7 +96,7 @@ def _delta_action_metrics(
+     true_send = y_true[send_indices]
+     pred_send = y_pred[send_indices]
+     comparable = np.abs(true_send) > 1e-9
+-    sign_accuracy = (
++    global_sign_accuracy = (
+         float(np.mean(np.sign(true_send[comparable]) == np.sign(pred_send[comparable])))
+         if int(np.sum(comparable)) > 0
+         else float("nan")
+@@ -110,9 +110,30 @@ def _delta_action_metrics(
+     pair_total = 0
+     top1_hits = 0
+     frame_spearman = []
++    marginal_true = []
++    marginal_pred = []
+     for indices in by_frame.values():
+         frame_true = y_true[indices]
+         frame_pred = y_pred[indices]
++        no_send_local = next(
++            (
++                local
++                for local, index in enumerate(indices)
++                if str(rows[index].get("action_id", "")).startswith("send0_")
++                or str(rows[index].get("no_send", "")).strip().lower()
++                in {"true", "1"}
++            ),
++            None,
++        )
++        if no_send_local is not None:
++            baseline_pred = float(frame_pred[no_send_local])
++            for local, index in enumerate(indices):
++                if local == no_send_local:
++                    continue
++                marginal_true.append(
++                    float(rows[index]["label_true_delta_quality_mean_0357"])
++                )
++                marginal_pred.append(float(frame_pred[local]) - baseline_pred)
+         top1_hits += int(
+             indices[int(np.argmax(frame_true))]
+             == indices[int(np.argmax(frame_pred))]
+@@ -135,10 +156,34 @@ def _delta_action_metrics(
+         if str(row.get("action_id", "")).startswith("send0_")
+         or str(row.get("no_send", "")).strip().lower() in {"true", "1"}
+     ]
++    marginal_true_array = np.asarray(marginal_true, dtype=np.float64)
++    marginal_pred_array = np.asarray(marginal_pred, dtype=np.float64)
++    marginal_comparable = np.abs(marginal_true_array) > 1e-9
+     return {
+         "send_only": _regression_metrics(true_send, pred_send),
+-        "send_sign_accuracy": sign_accuracy,
+-        "send_sign_comparable": int(np.sum(comparable)),
++        "global_send_sign_accuracy": global_sign_accuracy,
++        "global_send_sign_comparable": int(np.sum(comparable)),
++        "centered_marginal_pearson": _correlation(
++            marginal_true_array,
++            marginal_pred_array,
++        ),
++        "centered_marginal_spearman": _correlation(
++            _rankdata(marginal_true_array),
++            _rankdata(marginal_pred_array),
++        ),
++        "centered_marginal_sign_accuracy": (
++            float(
++                np.mean(
++                    np.sign(marginal_true_array[marginal_comparable])
++                    == np.sign(marginal_pred_array[marginal_comparable])
++                )
++            )
++            if int(np.sum(marginal_comparable)) > 0
++            else float("nan")
++        ),
++        "centered_marginal_sign_comparable": int(
++            np.sum(marginal_comparable)
++        ),
+         "pairwise_ranking_accuracy": (
+             float(pair_correct) / float(pair_total) if pair_total else float("nan")
+         ),
+@@ -150,7 +195,7 @@ def _delta_action_metrics(
+             float(top1_hits) / float(len(by_frame)) if by_frame else float("nan")
+         ),
+         "num_validation_frames": int(len(by_frame)),
+-        "no_send_prediction_abs_mean_before_runtime_guard": (
++        "no_send_global_prediction_abs_mean": (
+             float(np.mean(np.abs(no_send_pred))) if no_send_pred else float("nan")
+         ),
+     }
+@@ -235,7 +280,12 @@ def main() -> None:
+ 
+     rows = _load_rows(Path(args.csv))
+     required = set(
+-        ["frame_idx", "true_quality_mean_0357", "label_true_delta_quality_mean_0357"]
++        [
++            "frame_idx",
++            "true_quality_mean_0357",
++            "label_true_global_delta_quality_mean_0357",
++            "label_true_delta_quality_mean_0357",
++        ]
+         + ABS_CSV_FEATURES
+         + DELTA_FEATURES
+     )
+@@ -254,10 +304,14 @@ def main() -> None:
+         validation_rows, ABS_CSV_FEATURES, "true_quality_mean_0357"
+     )
+     delta_train_x, delta_train_y = _matrix(
+-        train_rows, DELTA_FEATURES, "label_true_delta_quality_mean_0357"
++        train_rows,
++        DELTA_FEATURES,
++        "label_true_global_delta_quality_mean_0357",
+     )
+     delta_val_x, delta_val_y = _matrix(
+-        validation_rows, DELTA_FEATURES, "label_true_delta_quality_mean_0357"
++        validation_rows,
++        DELTA_FEATURES,
++        "label_true_global_delta_quality_mean_0357",
+     )
+ 
+     abs_model = _fit_model(args, abs_train_x, abs_train_y)
+@@ -278,7 +332,7 @@ def main() -> None:
+         Path(args.out_delta_model),
+         delta_model,
+         DELTA_FEATURES,
+-        "label_true_delta_quality_mean_0357",
++        "label_true_global_delta_quality_mean_0357",
+         "paired_delta_ap_proxy",
+     )
+ 
+@@ -300,6 +354,12 @@ def main() -> None:
+         },
+         "delta_proxy": {
+             "feature_cols": DELTA_FEATURES,
++            "label": (
++                "global collaborative frame quality minus ego-only frame quality"
++            ),
++            "marginal_audit_label": (
++                "action frame quality minus same-frame target-sender no-send quality"
++            ),
+             "train": _regression_metrics(delta_train_y, delta_train_pred),
+             "validation": _regression_metrics(delta_val_y, delta_val_pred),
+             "validation_action_metrics": _delta_action_metrics(

@@ -1,7 +1,18 @@
 from __future__ import annotations
 
 import copy
+import math
 from typing import Any, Dict
+
+
+def _validated_nonnegative_budget(value: Any, name: str) -> float:
+    """Return a finite non-negative budget or fail before execution."""
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite, got {number}")
+    if number < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {number}")
+    return number
 
 
 def build_no_send_system_budget_record(
@@ -28,35 +39,82 @@ def build_no_send_system_budget_record(
 
 
 def selected_allocated_budget_bytes(selected: Any, total_budget_bytes: float) -> float:
-    """
-    Runtime allocation policy.
+    """Return the physical hard budget for one selected sender.
 
-    NOTE:
-    This intentionally preserves the current algorithm behavior:
-    selected execution budget is primarily bounded by proposal estimated_tx_bytes.
+    Proposal ``estimated_tx_bytes`` remains an action-dependent cost used by
+    the existing oracle. It must not become the executor cap; otherwise a
+    lower-bit action receives a proportionally smaller physical budget and
+    cannot turn compression into greater spatial coverage.
 
-    Do not use actual_over_allocated alone to claim estimator correctness,
-    because allocated_budget_bytes may be derived from estimated_tx_bytes.
+    A dedicated physical oracle allocation, when present, takes precedence.
+    The current oracle does not emit one, so runtime execution requires the
+    physical per-link budget prepared before action scoring. Ambiguous legacy
+    allocation fields and proposal estimates are intentionally rejected.
     """
-    return float(
-        selected.record.get(
-            "estimated_tx_bytes",
-            selected.record.get(
-                "proposal_budget_bytes",
-                selected.record.get("link_budget_bytes", total_budget_bytes),
-            ),
-        )
+    record = getattr(selected, "record", {}) or {}
+    total = _validated_nonnegative_budget(
+        total_budget_bytes, "total_budget_bytes"
+    )
+    for key in ("oracle_physical_allocation_bytes", "link_budget_bytes"):
+        value = record.get(key, None)
+        if value is None:
+            continue
+        physical = _validated_nonnegative_budget(value, key)
+        return float(min(physical, total))
+    raise RuntimeError(
+        "Selected proposal has no explicit physical execution budget. "
+        "Expected oracle_physical_allocation_bytes or link_budget_bytes; "
+        "estimated_tx_bytes, allocated_budget_bytes, proposal_budget_bytes, "
+        "and the full frame budget are not valid fallbacks."
     )
 
 
 def selected_allocation_source(selected: Any) -> str:
-    if "estimated_tx_bytes" in selected.record:
-        return "estimated_tx_bytes"
-    if "proposal_budget_bytes" in selected.record:
-        return "proposal_budget_bytes"
-    if "link_budget_bytes" in selected.record:
+    record = getattr(selected, "record", {}) or {}
+    if record.get("oracle_physical_allocation_bytes", None) is not None:
+        return "oracle_physical_allocation_bytes"
+    if record.get("link_budget_bytes", None) is not None:
         return "link_budget_bytes"
-    return "total_budget_bytes"
+    return "missing_physical_budget"
+
+
+def selected_physical_budget_plan(
+    selected_by_sender: Dict[int, Any],
+    total_budget_bytes: float,
+) -> Dict[int, float]:
+    """Build and validate the selected links' frame-level physical budget plan."""
+    total = _validated_nonnegative_budget(
+        total_budget_bytes, "total_budget_bytes"
+    )
+    plan = {
+        int(sender_id): selected_allocated_budget_bytes(selected, total)
+        for sender_id, selected in selected_by_sender.items()
+    }
+    allocated_sum = float(sum(plan.values()))
+    if allocated_sum > total + 1e-6:
+        raise RuntimeError(
+            "Selected physical link budgets exceed the frame budget: "
+            f"allocated_sum={allocated_sum}, frame_budget={total}, plan={plan}"
+        )
+    return plan
+
+
+def validate_frame_actual_transmitted_bytes(
+    actual_transmitted_bytes: float,
+    total_budget_bytes: float,
+) -> None:
+    """Fail fast if executor records exceed the frame-level physical budget."""
+    actual = _validated_nonnegative_budget(
+        actual_transmitted_bytes, "actual_transmitted_bytes"
+    )
+    total = _validated_nonnegative_budget(
+        total_budget_bytes, "total_budget_bytes"
+    )
+    if actual > total + 1e-6:
+        raise RuntimeError(
+            "Actual transmitted bytes exceed the frame budget: "
+            f"actual={actual}, frame_budget={total}"
+        )
 
 
 def selected_transmitted_bytes(record: Dict[str, Any], selected: Any) -> float:
@@ -232,6 +290,18 @@ def enrich_selected_execution_record(
             selected.record.get("proposal_budget_bytes", total_budget_bytes)
         ),
         "allocated_budget_bytes": float(allocated_budget_bytes),
+        "physical_execution_budget_bytes": float(allocated_budget_bytes),
+        "physical_execution_budget_source": selected_allocation_source(selected),
+        "proposal_estimated_tx_bytes": float(
+            selected.record.get("estimated_tx_bytes", 0.0) or 0.0
+        ),
+        "execution_budget_decoupled_from_estimated_tx": bool(
+            selected_allocation_source(selected) != "estimated_tx_bytes"
+        ),
+        "physical_budget_source_expected_quant_independent": bool(
+            selected_allocation_source(selected)
+            in ("oracle_physical_allocation_bytes", "link_budget_bytes")
+        ),
         "link_budgets": {str(k): float(v) for k, v in link_budgets.items()},
     }
     return record
@@ -335,6 +405,7 @@ def build_budget_consistency(
         "executor_pre_budget_encoded_bytes": executor_pre,
         "executor_actual_tx_bytes": actual,
         "allocated_budget_bytes": allocated,
+        "physical_execution_budget_bytes": allocated,
         "actual_tx_bytes": actual,
 
         # Executor clipping information.
@@ -349,6 +420,7 @@ def build_budget_consistency(
         "actual_over_proposal_est": float(actual / max(proposal_tx, 1.0)),
         "actual_over_est": float(actual / max(proposal_tx, 1.0)),
         "actual_over_allocated": float(actual / max(allocated, 1.0)),
+        "actual_over_physical_budget": float(actual / max(allocated, 1.0)),
         "actual_over_link_budget": float(actual / max(link_budget, 1.0)) if link_budget > 0 else None,
         "executor_pre_over_proposal_encoded": float(executor_pre / max(proposal_encoded, 1.0)),
         "executor_pre_over_proposal_tx": float(executor_pre / max(proposal_tx, 1.0)),
@@ -356,7 +428,18 @@ def build_budget_consistency(
 
         # Audit notes.
         "allocation_source": allocation_source,
+        "physical_execution_budget_source": allocation_source,
         "allocated_from_estimate": bool(allocation_source == "estimated_tx_bytes"),
+        "estimated_cost_used_as_execution_budget": bool(
+            allocation_source == "estimated_tx_bytes"
+        ),
+        "execution_budget_decoupled_from_estimated_tx": bool(
+            allocation_source != "estimated_tx_bytes"
+        ),
+        "physical_budget_source_expected_quant_independent": bool(
+            allocation_source
+            in ("oracle_physical_allocation_bytes", "link_budget_bytes")
+        ),
         "actual_equals_estimate": bool(abs(actual - proposal_tx) < 1e-6),
         "actual_equals_allocated": bool(abs(actual - allocated) < 1e-6),
     }

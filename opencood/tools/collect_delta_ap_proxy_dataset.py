@@ -14,19 +14,13 @@ import opencood.hypes_yaml.yaml_utils as yaml_utils
 from opencood.tools import train_utils
 from opencood.data_utils.datasets import build_dataset
 from opencood.utils import eval_utils
+from opencood.comm.arce.policies.ap_proxy_features import (
+    DENSE_AP_PROXY_FEATURES,
+    dense_ap_proxy_features,
+)
 
 
-DENSE_FEATURE_COLS = [
-    "dense_mean_conf",
-    "dense_max_conf",
-    "dense_sum_conf",
-    "dense_std_conf",
-    "dense_count_gt_03",
-    "dense_count_gt_05",
-    "dense_count_gt_07",
-    "dense_top10_mean",
-    "dense_top50_mean",
-]
+DENSE_FEATURE_COLS = list(DENSE_AP_PROXY_FEATURES)
 
 
 def move_to_cuda(x: Any):
@@ -40,26 +34,7 @@ def move_to_cuda(x: Any):
 
 
 def dense_features_from_psm(psm: torch.Tensor, prefix: str) -> Dict[str, float]:
-    prob = torch.sigmoid(psm.detach()).float()
-    flat = prob.reshape(-1)
-
-    if flat.numel() == 0:
-        base = {k: 0.0 for k in DENSE_FEATURE_COLS}
-    else:
-        k10 = min(10, int(flat.numel()))
-        k50 = min(50, int(flat.numel()))
-        base = {
-            "dense_mean_conf": float(flat.mean().cpu()),
-            "dense_max_conf": float(flat.max().cpu()),
-            "dense_sum_conf": float(flat.sum().cpu()),
-            "dense_std_conf": float(flat.std(unbiased=False).cpu()),
-            "dense_count_gt_03": float((flat > 0.3).sum().cpu()),
-            "dense_count_gt_05": float((flat > 0.5).sum().cpu()),
-            "dense_count_gt_07": float((flat > 0.7).sum().cpu()),
-            "dense_top10_mean": float(torch.topk(flat, k10).values.mean().cpu()) if k10 > 0 else 0.0,
-            "dense_top50_mean": float(torch.topk(flat, k50).values.mean().cpu()) if k50 > 0 else 0.0,
-        }
-
+    base = dense_ap_proxy_features(psm)
     return {prefix + k: v for k, v in base.items()}
 
 

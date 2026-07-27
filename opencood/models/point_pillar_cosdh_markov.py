@@ -11,6 +11,8 @@ from opencood.models.sub_modules.downsample_conv import DownsampleConv
 from opencood.models.sub_modules.naive_compress_cosdh import NaiveCompressor
 from opencood.models.fuse_modules.fusion_in_one_cosdh_markov import Where2comm
 from opencood.models.comm_modules.cosdh_markov_byte_channel import CosDHMarkovByteChannel
+from opencood.models.comm_modules.cosdh_legacy_native_transport import CosDHLegacyNativeTransport
+from opencood.models.comm_modules.cosdh_official_fixed_markov_transport import CosDHOfficialFixedMarkovTransport
 from opencood.models.sub_modules.cosdh_paper_native_adapter import CosDHPaperNativeFrameTransport, run_cosdh_paper_native_ego
 from opencood.utils.transformation_utils_cosdh import normalize_pairwise_tfm
 
@@ -74,6 +76,25 @@ class PointPillarCosdhMarkov(nn.Module):
             self.cosdh_late_markov_channel = CosDHMarkovByteChannel(
                 late_markov_cfg
             )
+        # COSDH_OFFICIAL_FAITHFUL_TRANSPORT_INIT
+        # Preserve the released checkpoint graph.  Only the original encoder
+        # output / decoder input is exposed as a physical byte boundary.
+        self.cosdh_legacy_native_cfg = copy.deepcopy(
+            args.get('cosdh_legacy_native', {})
+        )
+        self.cosdh_legacy_native_transport = CosDHLegacyNativeTransport(
+            self.cosdh_legacy_native_cfg
+        )
+
+        # COSDH_OFFICIAL_FIXED_MARKOV_INIT
+        self.cosdh_official_fixed_markov_cfg = copy.deepcopy(
+            args.get('cosdh_official_fixed_markov', {})
+        )
+        self.cosdh_official_fixed_markov_transport =             CosDHOfficialFixedMarkovTransport(
+                self.cosdh_official_fixed_markov_cfg,
+                arce_cfg=copy.deepcopy(args.get('arce', {})),
+            )
+
         self.fusion_net = nn.ModuleList()
         for i in range(len(args['base_bev_backbone']['layer_nums'])):
             fuse_module = Where2comm(args['where2comm'], dim=args['feat_dim'][i])
@@ -122,6 +143,15 @@ class PointPillarCosdhMarkov(nn.Module):
             dataset_name="OPV2V",
         )
         self.latest_paper_native_info = {}
+
+        # Legacy-native bridge: preserve the checkpoint's original execution
+        # order and expose only the encoder-output/decoder-input boundary.
+        self.cosdh_legacy_native_cfg = copy.deepcopy(
+            args.get('cosdh_legacy_native', {})
+        )
+        self.cosdh_legacy_native_transport = CosDHLegacyNativeTransport(
+            self.cosdh_legacy_native_cfg
+        )
 
         # Both datasets use one physical sender-to-ego frame budget for all
         # three intermediate scales and the late message.
@@ -286,22 +316,104 @@ class PointPillarCosdhMarkov(nn.Module):
                 link_key_aliases=data_dict.get('cav_id_list', None)
             )
         num_fusion_scales = len(self.fusion_net)
-        
-        for i, fuse_module in enumerate(self.fusion_net):
-            feature_i = feature_list[i]
-            if self.compression:
-                feature_i = self.naive_compressor_list[i](feature_i, use_fp16=not self.training)
-            x_out, _ = fuse_module(
-                feature_i,
-                psm_single,
-                record_len,
-                normalized_affine_matrix,
-                req_mask,
-                scale_idx=i,
-                num_scales=num_fusion_scales,
+        # COSDH_OFFICIAL_FAITHFUL_FRAME_RESET
+        if self.cosdh_legacy_native_transport.enabled:
+            self.cosdh_legacy_native_transport.start_frame(
+                record_len=record_len,
+                link_key_aliases=data_dict.get('cav_id_list', None),
             )
+        if self.cosdh_legacy_native_transport.enabled:
+            self.cosdh_legacy_native_transport.start_frame(
+                record_len=record_len,
+                link_key_aliases=data_dict.get('cav_id_list', None),
+            )
+        
+        # COSDH_OFFICIAL_FIXED_MARKOV_JOINT_STREAM
+        fixed_markov_transport = getattr(
+            self, 'cosdh_official_fixed_markov_transport', None
+        )
+        use_fixed_markov = bool(
+            not self.training
+            and fixed_markov_transport is not None
+            and bool(getattr(fixed_markov_transport, 'enabled', False))
+        )
+        if use_fixed_markov:
+            encoded_scales = []
+            for scale_idx in range(num_fusion_scales):
+                if not self.compression:
+                    raise RuntimeError(
+                        'CoSDH fixed-Markov requires the official compressors'
+                    )
+                encoded_scales.append(
+                    self.naive_compressor_list[scale_idx].encode_for_wire(
+                        feature_list[scale_idx], use_fp16=True
+                    )
+                )
+            recovered_encoded_scales =                 fixed_markov_transport.communicate_joint_frame(
+                    encoded_scales,
+                    record_len=record_len,
+                    data_dict=data_dict,
+                    link_key_aliases=data_dict.get('cav_id_list', None),
+                )
+            for i, fuse_module in enumerate(self.fusion_net):
+                feature_i = self.naive_compressor_list[i].decode_from_wire(
+                    recovered_encoded_scales[i], use_fp16=True
+                )
+                x_out, _ = fuse_module(
+                    feature_i,
+                    psm_single,
+                    record_len,
+                    normalized_affine_matrix,
+                    req_mask,
+                    scale_idx=i,
+                    num_scales=num_fusion_scales,
+                )
+                fused_feature_list.append(x_out)
+        else:
+            for i, fuse_module in enumerate(self.fusion_net):
+                feature_i = feature_list[i]
+                if self.compression:
+                    compressor = self.naive_compressor_list[i]
+                    if (
+                        not self.training
+                        and self.cosdh_legacy_native_transport.enabled
+                        and self.cosdh_legacy_native_transport.intermediate_enabled
+                    ):
+                        encoded_i = compressor.encode_for_wire(
+                            feature_i,
+                            use_fp16=True,
+                        )
+                        encoded_i = (
+                            self.cosdh_legacy_native_transport
+                            .roundtrip_intermediate(
+                                encoded_i,
+                                record_len=record_len,
+                                scale_idx=i,
+                                link_key_aliases=data_dict.get(
+                                    'cav_id_list', None
+                                ),
+                            )
+                        )
+                        feature_i = compressor.decode_from_wire(
+                            encoded_i,
+                            use_fp16=True,
+                        )
+                    else:
+                        feature_i = compressor(
+                            feature_i,
+                            use_fp16=not self.training,
+                        )
+                x_out, _ = fuse_module(
+                    feature_i,
+                    psm_single,
+                    record_len,
+                    normalized_affine_matrix,
+                    req_mask,
+                    scale_idx=i,
+                    num_scales=num_fusion_scales,
+                )
 
-            fused_feature_list.append(x_out)
+                fused_feature_list.append(x_out)
         fused_feature = self.backbone.decode_multiscale_feature(fused_feature_list)
         
         if self.shrink_flag:
@@ -318,6 +430,18 @@ class PointPillarCosdhMarkov(nn.Module):
                 'cosdh_markov': self.cosdh_markov_channel.latest_info,
                 'cosdh_markov_enabled': getattr(self.cosdh_markov_channel, 'enabled', False),
             }
+
+        # COSDH_OFFICIAL_FIXED_MARKOV_COMM_INFO
+        fixed_markov_transport = getattr(
+            self, 'cosdh_official_fixed_markov_transport', None
+        )
+        if (
+            fixed_markov_transport is not None
+            and bool(getattr(fixed_markov_transport, 'enabled', False))
+        ):
+            output_dict.setdefault('comm_info', {})[
+                'cosdh_official_fixed_markov'
+            ] = fixed_markov_transport.latest_info
 
         if self.use_dir:
             output_dict.update({'dir_preds': self.dir_head(fused_feature)})

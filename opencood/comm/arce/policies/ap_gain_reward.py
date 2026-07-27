@@ -21,7 +21,19 @@ def quantization_loss(quant_mode: str, cfg=None) -> float:
 
 
 def normalized_cost(cost_bytes: float, budget_bytes: float) -> float:
-    return float(max(0.0, min(1.0, float(cost_bytes) / max(float(budget_bytes), 1.0))))
+    # Cost is a physical ratio. Do not clamp the upper bound; values > 1
+    # are useful audit signals for over-reference or over-budget transmission.
+    return float(max(0.0, float(cost_bytes) / max(float(budget_bytes), 1.0)))
+
+
+def _positive_budget_or_none(x: Optional[float]) -> Optional[float]:
+    if x is None:
+        return None
+    try:
+        v = float(x)
+    except Exception:
+        return None
+    return v if v > 0.0 else None
 
 
 def normalized_delay(delay_ms: float, stale_max_ms: float = 100.0) -> float:
@@ -42,6 +54,10 @@ def c2mab_ap_gain_reward(
     collab_quality: float = 0.0,
     ego_quality: float = 0.0,
     reward_mode: str = "simple_delta",
+    cost_reference_bytes: Optional[float] = None,
+    frame_budget_bytes: Optional[float] = None,
+    link_budget_bytes: Optional[float] = None,
+    cost_norm_mode: str = "reference",
     lambda_cost: float = 0.10,
     lambda_delay: float = 0.0,
     lambda_quant: float = 0.0,
@@ -57,7 +73,32 @@ def c2mab_ap_gain_reward(
     collab_q = float(collab_quality)
     ego_q = float(ego_quality)
 
-    cost_norm = normalized_cost(cost_bytes, budget_bytes)
+    link_budget = _positive_budget_or_none(link_budget_bytes)
+    if link_budget is None:
+        link_budget = _positive_budget_or_none(budget_bytes) or 1.0
+
+    frame_budget = _positive_budget_or_none(frame_budget_bytes)
+    if frame_budget is None:
+        frame_budget = _positive_budget_or_none(budget_bytes) or link_budget
+
+    reference_budget = _positive_budget_or_none(cost_reference_bytes)
+    if reference_budget is None:
+        reference_budget = frame_budget
+
+    link_cost_norm = normalized_cost(cost_bytes, link_budget)
+    cost_norm_frame = normalized_cost(cost_bytes, frame_budget)
+    cost_norm_ref = normalized_cost(cost_bytes, reference_budget)
+
+    mode = str(cost_norm_mode or "reference").strip().lower()
+    if mode in ("reference", "ref", "reference_bytes", "cost_norm_ref"):
+        cost_norm = cost_norm_ref
+    elif mode in ("frame", "frame_budget", "cost_norm_frame"):
+        cost_norm = cost_norm_frame
+    elif mode in ("link", "link_budget", "link_cost_norm", "legacy"):
+        cost_norm = link_cost_norm
+    else:
+        raise ValueError(f"Unsupported reward cost_norm_mode={cost_norm_mode!r}")
+
     delay_norm = normalized_delay(delay_ms, stale_max_ms=stale_max_ms)
     q_loss = quantization_loss(quant_mode, cfg=quant_quality_cfg)
     violation = 1.0 if bool(budget_violation) else 0.0
@@ -99,9 +140,17 @@ def c2mab_ap_gain_reward(
         "ap_term": float(delta_term),
 
         "cost_bytes": float(cost_bytes),
+        "actual_tx_bytes": float(cost_bytes),
         "budget_bytes": float(budget_bytes),
+        "link_budget_bytes": float(link_budget),
+        "frame_budget_bytes": float(frame_budget),
+        "cost_reference_bytes": float(reference_budget),
+        "cost_norm_mode": str(mode),
         "normalized_cost": float(cost_norm),
         "cost_norm": float(cost_norm),
+        "cost_norm_ref": float(cost_norm_ref),
+        "cost_norm_frame": float(cost_norm_frame),
+        "link_cost_norm": float(link_cost_norm),
         "cost_penalty": float(cost_penalty),
 
         "delay_ms": float(delay_ms),

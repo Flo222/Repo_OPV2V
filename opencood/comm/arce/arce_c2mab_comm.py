@@ -42,7 +42,8 @@ from opencood.comm.arce.policies.c2mab_proposal_builder import build_c2mab_propo
 from opencood.comm.arce.policies.c2mab_execution_record_builder import (
     build_budget_consistency,
     enrich_selected_execution_record,
-    selected_allocated_budget_bytes,
+    selected_physical_budget_plan,
+    validate_frame_actual_transmitted_bytes,
     selected_transmitted_bytes,
 )
 from opencood.comm.arce.policies.ego_greedy_oracle import (
@@ -68,6 +69,7 @@ from opencood.comm.arce.policies.communication_record_utils import (
 from opencood.comm.arce.policies.channel_budget_manager import (
     budget_source_scope as cbm_budget_source_scope,
     channel_profile_budget_bytes as cbm_channel_profile_budget_bytes,
+    channel_profiles_cfg as cbm_channel_profiles_cfg,
     per_link_budget_bytes as cbm_per_link_budget_bytes,
     prepare_link_channel_budget as cbm_prepare_link_channel_budget,
     profile_for_state as cbm_profile_for_state,
@@ -312,6 +314,15 @@ class ARCEC2MABComm:
         self.reward_lambda_abs = float(reward_cfg.get("lambda_abs", 0.0))
         self.reward_lambda_ap = float(reward_cfg.get("lambda_ap", self.reward_lambda_delta))
         self.reward_lambda_cost = float(reward_cfg.get("lambda_cost", 0.10))
+        self.reward_cost_norm_mode = str(
+            reward_cfg.get("cost_norm_mode", "reference")
+        ).strip().lower()
+        self.reward_cost_reference_source = str(
+            reward_cfg.get("cost_reference_source", "channel_profile_max_frame_budget")
+        ).strip().lower()
+        self.reward_cost_reference_bytes = self._resolve_reward_cost_reference_bytes(
+            reward_cfg
+        )
         self.reward_lambda_delay = float(reward_cfg.get("lambda_delay", 0.05))
         self.reward_lambda_quant = float(reward_cfg.get("lambda_quant", 0.0))
         self.reward_lambda_violate = float(reward_cfg.get("lambda_violate", 0.0))
@@ -390,6 +401,31 @@ class ARCEC2MABComm:
         if clear_records:
             self.clear_records()
 
+
+    def _resolve_reward_cost_reference_bytes(self, reward_cfg: Dict[str, Any]) -> float:
+        fallback = float(reward_cfg.get("cost_reference_bytes", self._system_budget_bytes()))
+        source = str(
+            reward_cfg.get("cost_reference_source", "channel_profile_max_frame_budget")
+        ).strip().lower()
+        if source not in ("channel_profile_max_frame_budget", "max_channel_profile", "profiles"):
+            return float(max(fallback, 1.0))
+
+        try:
+            profiles = cbm_channel_profiles_cfg(
+                self.arce_cfg,
+                DEFAULT_CHANNEL_PROFILES,
+                _normalize_state_name,
+            )
+            budgets = []
+            for profile in profiles.values():
+                if not isinstance(profile, dict):
+                    continue
+                budgets.append(float(self._channel_profile_budget_bytes(profile)))
+            if budgets:
+                return float(max(max(budgets), 1.0))
+        except Exception:
+            pass
+        return float(max(fallback, 1.0))
 
     def _profile_for_state(self, state_name: str) -> Dict[str, Any]:
         return cbm_profile_for_state(
@@ -574,6 +610,8 @@ class ARCEC2MABComm:
         print("lambda_abs     =", float(getattr(self, "reward_lambda_abs", 0.0)))
         print("lambda_ap      =", float(getattr(self, "reward_lambda_ap", 1.0)))
         print("lambda_cost    =", float(getattr(self, "reward_lambda_cost", 0.10)))
+        print("cost_norm_mode =", str(getattr(self, "reward_cost_norm_mode", "reference")))
+        print("cost_ref_bytes =", float(getattr(self, "reward_cost_reference_bytes", 0.0)))
         print("lambda_delay   =", float(getattr(self, "reward_lambda_delay", 0.05)))
         print("lambda_quant   =", float(getattr(self, "reward_lambda_quant", 0.0)))
         print("lambda_violate =", float(getattr(self, "reward_lambda_violate", 0.0)))
@@ -737,6 +775,7 @@ class ARCEC2MABComm:
         collaborator_indices = round_ctx["collaborator_indices"]
         num_collaborators = round_ctx["num_collaborators"]
         total_budget_bytes = round_ctx["total_budget_bytes"]
+        self.last_frame_budget_bytes = float(total_budget_bytes)
         per_link_budget_bytes = round_ctx["per_link_budget_bytes"]
         budget_source_cfg = round_ctx["budget_source_cfg"]
         budget_scope_cfg = round_ctx["budget_scope_cfg"]
@@ -829,6 +868,10 @@ class ARCEC2MABComm:
         selected_by_sender = {
             int(p.sender_id): p for p in oracle_result["selected"]
         }
+        selected_physical_budgets = selected_physical_budget_plan(
+            selected_by_sender,
+            total_budget_bytes=float(total_budget_bytes),
+        )
 
         out = features.clone()
         frame_records = []
@@ -880,10 +923,7 @@ class ARCEC2MABComm:
             )
 
             state_name = selected.record.get("channel_state", "medium")
-            allocated_budget_bytes = selected_allocated_budget_bytes(
-                selected,
-                total_budget_bytes=float(total_budget_bytes),
-            )
+            allocated_budget_bytes = selected_physical_budgets[int(sender_idx)]
 
             try:
                 recovered, record = self.executor.communicate_feature(
@@ -965,6 +1005,11 @@ class ARCEC2MABComm:
                 effective_receive_quality_fn=effective_receive_quality,
             )
             self.pending_reward.add(pending_item)
+
+        validate_frame_actual_transmitted_bytes(
+            used_cost,
+            total_budget_bytes=float(total_budget_bytes),
+        )
 
         superarm_record = build_dc2mab_superarm_record(
             frame_id=frame_id,
@@ -1084,18 +1129,25 @@ class ARCEC2MABComm:
             ego_confidence = self.default_ego_confidence
 
         pending = self.pending_reward.pop_all()
+        frame_budget_bytes = (
+            float(budget_bytes)
+            if budget_bytes is not None
+            else float(getattr(self, "last_frame_budget_bytes", self._system_budget_bytes()))
+        )
 
         summary = update_pending_rewards(
             pending=pending,
             ego_confidence=float(ego_confidence),
             collab_confidence=float(collab_confidence),
-            budget_bytes=budget_bytes,
+            budget_bytes=float(frame_budget_bytes),
             get_policy_fn=self.get_policy,
             reward_lambda_ap=float(getattr(self, "reward_lambda_ap", 1.0)),
             reward_mode=str(getattr(self, "reward_mode", "simple_delta")),
             reward_lambda_delta=float(getattr(self, "reward_lambda_delta", getattr(self, "reward_lambda_ap", 1.0))),
             reward_lambda_abs=float(getattr(self, "reward_lambda_abs", 0.0)),
             reward_lambda_cost=float(getattr(self, "reward_lambda_cost", 0.10)),
+            reward_cost_norm_mode=str(getattr(self, "reward_cost_norm_mode", "reference")),
+            reward_cost_reference_bytes=float(getattr(self, "reward_cost_reference_bytes", frame_budget_bytes)),
             reward_lambda_delay=float(getattr(self, "reward_lambda_delay", 0.05)),
             reward_lambda_quant=float(getattr(self, "reward_lambda_quant", 0.0)),
             reward_lambda_violate=float(getattr(self, "reward_lambda_violate", 0.0)),

@@ -96,8 +96,15 @@ def _summarize_group(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "perception_term",
         "ap_term",
         "cost_bytes",
+        "actual_tx_bytes",
         "budget_bytes",
+        "link_budget_bytes",
+        "frame_budget_bytes",
+        "cost_reference_bytes",
         "cost_norm",
+        "cost_norm_ref",
+        "cost_norm_frame",
+        "link_cost_norm",
         "cost_penalty",
         "delay_penalty",
         "quant_penalty",
@@ -163,6 +170,8 @@ def update_pending_rewards(
     reward_lambda_delta: Optional[float] = None,
     reward_lambda_abs: float = 0.0,
     reward_lambda_cost: float = 0.10,
+    reward_cost_norm_mode: str = "reference",
+    reward_cost_reference_bytes: Optional[float] = None,
     reward_lambda_delay: float = 0.05,
     reward_lambda_quant: float = 0.0,
     reward_lambda_violate: float = 0.0,
@@ -199,6 +208,10 @@ def update_pending_rewards(
         if reward_lambda_delta is not None
         else float(reward_lambda_ap)
     )
+
+    frame_budget_for_reward = _safe_float(budget_bytes, 1.0)
+    if frame_budget_for_reward <= 0.0:
+        frame_budget_for_reward = 1.0
 
     # Credit assignment: only actual send actions share frame-level perception gain.
     # No-send remains an explicit arm update, but it must not inherit another
@@ -246,9 +259,16 @@ def update_pending_rewards(
             contribution_weight=contribution_weight,
             cost_bytes=_safe_float(item.get("cost_bytes", 0.0)),
             budget_bytes=_safe_float(
-                item.get("link_budget_bytes", budget_bytes or 1.0),
+                item.get("link_budget_bytes", frame_budget_for_reward),
                 1.0,
             ),
+            link_budget_bytes=_safe_float(
+                item.get("link_budget_bytes", frame_budget_for_reward),
+                1.0,
+            ),
+            frame_budget_bytes=float(frame_budget_for_reward),
+            cost_reference_bytes=reward_cost_reference_bytes,
+            cost_norm_mode=str(reward_cost_norm_mode),
             delay_ms=_safe_float(item.get("delay_ms", 0.0)),
             budget_violation=bool(item.get("budget_violation", False)),
             quant_mode=str(item.get("quant_mode", "fp32")),
@@ -342,6 +362,12 @@ def update_pending_rewards(
         "reward_mode": str(reward_mode),
         "reward_lambda_delta": float(lambda_delta_value),
         "reward_lambda_abs": float(reward_lambda_abs),
+        "reward_lambda_cost": float(reward_lambda_cost),
+        "reward_cost_norm_mode": str(reward_cost_norm_mode),
+        "reward_cost_reference_bytes": (
+            None if reward_cost_reference_bytes is None else float(reward_cost_reference_bytes)
+        ),
+        "frame_budget_bytes": float(frame_budget_for_reward),
         "policy_update_applied": bool(apply_policy_update),
         "num_updated": len(pending),
         "num_send_updated": int(send_count),

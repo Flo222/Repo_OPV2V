@@ -364,6 +364,19 @@ class ARCEFixedComm:
         self._markov_state_by_link: Dict[Any, str] = {}
 
         self.prev_feature_cache: Dict[Any, torch.Tensor] = {}
+        # Receiver-side cache is separate from the sender-side delay cache.
+        # It stores only feature units that were actually recovered.
+        self.receiver_feature_cache: Dict[Any, Dict[str, Any]] = {}
+        temporal_cfg = self.arce_cfg_raw.get("temporal_fusion", {}) or {}
+        self.receiver_cache_max_age_frames = int(
+            temporal_cfg.get("max_age_frames", 1)
+        )
+        if self.receiver_cache_max_age_frames < 1:
+            raise ValueError(
+                "temporal_fusion.max_age_frames must be >= 1, got {}.".format(
+                    self.receiver_cache_max_age_frames
+                )
+            )
 
         self.records: List[Dict[str, Any]] = []
         self.frame_records: Dict[Any, List[Dict[str, Any]]] = {}
@@ -506,6 +519,7 @@ class ARCEFixedComm:
     def reset(self, clear_cache: bool = True, clear_records: bool = True) -> None:
         if clear_cache:
             self.prev_feature_cache.clear()
+            self.receiver_feature_cache.clear()
             self._markov_state_by_link.clear()
 
         if clear_records:
@@ -728,6 +742,390 @@ class ARCEFixedComm:
             int(ego_index if ego_index is not None else self.default_ego_index),
         )
         self.prev_feature_cache[cache_key] = feature.detach().clone()
+
+    @staticmethod
+    def _receiver_cache_key(
+        link_id: Any,
+        agent_index: Optional[int],
+        ego_index: Optional[int],
+        default_ego_index: int,
+    ) -> Tuple[str, int, int]:
+        return (
+            repr(link_id),
+            int(agent_index if agent_index is not None else -1),
+            int(ego_index if ego_index is not None else default_ego_index),
+        )
+
+    @staticmethod
+    def _frame_distance(current_frame_id: Any, cached_frame_id: Any) -> Optional[int]:
+        try:
+            return int(current_frame_id) - int(cached_frame_id)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_receiver_cache_entry(
+        self,
+        link_id: Any,
+        agent_index: Optional[int],
+        ego_index: Optional[int],
+        frame_id: Any,
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
+        cache_key = self._receiver_cache_key(
+            link_id,
+            agent_index,
+            ego_index,
+            self.default_ego_index,
+        )
+        entry = self.receiver_feature_cache.get(cache_key)
+        if not isinstance(entry, dict):
+            return None, "empty"
+
+        age = self._frame_distance(frame_id, entry.get("frame_id"))
+        if age is not None:
+            if age <= 0:
+                return None, "non_forward_frame"
+            if age > int(self.receiver_cache_max_age_frames):
+                return None, "expired"
+
+        return entry, "available"
+
+    def _update_receiver_feature_cache(
+        self,
+        recovered_feature: torch.Tensor,
+        compact_meta: Optional[Dict[str, Any]],
+        current_unit_valid_mask: Optional[torch.Tensor],
+        link_id: Any,
+        agent_index: Optional[int],
+        ego_index: Optional[int],
+        frame_id: Any,
+    ) -> None:
+        if (
+            not isinstance(compact_meta, dict)
+            or compact_meta.get("layout") != "KC"
+            or not torch.is_tensor(compact_meta.get("indices"))
+            or not torch.is_tensor(current_unit_valid_mask)
+        ):
+            return
+
+        C, H, W = recovered_feature.shape
+        unit_ids = compact_meta["indices"].to(
+            device=recovered_feature.device,
+            dtype=torch.long,
+        ).flatten()
+        current_unit_valid_mask = current_unit_valid_mask.to(
+            device=recovered_feature.device,
+            dtype=torch.bool,
+        ).flatten()
+        count = min(int(unit_ids.numel()), int(current_unit_valid_mask.numel()))
+        unit_ids = unit_ids[:count]
+        current_unit_valid_mask = current_unit_valid_mask[:count]
+
+        valid_flat = torch.zeros(
+            H * W,
+            dtype=torch.bool,
+            device=recovered_feature.device,
+        )
+        if count > 0:
+            valid_flat[unit_ids[current_unit_valid_mask]] = True
+
+        cache_key = self._receiver_cache_key(
+            link_id,
+            agent_index,
+            ego_index,
+            self.default_ego_index,
+        )
+        self.receiver_feature_cache[cache_key] = {
+            "feature": recovered_feature.detach().clone(),
+            "valid_flat": valid_flat.detach().clone(),
+            "frame_id": frame_id,
+            "original_shape": (int(C), int(H), int(W)),
+        }
+
+    @staticmethod
+    def _compact_unit_packet_coverage(
+        compact_meta: Optional[Dict[str, Any]],
+        packet_result: Any,
+        recovered_source_mask: torch.Tensor,
+    ) -> Tuple[Optional[torch.Tensor], Dict[str, Any]]:
+        info = {
+            "supported": False,
+            "reason": "unsupported_layout",
+            "unit_bytes": None,
+            "units_per_packet": None,
+        }
+        if (
+            not isinstance(compact_meta, dict)
+            or compact_meta.get("layout") != "KC"
+        ):
+            return None, info
+
+        num_units = int(compact_meta.get("num_tokens", 0))
+        original_num_bytes = int(packet_result.original_num_bytes)
+        packet_size_bytes = int(packet_result.packet_size_bytes)
+        if num_units <= 0:
+            info["reason"] = "empty_payload"
+            return torch.zeros(
+                0,
+                dtype=torch.bool,
+                device=recovered_source_mask.device,
+            ), info
+        if original_num_bytes <= 0 or original_num_bytes % num_units != 0:
+            info["reason"] = "non_integral_unit_bytes"
+            return None, info
+
+        unit_bytes = int(original_num_bytes // num_units)
+        if unit_bytes <= 0:
+            info["reason"] = "invalid_unit_bytes"
+            return None, info
+
+        source_mask = recovered_source_mask.to(dtype=torch.bool).flatten()
+        unit_index = torch.arange(
+            num_units,
+            device=source_mask.device,
+            dtype=torch.long,
+        )
+        first_packet = torch.div(unit_index * unit_bytes, packet_size_bytes, rounding_mode="floor")
+        last_packet = (
+            torch.div((unit_index + 1) * unit_bytes - 1, packet_size_bytes, rounding_mode="floor")
+        )
+
+        missing = (~source_mask).to(dtype=torch.long)
+        prefix = torch.cat(
+            [
+                torch.zeros(1, dtype=torch.long, device=source_mask.device),
+                torch.cumsum(missing, dim=0),
+            ],
+            dim=0,
+        )
+        missing_count = prefix[last_packet + 1] - prefix[first_packet]
+        valid_units = missing_count == 0
+
+        info.update({
+            "supported": True,
+            "reason": "ok",
+            "unit_bytes": int(unit_bytes),
+            "units_per_packet": (
+                int(packet_size_bytes // unit_bytes)
+                if packet_size_bytes % unit_bytes == 0
+                else None
+            ),
+        })
+        return valid_units, info
+
+    def _apply_receiver_temporal_cache(
+        self,
+        recovered_feature: torch.Tensor,
+        compact_meta: Optional[Dict[str, Any]],
+        current_unit_valid_mask: Optional[torch.Tensor],
+        recovered_source_mask: torch.Tensor,
+        packet_result: Any,
+        cache_enabled: int,
+        link_id: Any,
+        agent_index: Optional[int],
+        ego_index: Optional[int],
+        frame_id: Any,
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        stats = {
+            "enabled": bool(cache_enabled),
+            "cache_status": "disabled",
+            "cache_hit": False,
+            "num_total_units": 0,
+            "num_current_recovered_units": 0,
+            "num_temporal_filled_units": 0,
+            "num_effective_recovered_units": 0,
+            "num_temporal_filled_packets": 0,
+            # Legacy aliases are retained for compatibility:
+            # q_cache is packet-level; q_eff is unit-level.
+            "q_cache": 0.0,
+            "q_eff": 0.0,
+            "q_recv_unit": 0.0,
+            "q_cache_unit": 0.0,
+            "q_eff_unit": 0.0,
+            "q_recv_packet": 0.0,
+            "q_cache_packet": 0.0,
+            "q_eff_packet": 0.0,
+        }
+        if not torch.is_tensor(current_unit_valid_mask):
+            stats["cache_status"] = "unsupported_payload"
+            return recovered_feature, stats
+
+        current_valid = current_unit_valid_mask.to(
+            device=recovered_feature.device,
+            dtype=torch.bool,
+        ).flatten()
+        num_units = int(current_valid.numel())
+        num_current_units = int(current_valid.sum().item())
+        q_recv_unit = float(
+            current_valid.float().mean().item()
+            if num_units > 0 else 1.0
+        )
+
+        source_mask_for_quality = recovered_source_mask.to(
+            device=recovered_feature.device,
+            dtype=torch.bool,
+        ).flatten()
+        num_source_for_quality = int(source_mask_for_quality.numel())
+        q_recv_packet = float(
+            source_mask_for_quality.float().mean().item()
+            if num_source_for_quality > 0 else 1.0
+        )
+
+        stats["num_total_units"] = int(num_units)
+        stats["num_current_recovered_units"] = int(num_current_units)
+        stats["num_effective_recovered_units"] = int(num_current_units)
+        stats["q_recv_unit"] = float(q_recv_unit)
+        stats["q_eff_unit"] = float(q_recv_unit)
+        stats["q_recv_packet"] = float(q_recv_packet)
+        stats["q_eff_packet"] = float(q_recv_packet)
+        stats["q_eff"] = float(q_recv_unit)
+
+        if not int(cache_enabled):
+            return recovered_feature, stats
+        if (
+            not isinstance(compact_meta, dict)
+            or compact_meta.get("layout") != "KC"
+            or not torch.is_tensor(compact_meta.get("indices"))
+        ):
+            stats["cache_status"] = "unsupported_payload"
+            return recovered_feature, stats
+
+        entry, cache_status = self._get_receiver_cache_entry(
+            link_id,
+            agent_index,
+            ego_index,
+            frame_id,
+        )
+        stats["cache_status"] = cache_status
+        if entry is None:
+            return recovered_feature, stats
+
+        cached_feature = entry.get("feature")
+        cached_valid = entry.get("valid_flat")
+        if (
+            not torch.is_tensor(cached_feature)
+            or not torch.is_tensor(cached_valid)
+            or tuple(cached_feature.shape) != tuple(recovered_feature.shape)
+        ):
+            stats["cache_status"] = "shape_mismatch"
+            return recovered_feature, stats
+
+        C, H, W = recovered_feature.shape
+        unit_ids = compact_meta["indices"].to(
+            device=recovered_feature.device,
+            dtype=torch.long,
+        ).flatten()
+        count = min(int(unit_ids.numel()), num_units)
+        unit_ids = unit_ids[:count]
+        current_valid = current_valid[:count]
+        cached_valid = cached_valid.to(
+            device=recovered_feature.device,
+            dtype=torch.bool,
+        ).flatten()
+
+        temporal_unit_mask = (
+            (~current_valid)
+            & cached_valid[unit_ids]
+        )
+        num_temporal_units = int(temporal_unit_mask.sum().item())
+        if num_temporal_units > 0:
+            out_flat = recovered_feature.reshape(C, H * W)
+            cached_flat = cached_feature.to(
+                device=recovered_feature.device,
+                dtype=recovered_feature.dtype,
+            ).reshape(C, H * W)
+            fill_ids = unit_ids[temporal_unit_mask]
+            out_flat[:, fill_ids] = cached_flat[:, fill_ids]
+
+        effective_valid = current_valid | temporal_unit_mask
+        source_mask = recovered_source_mask.to(
+            device=recovered_feature.device,
+            dtype=torch.bool,
+        ).flatten()
+        num_source_packets = int(source_mask.numel())
+        temporal_packets = 0
+        if count > 0 and num_source_packets > 0:
+            original_num_bytes = int(packet_result.original_num_bytes)
+            packet_size_bytes = int(packet_result.packet_size_bytes)
+            if original_num_bytes % count == 0:
+                unit_bytes = int(original_num_bytes // count)
+                packet_index = torch.arange(
+                    num_source_packets,
+                    device=recovered_feature.device,
+                    dtype=torch.long,
+                )
+                first_unit = torch.div(packet_index * packet_size_bytes, unit_bytes, rounding_mode="floor")
+                last_byte = torch.minimum(
+                    (packet_index + 1) * packet_size_bytes,
+                    torch.full_like(
+                        packet_index,
+                        original_num_bytes,
+                    ),
+                ) - 1
+                last_unit = torch.div(last_byte, unit_bytes, rounding_mode="floor")
+                first_unit = torch.clamp(first_unit, 0, count - 1)
+                last_unit = torch.clamp(last_unit, 0, count - 1)
+
+                invalid = (~effective_valid).to(dtype=torch.long)
+                prefix = torch.cat(
+                    [
+                        torch.zeros(
+                            1,
+                            dtype=torch.long,
+                            device=recovered_feature.device,
+                        ),
+                        torch.cumsum(invalid, dim=0),
+                    ],
+                    dim=0,
+                )
+                packet_complete = (
+                    prefix[last_unit + 1] - prefix[first_unit]
+                ) == 0
+                temporal_packets = int(
+                    ((~source_mask) & packet_complete).sum().item()
+                )
+
+        q_recv_unit = float(
+            current_valid.float().mean().item()
+            if count > 0 else 1.0
+        )
+        q_cache_unit = float(
+            num_temporal_units / max(count, 1)
+        )
+        q_eff_unit = float(
+            effective_valid.float().mean().item()
+            if count > 0 else 1.0
+        )
+
+        q_recv_packet = float(
+            source_mask.float().mean().item()
+            if num_source_packets > 0 else 1.0
+        )
+        q_cache_packet = float(
+            temporal_packets / max(num_source_packets, 1)
+        )
+        q_eff_packet = float(
+            (
+                int(source_mask.sum().item())
+                + int(temporal_packets)
+            ) / max(num_source_packets, 1)
+        )
+
+        stats.update({
+            "cache_hit": bool(num_temporal_units > 0),
+            "num_total_units": int(count),
+            "num_temporal_filled_units": int(num_temporal_units),
+            "num_effective_recovered_units": int(effective_valid.sum().item()),
+            "num_temporal_filled_packets": int(temporal_packets),
+            "q_recv_unit": float(q_recv_unit),
+            "q_cache_unit": float(q_cache_unit),
+            "q_eff_unit": float(q_eff_unit),
+            "q_recv_packet": float(q_recv_packet),
+            "q_cache_packet": float(q_cache_packet),
+            "q_eff_packet": float(q_eff_packet),
+            "q_cache": float(q_cache_packet),
+            "q_eff": float(q_eff_unit),
+        })
+        return recovered_feature, stats
 
     # ------------------------------------------------------------------
     # Budget
@@ -1928,6 +2326,13 @@ class ARCEFixedComm:
         # Keep the compact receive tensor for read-only compression audit.
         # The formal output remains the dense/scattered feature below.
         recovered_feature_compact = recovered_feature
+        current_unit_valid_mask, unit_coverage_info = (
+            self._compact_unit_packet_coverage(
+                compact_meta=compact_meta,
+                packet_result=packet_result,
+                recovered_source_mask=decode_result.recovered_source_mask,
+            )
+        )
 
         # 7.5. Scatter compact recovered payload back to dense BEV feature map.
         if compact_meta is not None:
@@ -1937,17 +2342,52 @@ class ARCEFixedComm:
                 reference_feature=feature,
             )
 
+        recovered_feature, temporal_cache_info = (
+            self._apply_receiver_temporal_cache(
+                recovered_feature=recovered_feature,
+                compact_meta=compact_meta,
+                current_unit_valid_mask=current_unit_valid_mask,
+                recovered_source_mask=decode_result.recovered_source_mask,
+                packet_result=packet_result,
+                cache_enabled=cache_enabled,
+                link_id=link_id,
+                agent_index=agent_index,
+                ego_index=ego_index,
+                frame_id=frame_id,
+            )
+        )
+
+        if update_cache:
+            self._update_receiver_feature_cache(
+                recovered_feature=recovered_feature,
+                compact_meta=compact_meta,
+                current_unit_valid_mask=current_unit_valid_mask,
+                link_id=link_id,
+                agent_index=agent_index,
+                ego_index=ego_index,
+                frame_id=frame_id,
+            )
+
         num_fec_recovered_source_packets = int(
             decode_result.num_fec_recovered_source_packets
         )
         num_missing_source_packets = int(decode_result.num_missing_source_packets)
         num_recovered_source_packets = int(decode_result.num_recovered_source_packets)
         recovery_ratio = float(decode_result.recovery_ratio)
+        num_temporal_filled_packets = int(
+            temporal_cache_info["num_temporal_filled_packets"]
+        )
+        num_still_missing_packets = max(
+            0,
+            num_missing_source_packets - num_temporal_filled_packets,
+        )
 
         num_lost_by_bernoulli = int(raw_loss_mask_tx.sum().item())
         num_received_encoded_packets = int(received_packet_mask.sum().item())
 
         q_recv = float(recovery_ratio)
+        q_cache = float(temporal_cache_info["q_cache"])
+        q_eff = float(temporal_cache_info["q_eff"])
 
         size_info = {
             "raw_numel": int(feature.numel()),
@@ -2031,14 +2471,36 @@ class ARCEFixedComm:
                 "fec_decode": fec_decode_dict,
                 "partial_reconstruction": {
                     "enabled": True,
-                    "method": "fec_then_zero_fill_missing_source_packets",
+                    "method": (
+                        "fec_then_temporal_cache_then_zero_fill"
+                        if int(cache_enabled)
+                        else "fec_then_zero_fill_missing_source_packets"
+                    ),
                     "num_direct_received_packets": int(num_direct_received_source_packets),
                     "num_fec_recovered_packets": int(num_fec_recovered_source_packets),
-                    "num_temporal_filled_packets": 0,
+                    "num_temporal_filled_packets": int(
+                        num_temporal_filled_packets
+                    ),
                     "num_spatial_filled_packets": 0,
-                    "num_zero_filled_packets": int(num_missing_source_packets),
-                    "num_still_missing": int(num_missing_source_packets),
+                    "num_zero_filled_packets": int(num_still_missing_packets),
+                    "num_still_missing": int(num_still_missing_packets),
                     "recovery_ratio": float(recovery_ratio),
+                    "effective_recovery_ratio": float(q_eff),
+                    "num_current_recovered_units": int(
+                        temporal_cache_info["num_current_recovered_units"]
+                    ),
+                    "num_temporal_filled_units": int(
+                        temporal_cache_info["num_temporal_filled_units"]
+                    ),
+                    "num_effective_recovered_units": int(
+                        temporal_cache_info["num_effective_recovered_units"]
+                    ),
+                    "unit_packet_coverage": copy.deepcopy(
+                        unit_coverage_info
+                    ),
+                    "temporal_cache": copy.deepcopy(
+                        temporal_cache_info
+                    ),
                 },
                 "bandwidth_selection": {
                     "mode": "system_equal_split"
@@ -2105,10 +2567,32 @@ class ARCEFixedComm:
                 "size": size_info,
                 "quality": {
                     "q_recv": float(q_recv),
-                    "q_cache": 0.0,
+                    "q_cache": float(q_cache),
+                    "q_eff": float(q_eff),
+                    "q_recv_unit": float(
+                        temporal_cache_info.get("q_recv_unit", 0.0)
+                    ),
+                    "q_cache_unit": float(
+                        temporal_cache_info.get("q_cache_unit", 0.0)
+                    ),
+                    "q_eff_unit": float(
+                        temporal_cache_info.get("q_eff_unit", 0.0)
+                    ),
+                    "q_recv_packet": float(
+                        temporal_cache_info.get("q_recv_packet", q_recv)
+                    ),
+                    "q_cache_packet": float(
+                        temporal_cache_info.get("q_cache_packet", q_cache)
+                    ),
+                    "q_eff_packet": float(
+                        temporal_cache_info.get("q_eff_packet", q_recv)
+                    ),
                     "num_source_packets": int(num_source_packets),
-                    "num_still_missing": int(num_missing_source_packets),
+                    "num_still_missing": int(num_still_missing_packets),
                     "num_fec_recovered_packets": int(num_fec_recovered_source_packets),
+                    "num_temporal_filled_packets": int(
+                        num_temporal_filled_packets
+                    ),
                 },
                 "raw_loss_mask_summary": _mask_summary(raw_loss_mask_tx, true_name="lost"),
                 "final_loss_mask_summary": _mask_summary(full_loss_mask, true_name="lost"),
