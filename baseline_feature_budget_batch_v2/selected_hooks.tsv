@@ -1,2 +1,0 @@
-dataset	baseline	model_dir	fusion_method	hook_modules
-# 完成discover后，把每个基线选定的精确module_name填到这里；多尺度用逗号分隔。

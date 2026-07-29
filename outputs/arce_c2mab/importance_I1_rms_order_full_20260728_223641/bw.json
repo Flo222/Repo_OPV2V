@@ -1,0 +1,20 @@
+{
+  "method": "ARCE-C2MAB",
+  "scenario": "Markov",
+  "frame_count": 2170,
+  "record_count": 3444,
+  "transmitted_link_count": 3380,
+  "no_send_count": 64,
+  "BW": 0.13653223225806452,
+  "bw_MB_per_frame": 0.13653223225806452,
+  "total_tx_MB": 296.274944,
+  "int4_count": 1153,
+  "packed_int4_count": 1153,
+  "all_int4_packed": true,
+  "bw_breakdown_json": "outputs/arce_c2mab/importance_I1_rms_order_full_20260728_223641/bw_breakdown.json",
+  "reward_runtime_audit_json": "outputs/arce_c2mab/importance_I1_rms_order_full_20260728_223641/reward_runtime_audit.json",
+  "reward_update_count": 2170,
+  "avg_tokens_per_token_record": 33792.0,
+  "avg_tx_bytes_per_token": 2.5939662901201364,
+  "bad_legacy_action_ids": []
+}

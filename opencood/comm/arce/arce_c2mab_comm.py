@@ -105,9 +105,29 @@ class ARCEC2MABComm:
         self.transport_mode = normalize_transport_mode(self.arce_cfg)
         self.arce_cfg = apply_payload_native_transport_to_arce_cfg(self.arce_cfg)
         self.priority_layout_enabled = True
+        spatial_importance_cfg = (
+            self.arce_cfg.get("spatial_importance", {}) or {}
+        )
+        self.uses_arce_spatial_importance = bool(
+            spatial_importance_cfg.get("enabled", False)
+        )
+        self.spatial_importance_method = str(
+            spatial_importance_cfg.get("method", "feature_rms")
+        ).strip().lower()
 
         executor_cfg = build_c2mab_executor_cfg(cfg, self.arce_cfg)
         self.executor = ARCEFixedComm(executor_cfg)
+        if bool(
+            getattr(
+                self.executor,
+                "uses_arce_spatial_importance",
+                False,
+            )
+        ) != bool(self.uses_arce_spatial_importance):
+            raise RuntimeError(
+                "ARCE spatial importance configuration differs between "
+                "C2MAB and its executor."
+            )
 
 
         action_cfg = self.arce_cfg.get("action_space", {})
@@ -791,6 +811,9 @@ class ARCEC2MABComm:
         runtime_priority_maps = (
             None if is_payload_native_transport(self.arce_cfg) else priority_maps
         )
+        if self.uses_arce_spatial_importance:
+            runtime_message_masks = None
+            runtime_priority_maps = None
 
         proposals, no_send_candidates = build_c2mab_proposals(
             features_shape=features.shape[1:],

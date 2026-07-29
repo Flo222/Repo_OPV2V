@@ -456,6 +456,9 @@ class CompressionAuditor:
 
             requested = str(requested_quant_mode).strip().lower()
             actual = str(actual_quant_mode).strip().lower()
+            zero_codec_active = bool(
+                hasattr(packet_result, "unit_packet_indices")
+            )
             # Budget accounting is passed directly from communicate_feature's
             # runtime locals.  This is authoritative for both dense and
             # method-native/compact-sparse payloads and avoids silently losing
@@ -535,7 +538,12 @@ class CompressionAuditor:
                 "budget_packet_accounting_valid": accounting_valid,
                 "runtime_budget_accounting_complete": runtime_accounting_complete,
                 "int4_is_packed": bool(
-                    requested != "int4" or source_tensor_kind == "packed_int4"
+                    requested != "int4"
+                    or source_tensor_kind == "packed_int4"
+                    or str(source_tensor_kind).startswith("zero_sparse_units_int4")
+                    or str(source_tensor_kind).startswith(
+                        "zero_codec_dense_fallback_int4"
+                    )
                 ),
             }
             if self.require_no_fec_parity:
@@ -558,14 +566,23 @@ class CompressionAuditor:
                 )
             checks["passed"] = bool(all(checks.values()))
 
-            retention_analysis = _analyze_source_retention(
-                source_feature=source_feature,
-                source_tx_mask=source_tx_mask,
-                packet_size_bytes=packet_size,
-                valid_stream_bytes=valid_stream_bytes,
-                source_tensor_kind=source_tensor_kind,
-                stream_tensor=stream_tensor,
-            )
+            if zero_codec_active:
+                retention_analysis = {
+                    "available": False,
+                    "reason": (
+                        "variable_unit_records_use_explicit_unit_packet_mapping"
+                    ),
+                    "mapping": "packet_result.unit_packet_indices",
+                }
+            else:
+                retention_analysis = _analyze_source_retention(
+                    source_feature=source_feature,
+                    source_tx_mask=source_tx_mask,
+                    packet_size_bytes=packet_size,
+                    valid_stream_bytes=valid_stream_bytes,
+                    source_tensor_kind=source_tensor_kind,
+                    stream_tensor=stream_tensor,
+                )
 
             snapshot_path = self._save_snapshot(
                 frame_id=frame_id,
@@ -609,6 +626,7 @@ class CompressionAuditor:
                 "requested_quant_mode": requested,
                 "actual_quant_mode": actual,
                 "source_tensor_kind": str(source_tensor_kind),
+                "zero_codec_active": bool(zero_codec_active),
                 "feature_input_dense": _tensor_summary(feature_input),
                 "source_payload_before_quant": _tensor_summary(source_feature),
                 "quantized_then_dequantized": _tensor_summary(quant_dequantized),

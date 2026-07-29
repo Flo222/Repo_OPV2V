@@ -44,6 +44,7 @@ from opencood.comm.arce import (
 from opencood.comm.arce.fixed_policy import ARCEAction, FixedARCEPolicy
 from opencood.comm.arce.random_policy import RandomARCEPolicy
 from opencood.comm.arce.byte_stream_packetizer import ByteStreamPacketizer
+from opencood.comm.arce.zero_sparse_codec import AdaptiveUnitZeroCodec
 from opencood.comm.arce.policies.payload_transport import (
     apply_payload_native_transport_to_arce_cfg,
     is_payload_native_transport,
@@ -53,6 +54,9 @@ from opencood.comm.arce.policies.action_adapter import (
     get_action_field,
     normalize_runtime_action,
     runtime_action_as_dict,
+)
+from opencood.comm.arce.policies.spatial_importance import (
+    ARCESpatialImportance,
 )
 from opencood.compression.feature_quantizer import FeatureQuantizer
 from opencood.comm.arce.audit import CompressionAuditor, FECRecoveryAuditor
@@ -262,6 +266,7 @@ class ARCEFixedComm:
 
         self.fixed_policy = self.action_policy
         self.byte_packetizer = ByteStreamPacketizer(self.arce_cfg_raw)
+        self.zero_codec = AdaptiveUnitZeroCodec(self.arce_cfg_raw)
 
         scheduler_cfg = self.arce_cfg_raw.get("scheduler", {}) or {}
         self.tx_window_ms = float(
@@ -326,6 +331,12 @@ class ARCEFixedComm:
         self.redundancy_cfg = self.arce_cfg_raw.get("redundancy", {}) or {}
         self.transport_mode = normalize_transport_mode(self.arce_cfg_raw)
         self.arce_cfg_raw = apply_payload_native_transport_to_arce_cfg(self.arce_cfg_raw)
+        self.spatial_importance = ARCESpatialImportance(
+            self.arce_cfg_raw.get("spatial_importance", {}) or {}
+        )
+        self.uses_arce_spatial_importance = bool(
+            self.spatial_importance.enabled
+        )
 
         self.markov_cfg = self._extract_markov_cfg()
         self.markov_enabled = _as_bool(self.markov_cfg.get("enabled", False))
@@ -860,6 +871,49 @@ class ARCEFixedComm:
             return None, info
 
         num_units = int(compact_meta.get("num_tokens", 0))
+        unit_packet_indices = getattr(
+            packet_result,
+            "unit_packet_indices",
+            None,
+        )
+        if unit_packet_indices is not None:
+            source_mask = recovered_source_mask.to(
+                dtype=torch.bool
+            ).flatten()
+            valid_units = torch.zeros(
+                (num_units,),
+                dtype=torch.bool,
+                device=source_mask.device,
+            )
+            for unit_pos, packet_indices in enumerate(unit_packet_indices):
+                if unit_pos >= num_units:
+                    break
+                if not packet_indices:
+                    continue
+                packet_index = torch.tensor(
+                    list(packet_indices),
+                    dtype=torch.long,
+                    device=source_mask.device,
+                )
+                if (
+                    int(packet_index.min().item()) < 0
+                    or int(packet_index.max().item()) >= int(source_mask.numel())
+                ):
+                    raise RuntimeError(
+                        "Zero-codec unit-to-packet mapping is out of range."
+                    )
+                valid_units[unit_pos] = bool(
+                    source_mask[packet_index].all().item()
+                )
+            info.update({
+                "supported": True,
+                "reason": "zero_codec_unit_records",
+                "unit_bytes": None,
+                "units_per_packet": None,
+                "mapping": "explicit_unit_packet_indices",
+            })
+            return valid_units, info
+
         original_num_bytes = int(packet_result.original_num_bytes)
         packet_size_bytes = int(packet_result.packet_size_bytes)
         if num_units <= 0:
@@ -1044,45 +1098,78 @@ class ARCEFixedComm:
         num_source_packets = int(source_mask.numel())
         temporal_packets = 0
         if count > 0 and num_source_packets > 0:
-            original_num_bytes = int(packet_result.original_num_bytes)
-            packet_size_bytes = int(packet_result.packet_size_bytes)
-            if original_num_bytes % count == 0:
-                unit_bytes = int(original_num_bytes // count)
-                packet_index = torch.arange(
-                    num_source_packets,
-                    device=recovered_feature.device,
-                    dtype=torch.long,
-                )
-                first_unit = torch.div(packet_index * packet_size_bytes, unit_bytes, rounding_mode="floor")
-                last_byte = torch.minimum(
-                    (packet_index + 1) * packet_size_bytes,
-                    torch.full_like(
-                        packet_index,
-                        original_num_bytes,
-                    ),
-                ) - 1
-                last_unit = torch.div(last_byte, unit_bytes, rounding_mode="floor")
-                first_unit = torch.clamp(first_unit, 0, count - 1)
-                last_unit = torch.clamp(last_unit, 0, count - 1)
-
-                invalid = (~effective_valid).to(dtype=torch.long)
-                prefix = torch.cat(
-                    [
-                        torch.zeros(
-                            1,
-                            dtype=torch.long,
-                            device=recovered_feature.device,
+            packet_unit_positions = getattr(
+                packet_result,
+                "packet_unit_positions",
+                None,
+            )
+            if packet_unit_positions is not None:
+                for packet_index, unit_positions in enumerate(
+                    packet_unit_positions
+                ):
+                    if (
+                        packet_index >= num_source_packets
+                        or bool(source_mask[packet_index].item())
+                        or not unit_positions
+                    ):
+                        continue
+                    positions = torch.tensor(
+                        list(unit_positions),
+                        dtype=torch.long,
+                        device=recovered_feature.device,
+                    )
+                    if bool(effective_valid[positions].all().item()):
+                        temporal_packets += 1
+            else:
+                original_num_bytes = int(packet_result.original_num_bytes)
+                packet_size_bytes = int(packet_result.packet_size_bytes)
+                if original_num_bytes % count != 0:
+                    original_num_bytes = 0
+                if original_num_bytes > 0:
+                    unit_bytes = int(original_num_bytes // count)
+                    packet_index = torch.arange(
+                        num_source_packets,
+                        device=recovered_feature.device,
+                        dtype=torch.long,
+                    )
+                    first_unit = torch.div(
+                        packet_index * packet_size_bytes,
+                        unit_bytes,
+                        rounding_mode="floor",
+                    )
+                    last_byte = torch.minimum(
+                        (packet_index + 1) * packet_size_bytes,
+                        torch.full_like(
+                            packet_index,
+                            original_num_bytes,
                         ),
-                        torch.cumsum(invalid, dim=0),
-                    ],
-                    dim=0,
-                )
-                packet_complete = (
-                    prefix[last_unit + 1] - prefix[first_unit]
-                ) == 0
-                temporal_packets = int(
-                    ((~source_mask) & packet_complete).sum().item()
-                )
+                    ) - 1
+                    last_unit = torch.div(
+                        last_byte,
+                        unit_bytes,
+                        rounding_mode="floor",
+                    )
+                    first_unit = torch.clamp(first_unit, 0, count - 1)
+                    last_unit = torch.clamp(last_unit, 0, count - 1)
+
+                    invalid = (~effective_valid).to(dtype=torch.long)
+                    prefix = torch.cat(
+                        [
+                            torch.zeros(
+                                1,
+                                dtype=torch.long,
+                                device=recovered_feature.device,
+                            ),
+                            torch.cumsum(invalid, dim=0),
+                        ],
+                        dim=0,
+                    )
+                    packet_complete = (
+                        prefix[last_unit + 1] - prefix[first_unit]
+                    ) == 0
+                    temporal_packets = int(
+                        ((~source_mask) & packet_complete).sum().item()
+                    )
 
         q_recv_unit = float(
             current_valid.float().mean().item()
@@ -1576,13 +1663,11 @@ class ARCEFixedComm:
         if not bool(cfg.get("enabled", False)):
             return feature, None
 
-        if message_mask is None or (not torch.is_tensor(message_mask)):
-            return feature, None
-
         if feature.dim() != 3:
             return feature, None
 
         C, H, W = feature.shape
+        importance_result = None
         priority_layout_enabled = bool(
             cfg.get(
                 "priority_layout_enabled",
@@ -1591,7 +1676,24 @@ class ARCEFixedComm:
                 ),
             )
         )
-        if priority_layout_enabled:
+        if self.spatial_importance.enabled:
+            if not priority_layout_enabled:
+                raise ValueError(
+                    "ARCE spatial importance requires KC priority layout."
+                )
+            importance_result = self.spatial_importance.compute(feature)
+            candidate2d = importance_result.candidate_mask[0]
+            priority2d = importance_result.priority_map[0]
+            candidate_threshold = 0.5
+            flat_candidate = candidate2d.reshape(-1).float()
+            flat_priority = priority2d.reshape(-1).float()
+            cand = torch.nonzero(
+                flat_candidate > candidate_threshold,
+                as_tuple=False,
+            ).flatten()
+        elif priority_layout_enabled:
+            if message_mask is None or not torch.is_tensor(message_mask):
+                return feature, None
             candidate2d = self._to_spatial_map(message_mask, feature, "nearest")
             if candidate2d is None:
                 return feature, None
@@ -1615,6 +1717,8 @@ class ARCEFixedComm:
             ).flatten()
 
         else:
+            if message_mask is None or not torch.is_tensor(message_mask):
+                return feature, None
             score2d = self._to_spatial_map(
                 priority_map if torch.is_tensor(priority_map) else message_mask,
                 feature,
@@ -1704,8 +1808,12 @@ class ARCEFixedComm:
                 flat_feature[:, selected].transpose(0, 1).contiguous()
             )
             layout, channel_dim = "KC", 1
-            candidate_source = "where2comm_binary_mask"
-            priority_source = "where2comm_sender_confidence"
+            if importance_result is not None:
+                candidate_source = importance_result.candidate_source
+                priority_source = importance_result.priority_source
+            else:
+                candidate_source = "where2comm_binary_mask"
+                priority_source = "where2comm_sender_confidence"
         else:
             compact_feature = (
                 flat_feature[:, selected]
@@ -1726,6 +1834,10 @@ class ARCEFixedComm:
             "priority_layout_enabled": bool(priority_layout_enabled),
             "candidate_source": candidate_source,
             "priority_source": priority_source,
+            "spatial_importance": (
+                copy.deepcopy(importance_result.stats)
+                if importance_result is not None else None
+            ),
             "original_shape": (int(C), int(H), int(W)),
             "num_tokens": int(selected.numel()),
             "num_total_tokens": int(H * W),
@@ -2118,18 +2230,40 @@ class ARCEFixedComm:
                 mode=quant_mode,
             )
 
-        if quant_result.packed_tensor is not None:
-            stream_tensor = quant_result.packed_tensor
-            source_tensor_kind = "packed_int4"
-        else:
+        zero_codec_active = bool(self.zero_codec.enabled)
+        if zero_codec_active:
+            if (
+                not isinstance(compact_meta, dict)
+                or compact_meta.get("layout") != "KC"
+                or not torch.is_tensor(compact_meta.get("indices"))
+            ):
+                raise RuntimeError(
+                    "ARCE zero codec requires a KC payload with stable unit ids."
+                )
             stream_tensor = quant_result.q_tensor
-            source_tensor_kind = "q_tensor"
+            unit_ids = [
+                int(x)
+                for x in compact_meta["indices"].detach().cpu().flatten().tolist()
+            ]
+            packet_result = self.zero_codec.packetize(
+                q_tensor=quant_result.q_tensor,
+                quant_mode=quant_mode,
+                unit_ids=unit_ids,
+            )
+            source_tensor_kind = str(packet_result.source_tensor_kind)
+        else:
+            if quant_result.packed_tensor is not None:
+                stream_tensor = quant_result.packed_tensor
+                source_tensor_kind = "packed_int4"
+            else:
+                stream_tensor = quant_result.q_tensor
+                source_tensor_kind = "q_tensor"
 
-        # 3. Byte-stream packetization after quantization.
-        packet_result = self.byte_packetizer.packetize(
-            stream_tensor,
-            source_tensor_kind=source_tensor_kind,
-        )
+            # 3. Byte-stream packetization after quantization.
+            packet_result = self.byte_packetizer.packetize(
+                stream_tensor,
+                source_tensor_kind=source_tensor_kind,
+            )
         source_packets = packet_result.packets
         num_source_packets = int(packet_result.num_packets)
         packet_size_bytes = int(packet_result.packet_size_bytes)
@@ -2261,25 +2395,39 @@ class ARCEFixedComm:
         )
 
         # 9. Rebuild quantized byte stream and dequantize.
-        recovered_stream_tensor = self.byte_packetizer.unpacketize(
-            packets=decoded_source_packets,
-            meta=packet_result,
-        )
-
-        if source_tensor_kind == "packed_int4":
-            recovered_feature = quantizer.unpack_and_dequantize_int4(
-                packed_tensor=recovered_stream_tensor,
+        codec_unit_valid_mask = None
+        if zero_codec_active:
+            recovered_q_tensor, codec_unit_valid_mask = (
+                self.zero_codec.unpacketize(
+                    packets=decoded_source_packets,
+                    meta=packet_result,
+                    recovered_source_mask=decode_result.recovered_source_mask,
+                )
+            )
+            recovered_feature = quantizer.dequantize(
+                q_tensor=recovered_q_tensor,
                 meta=quant_result.meta,
-                original_numel=int(quant_result.q_tensor.numel()),
-                shape=tuple(int(x) for x in quant_result.q_tensor.shape),
                 output_dtype=feature.dtype,
             )
         else:
-            recovered_feature = quantizer.dequantize(
-                q_tensor=recovered_stream_tensor,
-                meta=quant_result.meta,
-                output_dtype=feature.dtype,
+            recovered_stream_tensor = self.byte_packetizer.unpacketize(
+                packets=decoded_source_packets,
+                meta=packet_result,
             )
+            if source_tensor_kind == "packed_int4":
+                recovered_feature = quantizer.unpack_and_dequantize_int4(
+                    packed_tensor=recovered_stream_tensor,
+                    meta=quant_result.meta,
+                    original_numel=int(quant_result.q_tensor.numel()),
+                    shape=tuple(int(x) for x in quant_result.q_tensor.shape),
+                    output_dtype=feature.dtype,
+                )
+            else:
+                recovered_feature = quantizer.dequantize(
+                    q_tensor=recovered_stream_tensor,
+                    meta=quant_result.meta,
+                    output_dtype=feature.dtype,
+                )
 
         # Experiment-3 read-only counterfactual: reconstruct the payload using
         # only directly received systematic source packets. FEC output used by
@@ -2291,24 +2439,36 @@ class ARCEFixedComm:
             )
             direct_source_packets = source_packets.clone()
             direct_source_packets[~direct_source_receive_mask] = 0
-            direct_stream_tensor = self.byte_packetizer.unpacketize(
-                packets=direct_source_packets,
-                meta=packet_result,
-            )
-            if source_tensor_kind == "packed_int4":
-                direct_recovered_feature_compact = quantizer.unpack_and_dequantize_int4(
-                    packed_tensor=direct_stream_tensor,
+            if zero_codec_active:
+                direct_q_tensor, _ = self.zero_codec.unpacketize(
+                    packets=direct_source_packets,
+                    meta=packet_result,
+                    recovered_source_mask=direct_source_receive_mask,
+                )
+                direct_recovered_feature_compact = quantizer.dequantize(
+                    q_tensor=direct_q_tensor,
                     meta=quant_result.meta,
-                    original_numel=int(quant_result.q_tensor.numel()),
-                    shape=tuple(int(x) for x in quant_result.q_tensor.shape),
                     output_dtype=feature.dtype,
                 )
             else:
-                direct_recovered_feature_compact = quantizer.dequantize(
-                    q_tensor=direct_stream_tensor,
-                    meta=quant_result.meta,
-                    output_dtype=feature.dtype,
+                direct_stream_tensor = self.byte_packetizer.unpacketize(
+                    packets=direct_source_packets,
+                    meta=packet_result,
                 )
+                if source_tensor_kind == "packed_int4":
+                    direct_recovered_feature_compact = quantizer.unpack_and_dequantize_int4(
+                        packed_tensor=direct_stream_tensor,
+                        meta=quant_result.meta,
+                        original_numel=int(quant_result.q_tensor.numel()),
+                        shape=tuple(int(x) for x in quant_result.q_tensor.shape),
+                        output_dtype=feature.dtype,
+                    )
+                else:
+                    direct_recovered_feature_compact = quantizer.dequantize(
+                        q_tensor=direct_stream_tensor,
+                        meta=quant_result.meta,
+                        output_dtype=feature.dtype,
+                    )
 
         if update_cache:
             self._update_prev_feature_cache(
@@ -2333,6 +2493,21 @@ class ARCEFixedComm:
                 recovered_source_mask=decode_result.recovered_source_mask,
             )
         )
+        if torch.is_tensor(codec_unit_valid_mask):
+            if (
+                torch.is_tensor(current_unit_valid_mask)
+                and not torch.equal(
+                    codec_unit_valid_mask.to(
+                        device=current_unit_valid_mask.device,
+                        dtype=torch.bool,
+                    ),
+                    current_unit_valid_mask.to(dtype=torch.bool),
+                )
+            ):
+                raise RuntimeError(
+                    "Zero-codec decode validity differs from packet mapping."
+                )
+            current_unit_valid_mask = codec_unit_valid_mask
 
         # 7.5. Scatter compact recovered payload back to dense BEV feature map.
         if compact_meta is not None:
@@ -2389,11 +2564,34 @@ class ARCEFixedComm:
         q_cache = float(temporal_cache_info["q_cache"])
         q_eff = float(temporal_cache_info["q_eff"])
 
+        dense_quantized_num_bytes = int(
+            getattr(
+                packet_result,
+                "dense_num_bytes",
+                packet_result.original_num_bytes,
+            )
+        )
+        codec_metadata_bytes = int(
+            getattr(packet_result, "metadata_bytes", 0)
+        )
+        codec_padding_bytes = int(
+            getattr(packet_result, "padding_bytes", 0)
+        )
         size_info = {
             "raw_numel": int(feature.numel()),
             "raw_bytes_fp32_reference": float(feature.numel() * 4),
-            "quantized_num_bytes": float(packet_result.original_num_bytes),
+            "quantized_num_bytes": float(dense_quantized_num_bytes),
             "compressed_bytes": float(packet_result.original_num_bytes),
+            "zero_codec_enabled": bool(zero_codec_active),
+            "zero_codec_encoded_valid_bytes": float(
+                packet_result.original_num_bytes
+            ),
+            "zero_codec_metadata_bytes": float(codec_metadata_bytes),
+            "zero_codec_padding_bytes": float(codec_padding_bytes),
+            "zero_codec_compression_ratio": float(
+                packet_result.original_num_bytes
+                / max(1, dense_quantized_num_bytes)
+            ),
             "actual_num_source_packets": int(num_source_packets),
             "actual_num_parity_packets": int(num_parity_packets),
             "actual_num_encoded_packets": int(num_encoded_packets),
@@ -2404,7 +2602,7 @@ class ARCEFixedComm:
                 packet_result.original_num_bytes / max(1, num_source_packets)
             ),
             "actual_parity_bytes": float(num_parity_packets * packet_size_bytes),
-            "actual_metadata_bytes": 0.0,
+            "actual_metadata_bytes": float(codec_metadata_bytes),
             "actual_transmitted_bytes": float(transmitted_bytes),
             "actual_received_bytes": float(received_bytes),
             "actual_transmitted_mb": float(transmitted_bytes / 1_000_000.0),
@@ -2456,6 +2654,11 @@ class ARCEFixedComm:
                     },
                 },
                 "packetization": packet_result.to_meta_dict(),
+                "zero_codec": (
+                    packet_result.to_meta_dict()
+                    if zero_codec_active
+                    else self.zero_codec.get_config()
+                ),
 
                 "compact_sparse": self._compact_meta_for_record(compact_meta),
                 "transport": {
@@ -2607,7 +2810,15 @@ class ARCEFixedComm:
                 "late": False,
                 "dropped_by_late": False,
                 "notes": {
-                    "packetization": "Quantize first, then flatten Q(F) into a byte stream and split by fixed packet length.",
+                    "packetization": (
+                        "Quantize KC units, adaptively encode each unit as dense "
+                        "or bitmap-plus-nonzero values, then place self-contained "
+                        "records in fixed-size source packets."
+                        if zero_codec_active
+                        else
+                        "Quantize first, then flatten Q(F) into a byte stream "
+                        "and split by fixed packet length."
+                    ),
                     "fec": "FEC is applied to byte-stream source packets before Bernoulli packet loss.",
                     "loss": "Each transmitted encoded packet independently follows receive_i ~ Bernoulli(1 - PLR_t).",
                     "delay": "Good/Medium use current frame; Bad uses previous frame.",
@@ -3173,6 +3384,7 @@ class ARCEFixedComm:
             "max_records": int(self.max_records),
             "keep_tensor_results": bool(self.keep_tensor_results),
             "byte_packetizer": self.byte_packetizer.get_config(),
+            "zero_codec": self.zero_codec.get_config(),
             "action_policy": self.action_policy.get_config(),
             "fixed_policy": self.fixed_policy.get_config(),
             "loss_model": "bernoulli",

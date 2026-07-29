@@ -44,6 +44,14 @@ from opencood.comm.arce.policies.ap_proxy_features import (
     PAIRED_SPATIAL_AP_PROXY_FEATURES,
     paired_head_ap_proxy_features,
 )
+from opencood.comm.arce.policies.decoded_box_proxy_features import (
+    PAIRED_DECODED_MATCH_FEATURES,
+    RICH_DECODED_BOX_FEATURES,
+    decoded_box_features,
+    delta_decoded_feature_names,
+    no_send_decoded_feature_names,
+    paired_decoded_box_features,
+)
 
 
 warnings.filterwarnings(
@@ -586,12 +594,19 @@ def _write_proxy_dataset(
     path: Path,
     frame_rows: List[Dict[str, Any]],
 ) -> int:
-    feature_cols = (
+    head_feature_cols = (
         ["collab_" + name for name in HEAD_AP_PROXY_FEATURES]
         + ["ego_" + name for name in HEAD_AP_PROXY_FEATURES]
         + ["diff_" + name for name in HEAD_AP_PROXY_FEATURES]
         + list(PAIRED_SPATIAL_AP_PROXY_FEATURES)
     )
+    decoded_feature_cols = (
+        list(RICH_DECODED_BOX_FEATURES)
+        + list(no_send_decoded_feature_names())
+        + list(delta_decoded_feature_names())
+        + list(PAIRED_DECODED_MATCH_FEATURES)
+    )
+    feature_cols = head_feature_cols + decoded_feature_cols
     fieldnames = [
         "frame_idx",
         "sequence_id",
@@ -745,6 +760,7 @@ def main():
                 state_snapshot = copy.deepcopy(base_comm)
                 action_rows = []
                 psm_by_action = {}
+                decoded_by_action = {}
 
                 for action_id in action_ids:
                     trial_comm = copy.deepcopy(state_snapshot)
@@ -856,7 +872,22 @@ def main():
                             "policy_update_applied": update.get("policy_update_applied"),
                         }
                         row.update(proxy_features)
+                        row.update(
+                            decoded_box_features(pred_boxes, pred_scores)
+                        )
                         psm_by_action[action_id] = output.get("psm").detach().clone()
+                        decoded_by_action[action_id] = (
+                            (
+                                pred_boxes.detach().float().cpu().clone()
+                                if torch.is_tensor(pred_boxes)
+                                else None
+                            ),
+                            (
+                                pred_scores.detach().float().cpu().reshape(-1).clone()
+                                if torch.is_tensor(pred_scores)
+                                else None
+                            ),
+                        )
                     except Exception as exc:
                         row = {
                             "action_id": str(action_id),
@@ -876,6 +907,7 @@ def main():
                     None,
                 )
                 no_send_psm = psm_by_action.get(no_send_id)
+                no_send_decoded = decoded_by_action.get(no_send_id)
                 if no_send_row is not None and "error" not in no_send_row:
                     baseline_quality = float(no_send_row["true_quality_mean_0357"])
                     baseline_proxy = _float(
@@ -900,6 +932,28 @@ def main():
                         row["psm_vs_no_send"] = _tensor_diff(
                             psm_by_action.get(row["action_id"]), no_send_psm
                         )
+                        for name in RICH_DECODED_BOX_FEATURES:
+                            reference_name = "no_send_" + name
+                            delta_name = "paired_delta_" + name
+                            reference_value = float(no_send_row[name])
+                            row[reference_name] = reference_value
+                            row[delta_name] = (
+                                float(row[name]) - reference_value
+                            )
+                        current_decoded = decoded_by_action.get(row["action_id"])
+                        if (
+                            current_decoded is not None
+                            and no_send_decoded is not None
+                        ):
+                            row.update(
+                                paired_decoded_box_features(
+                                    current_decoded[0],
+                                    current_decoded[1],
+                                    no_send_decoded[0],
+                                    no_send_decoded[1],
+                                    iou_threshold=0.3,
+                                )
+                            )
 
                 valid_states = sorted(
                     set(
@@ -1003,7 +1057,19 @@ def main():
     payload = {
         "model_dir": args.model_dir,
         "protocol": "online_state_matched_single_sender_counterfactual",
-        "feature_definition": "canonical_psm_rm_head_v3",
+        "feature_definition": (
+            "canonical_psm_rm_head_plus_rich_paired_decoded_box_v33"
+        ),
+        "decoded_box_feature_schema": "v3.3_rich_paired_aabb_iou",
+        "decoded_box_pair_iou_threshold": 0.3,
+        "decoded_box_class_handling": (
+            "class_agnostic because inference post-process does not expose "
+            "predicted class labels"
+        ),
+        "decoded_box_reference_semantics": (
+            "matched-state no-send action for the audited sender; this is "
+            "not necessarily an ego-only frame when other senders exist"
+        ),
         "sender_index": int(args.sender_index),
         "action_ids": action_ids,
         "summary": _summary(frame_rows),

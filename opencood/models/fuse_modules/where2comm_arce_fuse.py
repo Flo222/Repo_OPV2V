@@ -1,11 +1,12 @@
 """Where2comm fusion with ARCE/C2MAB message transmission hook.
 
 Final insertion point:
-    Where2comm confidence mask -> masked message -> ARCE/C2MAB -> AttentionFusion
+    sender feature -> ARCE/C2MAB transport -> AttentionFusion
 
 This module intentionally keeps Where2comm's original confidence-aware
-attention fusion unchanged. ARCE only modifies non-ego communicated messages
-before they enter the fusion module.
+attention fusion unchanged. Fixed transport keeps the native Where2Comm mask.
+ARCE-C2MAB can instead rank sender-local spatial units with its own importance
+module before non-ego messages enter the fusion module.
 """
 
 from __future__ import annotations
@@ -162,7 +163,17 @@ class Where2commArce(nn.Module):
         priority_layout_enabled = bool(
             getattr(self.arce_comm, "priority_layout_enabled", False)
         )
-        if transport_mode == "payload_native":
+        uses_arce_spatial_importance = bool(
+            getattr(
+                self.arce_comm,
+                "uses_arce_spatial_importance",
+                False,
+            )
+        )
+        if uses_arce_spatial_importance:
+            candidate_masks = None
+            priority_maps = None
+        elif transport_mode == "payload_native":
             candidate_masks = None
             priority_maps = None
         elif not priority_layout_enabled:
@@ -286,7 +297,14 @@ class Where2commArce(nn.Module):
                                 mode="nearest",
                             ).to(raw_masks.dtype)
                             message_scores = F.interpolate(message_scores, size=(x.shape[-2], x.shape[-1]), mode="bilinear", align_corners=False)
-                    x = x * communication_masks
+                    if not bool(
+                        getattr(
+                            self.arce_comm,
+                            "uses_arce_spatial_importance",
+                            False,
+                        )
+                    ):
+                        x = x * communication_masks
                     x_before_arce = x.detach().clone()
                     x, arce_info = self._maybe_arce_comm(
                         x,
@@ -329,7 +347,14 @@ class Where2commArce(nn.Module):
                 )
                 # candidate region = Where2Comm binary raw mask; score = confidence inside valid region
                 message_scores = _confidence_maps * raw_masks
-                x = x * communication_masks
+                if not bool(
+                    getattr(
+                        self.arce_comm,
+                        "uses_arce_spatial_importance",
+                        False,
+                    )
+                ):
+                    x = x * communication_masks
 
             x_before_arce = x.detach().clone()
             x, arce_info = self._maybe_arce_comm(
@@ -351,6 +376,24 @@ class Where2commArce(nn.Module):
 
         self.last_comm_info = {
             "where2comm_rate": communication_rates,
+            "where2comm_mask_applied_to_payload": not bool(
+                getattr(
+                    self.arce_comm,
+                    "uses_arce_spatial_importance",
+                    False,
+                )
+            ),
+            "payload_priority_source": (
+                "arce_sender_feature_rms"
+                if bool(
+                    getattr(
+                        self.arce_comm,
+                        "uses_arce_spatial_importance",
+                        False,
+                    )
+                )
+                else "where2comm_or_native"
+            ),
             "arce": arce_info,
         }
         return x_fuse, communication_rates, arce_info
