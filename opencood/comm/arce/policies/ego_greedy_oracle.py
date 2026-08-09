@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
-from opencood.comm.arce.policies.quant_quality import merge_quant_quality_prior
 
 try:
     import torch
@@ -99,11 +98,7 @@ class EgoGreedyKnapsackOracle:
     def __init__(
         self,
         eps_cost: float = 1.0,
-        lambda_comp: float = 0.5,
-        lambda_red: float = 0.5,
         diversity_aware: bool = True,
-        cost_alpha: float = 0.25,
-        quant_quality_prior=None,
         min_marginal_coverage: float = 0.001,
         oracle_cost_lambda: float = 0.12,
         explore_warmup_pulls_per_quant: int = 6,
@@ -112,25 +107,12 @@ class EgoGreedyKnapsackOracle:
         explore_bonus: float = 1.0,
     ):
         self.eps_cost = float(eps_cost)
-        self.lambda_comp = float(lambda_comp)
-        self.lambda_red = float(lambda_red)
         self.diversity_aware = bool(diversity_aware)
         self.min_marginal_coverage = max(0.0, min(1.0, float(min_marginal_coverage)))
 
-        # Cost smoothing and fidelity prior.
-        # Pure gain/cost strongly favors the cheapest action at cold start,
-        # causing all actions to collapse to INT4. We use gain/cost^alpha
-        # and multiply a quantization fidelity prior to balance perception
-        # quality and communication cost.
-        self.cost_alpha = float(cost_alpha)
-        self.cost_alpha = max(0.0, min(1.0, self.cost_alpha))
+        # Static complementarity is learned through the D-LinUCB context,
+        # while dynamic redundancy is handled by marginal coverage.
         self.oracle_cost_lambda = max(0.0, float(oracle_cost_lambda))
-        if isinstance(quant_quality_prior, dict):
-            self.quant_quality_prior = merge_quant_quality_prior(
-                {"quant_quality_prior": quant_quality_prior}
-            )
-        else:
-            self.quant_quality_prior = merge_quant_quality_prior()
 
         # Bandit warm-up exploration.
         # This is NOT a hand-crafted bad/medium/good -> quant rule.
@@ -378,8 +360,6 @@ class EgoGreedyKnapsackOracle:
             "num_unique_senders": len(unique_sender_ids),
             "unique_sender_ids": unique_sender_ids,
             "num_selected": len(selected),
-            "lambda_comp": float(self.lambda_comp),
-            "lambda_red": float(self.lambda_red),
             "diversity_aware": bool(self.diversity_aware),
             "min_marginal_coverage": float(self.min_marginal_coverage),
             "oracle_cost_lambda": float(self.oracle_cost_lambda),

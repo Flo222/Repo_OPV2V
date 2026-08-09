@@ -317,6 +317,15 @@ class CosDHMarkovByteChannel(nn.Module):
                 "remaining_budget_bytes_after": int(session["remaining_budget_bytes"]),
                 "sent_units": 0,
                 "received_units": 0,
+                "source_payload_bytes": 0,
+                "packet_size_bytes": int(self.packet_size_bytes),
+                "num_source_packets": 0,
+                "num_transmitted_packets": 0,
+                "num_received_packets": 0,
+                "consumed_bytes": 0,
+                "transmitted_wire_bytes": 0,
+                "received_wire_bytes": 0,
+                "received_payload_bytes": 0,
             }
 
         remaining_before = int(session["remaining_budget_bytes"])
@@ -332,6 +341,15 @@ class CosDHMarkovByteChannel(nn.Module):
                 "remaining_budget_bytes_after": remaining_before,
                 "sent_units": 0,
                 "received_units": 0,
+                "source_payload_bytes": int(total_message_bytes),
+                "packet_size_bytes": int(self.packet_size_bytes),
+                "num_source_packets": int(num_packets),
+                "num_transmitted_packets": 0,
+                "num_received_packets": 0,
+                "consumed_bytes": 0,
+                "transmitted_wire_bytes": 0,
+                "received_wire_bytes": 0,
+                "received_payload_bytes": 0,
             }
 
         if max_send_cells >= selected_cells:
@@ -366,10 +384,17 @@ class CosDHMarkovByteChannel(nn.Module):
 
         out = msg * keep_mask
 
+        tx_packets = int(math.ceil(consumed_bytes / float(max(self.packet_size_bytes, 1)))) if consumed_bytes > 0 else 0
+        received_payload_bytes = int(recv_idx.numel() * cell_bytes)
+        rx_packets = int(math.ceil(received_payload_bytes / float(max(self.packet_size_bytes, 1)))) if received_payload_bytes > 0 else 0
+
         return out, {
             "selected_cells": selected_cells,
             "message_bytes": total_message_bytes,
+            "source_payload_bytes": int(total_message_bytes),
             "num_packets": num_packets,
+            "num_source_packets": int(num_packets),
+            "packet_size_bytes": int(self.packet_size_bytes),
             "cell_bytes": cell_bytes,
             "remaining_budget_bytes_before": remaining_before,
             "remaining_budget_bytes_after": int(session["remaining_budget_bytes"]),
@@ -377,6 +402,14 @@ class CosDHMarkovByteChannel(nn.Module):
             "initial_budget_packets": int(session["initial_budget_packets"]),
             "sent_units": int(max_send_cells),
             "received_units": int(recv_idx.numel()),
+            "consumed_bytes": int(consumed_bytes),
+            "tx_payload_bytes": int(consumed_bytes),
+            "received_payload_bytes": received_payload_bytes,
+            "num_transmitted_packets": tx_packets,
+            "num_received_packets": rx_packets,
+            "transmitted_wire_bytes": int(tx_packets * self.packet_size_bytes),
+            "received_wire_bytes": int(rx_packets * self.packet_size_bytes),
+            "rx_wire_estimated_from_received_units": True,
             "scale_idx": int(scale_idx),
             "num_scales": int(num_scales),
         }

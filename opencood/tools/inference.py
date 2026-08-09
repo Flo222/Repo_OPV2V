@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 import opencood.hypes_yaml.yaml_utils as yaml_utils
 from opencood.tools import train_utils, inference_utils
+from opencood.tools.arce_eval_runtime import set_deterministic_seed
 from opencood.data_utils.datasets import build_dataset
 from opencood.utils import eval_utils
 from opencood.visualization import vis_utils
@@ -43,12 +44,18 @@ def test_parser():
                              'but would increase the tolerance for FP (False Positives).')
     parser.add_argument("--max_frames", type=int, default=-1,
                         help="Maximum number of validation frames to evaluate. -1 means full split.")
+    parser.add_argument("--num_workers", type=int, default=16,
+                        help="Number of DataLoader workers.")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Optional deterministic evaluation seed.")
     opt = parser.parse_args()
     return opt
 
 
 def main():
     opt = test_parser()
+    if opt.seed is not None:
+        set_deterministic_seed(opt.seed)
     assert opt.fusion_method in ['late', 'early', 'intermediate']
     assert not (opt.show_vis and opt.show_sequence), 'you can only visualize ' \
                                                     'the results in single ' \
@@ -61,7 +68,7 @@ def main():
     print(f"{len(opencood_dataset)} samples found.")
     data_loader = DataLoader(opencood_dataset,
                              batch_size=1,
-                             num_workers=16,
+                             num_workers=opt.num_workers,
                              collate_fn=opencood_dataset.collate_batch_test,
                              shuffle=False,
                              pin_memory=False,

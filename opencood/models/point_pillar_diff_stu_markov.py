@@ -152,6 +152,7 @@ class PointPillarDiffStuMarkov(nn.Module):
         self.weights = [0.2,1,1]
 
         self.current_epoch = 0
+        self.diff_start_epoch = int(args.get('diff_start_epoch', 15))
 
         # CoopDiff-Markov: link-level Markov impairment applied to non-ego
         # student feature maps before AttFusion. This module has no learnable
@@ -159,6 +160,12 @@ class PointPillarDiffStuMarkov(nn.Module):
         self.coopdiff_markov_channel = CoopDiffMarkovFeatureChannel(
             args.get('coopdiff_markov', {})
         )
+        if not hasattr(self.coopdiff_markov_channel, 'forward_multiscale'):
+            raise RuntimeError(
+                'Mixed CoopDiff channel installation detected: the model requires '
+                'CoopDiffMarkovFeatureChannel API v2 with forward_multiscale(). '
+                'Reinstall the complete packet-Markov patch and clear __pycache__.'
+            )
 
 
     def update_epoch(self, epoch):
@@ -175,7 +182,7 @@ class PointPillarDiffStuMarkov(nn.Module):
             student_modules.append(self.naive_compressor)
 
         print(f"-------- Update Epoch: {epoch} --------")
-        if epoch < 15:
+        if epoch < self.diff_start_epoch:
             # Phase 1: Train Student Backbone, Freeze Diffuser (Teacher is always frozen)
             for module in student_modules:
                 for p in module.parameters():
@@ -247,7 +254,7 @@ class PointPillarDiffStuMarkov(nn.Module):
         for module in self._teacher_modules_for_phase():
             module.eval()
 
-        if self.current_epoch < 15:
+        if self.current_epoch < self.diff_start_epoch:
             # Phase 1: train student backbone/head; diffuser is not trained.
             for module in self._student_modules_for_phase():
                 module.train()
@@ -414,9 +421,15 @@ class PointPillarDiffStuMarkov(nn.Module):
         feature_list_teacher = self.backbone_teacher.get_multiscale_feature(spatial_features_teacher)
         feature_list = self.backbone.get_multiscale_feature(spatial_features)
 
+        # Packet-faithful channel: serialize all active student scales of each
+        # ego<-CAV link into one continuous stream before entering AttFusion.
+        # This avoids the old cell-level loss and avoids restarting packetization
+        # independently at every scale.
         if hasattr(self, 'coopdiff_markov_channel'):
-            self.coopdiff_markov_channel.start_frame(
-                frame_id=data_dict.get('frame_id', None)
+            feature_list, _ = self.coopdiff_markov_channel.forward_multiscale(
+                feature_list,
+                record_len=record_len,
+                frame_id=data_dict.get('frame_id', None),
             )
 
         fused_feature_teacher_list = []
@@ -429,23 +442,14 @@ class PointPillarDiffStuMarkov(nn.Module):
         for i, (fuse_module_teacher, fuse_module) in enumerate(zip(self.fuse_modules_teacher,self.fuse_modules)):
             fea_teacher, fea_tea_others = fuse_module_teacher(feature_list_teacher[i], record_len)
 
-            # Apply Markov channel only on the student communication branch.
-            # The ego feature is kept intact; non-ego CAV features are impaired
-            # according to the link state, bandwidth budget, packet loss and delay.
+            # feature_list has already passed through the shared multiscale
+            # packet stream above. Teacher features remain ideal.
             feature_i = feature_list[i]
-            if hasattr(self, 'coopdiff_markov_channel'):
-                feature_i, _ = self.coopdiff_markov_channel(
-                    feature_i,
-                    record_len=record_len,
-                    frame_id=data_dict.get('frame_id', None),
-                    scale_idx=i,
-                    num_scales=len(feature_list),
-                )
             fea_stu, fea_stu_others = fuse_module(feature_i, record_len)
 
 
             if i == 2:
-                if self.current_epoch >= 15:
+                if self.current_epoch >= self.diff_start_epoch:
                     ##########################################
                     # DiT
                     mask = F.interpolate(object_mask, size=(fea_teacher.shape[2], fea_teacher.shape[3]), mode='bilinear', align_corners=False)

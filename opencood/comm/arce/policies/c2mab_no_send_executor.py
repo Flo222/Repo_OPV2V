@@ -32,6 +32,7 @@ def execute_no_send_sender(
     num_collaborators: int,
     ego_conf: float,
     local_cav_confidences: Optional[torch.Tensor],
+    decision_context: Any,
     context_builder: Any,
     pending_reward: Any,
     make_no_send_record_fn: Callable[..., Dict[str, Any]],
@@ -61,6 +62,12 @@ def execute_no_send_sender(
         link_budgets.get(sender_idx, per_link_budget_bytes)
     )
 
+    if decision_context is None:
+        raise RuntimeError(
+            "Missing proposal-time decision context for "
+            "no-send sender {}.".format(sender_idx)
+        )
+
     out[sender_idx] = torch.zeros_like(out[sender_idx])
 
     rec = make_no_send_record_fn(
@@ -86,20 +93,12 @@ def execute_no_send_sender(
 
     try:
         if action is not None:
-            context = context_builder.build(
-                channel_profile=no_send_profile,
-                latency_ms=float(no_send_latency_ms),
-                ego_confidence=float(ego_conf),
-                cache_quality=float(no_send_cache_q),
-                complementarity=0.0,
-                cav_confidence=get_cav_confidence(
-                    local_cav_confidences,
-                    sender_idx,
-                    default=0.0,
-                ),
-            )
+            context = decision_context
             rec["pdf_action"] = action.as_dict()
             rec["context_vector"] = context.vector.tolist()
+            rec["context_source"] = (
+                "proposal_time_decision_context"
+            )
             rec["selected_for_update"] = True
             rec["no_send_update"] = True
             pending_reward.add(

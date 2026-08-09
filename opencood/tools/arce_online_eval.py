@@ -13,7 +13,6 @@ import csv
 import json
 import math
 import os
-import random
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -39,7 +38,8 @@ from opencood.tools.arce_bw_breakdown_utils import (
     is_no_send,
     save_arce_bw_breakdown,
 )
-from opencood.tools.arce_bw_summary import save_reward_runtime_audit
+from opencood.tools.arce_eval_runtime import set_deterministic_seed
+from opencood.tools.arce_reward_audit import save_reward_runtime_audit
 from opencood.utils import eval_utils
 
 
@@ -62,28 +62,6 @@ def _empty_result_stat() -> Dict[float, Dict[str, Any]]:
         iou: {"tp": [], "fp": [], "gt": 0, "score": []}
         for iou in IOU_THRESHOLDS
     }
-
-
-def _set_deterministic_seed(seed: int) -> None:
-    seed = int(seed)
-    os.environ.setdefault("PYTHONHASHSEED", str(seed))
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-    if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-    if hasattr(torch, "use_deterministic_algorithms"):
-        try:
-            torch.use_deterministic_algorithms(True, warn_only=True)
-        except TypeError:
-            try:
-                torch.use_deterministic_algorithms(True)
-            except Exception:
-                pass
 
 
 def _serializable_result_stat(frame_stat: Dict[float, Dict[str, Any]]) -> Dict[str, Any]:
@@ -377,7 +355,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    _set_deterministic_seed(args.seed)
+    set_deterministic_seed(args.seed)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

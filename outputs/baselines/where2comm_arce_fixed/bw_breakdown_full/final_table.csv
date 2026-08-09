@@ -1,2 +1,0 @@
-Method,AP@0.3-Markov,AP@0.5-Markov,AP@0.7-Markov,BW-Markov,total_tx_MB,frame_count,record_count,transmitted_link_count,no_send_count,int4_count,packed_int4_count,all_int4_packed
-Where2Comm-ARCE-Fixed,,,,0.05852891428571429,127.007744,2170,3444,3444,0,0,0,

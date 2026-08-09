@@ -230,6 +230,7 @@ class FECRecoveryAuditor:
         actual_transmitted_bytes: float,
         actual_received_bytes: float,
         packet_size_bytes: int,
+        num_admitted_source_packets: Optional[int] = None,
         bandwidth_budget_bytes: Optional[float] = None,
     ) -> Optional[Dict[str, Any]]:
         if not self.enabled:
@@ -241,6 +242,11 @@ class FECRecoveryAuditor:
             parity_receive_mask = _mask_to_cpu_bool(parity_receive_mask)
 
             k = int(num_source_packets)
+            admitted_source = (
+                int(num_admitted_source_packets)
+                if num_admitted_source_packets is not None
+                else int(num_tx_source_packets)
+            )
             p = int(num_parity_packets)
             encoded = int(num_encoded_packets)
             tx_source = int(num_tx_source_packets)
@@ -275,7 +281,13 @@ class FECRecoveryAuditor:
 
             sanity = {
                 "source_packet_accounting_valid": bool(direct + fec_rec + missing == k),
-                "encoded_packet_accounting_valid": bool(k + p == encoded),
+                "encoded_packet_accounting_valid": bool(
+                    admitted_source + p == encoded
+                ),
+                "admitted_source_count_valid": bool(
+                    0 <= admitted_source <= k
+                    and admitted_source == tx_source
+                ),
                 "source_budget_accounting_valid": bool(tx_source + source_budget_drop == k),
                 "parity_budget_accounting_valid": bool(tx_parity + parity_budget_drop == p),
                 "source_channel_accounting_valid": bool(source_received + source_channel_lost == tx_source),
@@ -294,6 +306,7 @@ class FECRecoveryAuditor:
             required = [
                 sanity["source_packet_accounting_valid"],
                 sanity["encoded_packet_accounting_valid"],
+                sanity["admitted_source_count_valid"],
                 sanity["source_budget_accounting_valid"],
                 sanity["parity_budget_accounting_valid"],
                 sanity["source_channel_accounting_valid"],

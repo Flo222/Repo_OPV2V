@@ -83,19 +83,81 @@ def main() -> None:
             raise RuntimeError("Missing runtime reward field: {}".format(key))
 
     action = require_mapping(arce, "action_space")
-    alias_pairs = (
-        ("send_values", "send"),
-        ("online_quant_modes", "quant"),
-        ("online_redundancy_ratios", "rho"),
-        ("cache_values", "cache"),
+    required_action_keys = (
+        "send_values",
+        "online_quant_modes",
+        "online_redundancy_ratios",
+        "cache_values",
     )
-    for current, saved in alias_pairs:
-        if current not in action:
-            raise RuntimeError("Missing current action-space key: {}".format(current))
-        if saved in action and list(action[current]) != list(action[saved]):
+    for key in required_action_keys:
+        if key not in action:
             raise RuntimeError(
-                "Action-space alias mismatch: {} != {}".format(current, saved)
+                "Missing current action-space key: {}".format(key)
             )
+
+    send_values = {int(x) for x in action["send_values"]}
+    declared_send = {
+        int(x) for x in action.get("send", action["send_values"])
+    }
+    if not send_values.issubset(declared_send):
+        raise RuntimeError(
+            "Online send values are not covered by declared send values: "
+            "{} vs {}".format(sorted(send_values), sorted(declared_send))
+        )
+
+    online_quant = {
+        str(x).strip().lower()
+        for x in action["online_quant_modes"]
+    }
+    declared_quant = {
+        str(x).strip().lower()
+        for x in action.get("quant", action["online_quant_modes"])
+    }
+    if not online_quant.issubset(declared_quant):
+        raise RuntimeError(
+            "Online quant modes are not covered by declared quant modes: "
+            "{} vs {}".format(
+                sorted(online_quant),
+                sorted(declared_quant),
+            )
+        )
+    if "fp32" in online_quant:
+        raise RuntimeError(
+            "FP32 must not appear in online C2MAB send actions."
+        )
+
+    online_rho = {
+        float(x) for x in action["online_redundancy_ratios"]
+    }
+    declared_rho = {
+        float(x)
+        for x in action.get(
+            "rho",
+            action["online_redundancy_ratios"],
+        )
+    }
+    if not online_rho.issubset(declared_rho):
+        raise RuntimeError(
+            "Online redundancy ratios are not covered by declared rho: "
+            "{} vs {}".format(
+                sorted(online_rho),
+                sorted(declared_rho),
+            )
+        )
+
+    cache_values = {int(x) for x in action["cache_values"]}
+    declared_cache = {
+        int(x)
+        for x in action.get("cache", action["cache_values"])
+    }
+    if not cache_values.issubset(declared_cache):
+        raise RuntimeError(
+            "Online cache values are not covered by declared cache values: "
+            "{} vs {}".format(
+                sorted(cache_values),
+                sorted(declared_cache),
+            )
+        )
 
     context = require_mapping(arce, "context")
     c2mab = require_mapping(arce, "c2mab")

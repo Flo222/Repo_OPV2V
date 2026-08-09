@@ -16,7 +16,38 @@ The estimator covers:
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from typing import Any, Callable, Dict, Optional, Sequence
+
+
+def _exact_raptorq_parity_packets(
+    source_packets: int,
+    rho: float,
+    block_source_packets: int,
+) -> int:
+    """Estimate repair packets for exact-ratio protected blocks.
+
+    Source symbols that cannot form one complete exact-ratio group are the
+    best-effort tail and therefore do not receive repair symbols.
+    """
+    ratio = Fraction(str(float(rho))).limit_denominator(1000)
+    source_unit = int(ratio.denominator)
+    repair_unit = int(ratio.numerator)
+    block_limit = max(1, int(block_source_packets))
+    protected_per_block = block_limit - block_limit % source_unit
+    if protected_per_block <= 0:
+        return 0
+
+    remaining = max(0, int(source_packets))
+    parity_packets = 0
+    while remaining >= source_unit:
+        protected = min(protected_per_block, remaining)
+        protected -= protected % source_unit
+        if protected <= 0:
+            break
+        parity_packets += protected // source_unit * repair_unit
+        remaining -= protected
+    return int(parity_packets)
 
 
 def estimate_byte_stream_fec_cost(
@@ -28,6 +59,8 @@ def estimate_byte_stream_fec_cost(
     raw_feature_bytes_fp32_fn: Callable[[Sequence[int]], float],
     quant_ratio_to_fp32: Dict[str, float],
     compact_token_info: Optional[Dict[str, Any]] = None,
+    raptorq_block_source_packets: int = 20,
+    raptorq_metadata_bytes_per_packet: int = 8,
 ) -> Dict[str, Any]:
     if getattr(action, "is_no_send", False):
         return {
@@ -74,7 +107,16 @@ def estimate_byte_stream_fec_cost(
     source_bytes = float(raw_fp32 * quant_ratio)
 
     packet_size = int(packet_size_bytes)
+    fec_type = str(getattr(action, "fec_type", "none")).strip().lower()
+    is_raptorq = fec_type == "raptorq" and float(
+        getattr(action, "redundancy_ratio", 0.0)
+    ) > 0.0
     metadata_per_packet = max(0, int(metadata_bytes_per_packet))
+    if is_raptorq:
+        metadata_per_packet = max(
+            metadata_per_packet,
+            int(raptorq_metadata_bytes_per_packet),
+        )
     packet_unit = float(packet_size + metadata_per_packet)
 
     source_packets = (
@@ -84,7 +126,14 @@ def estimate_byte_stream_fec_cost(
     )
 
     rho = float(getattr(action, "redundancy_ratio", 0.0))
-    parity_packets = int(math.ceil(source_packets * max(rho, 0.0)))
+    if is_raptorq:
+        parity_packets = _exact_raptorq_parity_packets(
+            source_packets=source_packets,
+            rho=rho,
+            block_source_packets=raptorq_block_source_packets,
+        )
+    else:
+        parity_packets = int(math.ceil(source_packets * max(rho, 0.0)))
     encoded_packets = int(source_packets + parity_packets)
 
     metadata_bytes = float(encoded_packets * metadata_per_packet)
@@ -120,7 +169,7 @@ def estimate_byte_stream_fec_cost(
         "feasible": bool(feasible),
         "send": int(getattr(action, "send", 1)),
         "quant_mode": q,
-        "fec_type": str(getattr(action, "fec_type", "none")),
+        "fec_type": fec_type,
         "rho": float(rho),
         "raw_fp32_bytes": float(raw_fp32),
         "source_bytes": float(source_bytes),
@@ -133,6 +182,10 @@ def estimate_byte_stream_fec_cost(
         "max_tx_packets_under_budget": int(max_tx_packets),
         "effective_packet_ratio": float(effective_ratio),
         "packet_size_bytes": int(packet_size),
+        "wire_packet_size_bytes": int(packet_size + metadata_per_packet),
+        "raptorq_block_source_packets": (
+            int(raptorq_block_source_packets) if is_raptorq else None
+        ),
         "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
         "proposal_budget_share": float(proposal_share),
         "cost_model": str(cost_model),
@@ -147,4 +200,3 @@ def estimate_byte_stream_fec_cost(
             else None
         ),
     }
-

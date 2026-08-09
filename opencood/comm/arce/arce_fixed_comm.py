@@ -44,7 +44,6 @@ from opencood.comm.arce import (
 from opencood.comm.arce.fixed_policy import ARCEAction, FixedARCEPolicy
 from opencood.comm.arce.random_policy import RandomARCEPolicy
 from opencood.comm.arce.byte_stream_packetizer import ByteStreamPacketizer
-from opencood.comm.arce.zero_sparse_codec import AdaptiveUnitZeroCodec
 from opencood.comm.arce.policies.payload_transport import (
     apply_payload_native_transport_to_arce_cfg,
     is_payload_native_transport,
@@ -58,6 +57,10 @@ from opencood.comm.arce.policies.action_adapter import (
 from opencood.comm.arce.policies.spatial_importance import (
     ARCESpatialImportance,
 )
+from opencood.comm.arce.priority_block_fec_transport import (
+    PriorityBlockFECTransport,
+    SCHEDULING_MODE as RAPTORQ_SCHEDULING_MODE,
+)
 from opencood.compression.feature_quantizer import FeatureQuantizer
 from opencood.comm.arce.audit import CompressionAuditor, FECRecoveryAuditor
 
@@ -65,7 +68,7 @@ from opencood.comm.fec import (
     FEC_TYPE_NONE,
     FEC_TYPE_XOR,
     FEC_TYPE_RAPTOR_SIM,
-    FEC_TYPE_RAPTOR,
+    FEC_TYPE_RAPTORQ,
     normalize_fec_type,
 )
 from opencood.comm.fec.fec_base import (
@@ -266,7 +269,6 @@ class ARCEFixedComm:
 
         self.fixed_policy = self.action_policy
         self.byte_packetizer = ByteStreamPacketizer(self.arce_cfg_raw)
-        self.zero_codec = AdaptiveUnitZeroCodec(self.arce_cfg_raw)
 
         scheduler_cfg = self.arce_cfg_raw.get("scheduler", {}) or {}
         self.tx_window_ms = float(
@@ -329,6 +331,14 @@ class ARCEFixedComm:
 
         self.fec_cfg = self.arce_cfg_raw.get("fec", {}) or {}
         self.redundancy_cfg = self.arce_cfg_raw.get("redundancy", {}) or {}
+        raptorq_cfg = self.fec_cfg.get("raptorq", {}) or {}
+        self.raptorq_block_source_packets = int(
+            raptorq_cfg.get("source_packets_per_block", 20)
+        )
+        self.raptorq_transport = PriorityBlockFECTransport(
+            source_packet_bytes=int(self.byte_packetizer.packet_size_bytes),
+            block_source_packets=self.raptorq_block_source_packets,
+        )
         self.transport_mode = normalize_transport_mode(self.arce_cfg_raw)
         self.arce_cfg_raw = apply_payload_native_transport_to_arce_cfg(self.arce_cfg_raw)
         self.spatial_importance = ARCESpatialImportance(
@@ -800,6 +810,85 @@ class ARCEFixedComm:
 
         return entry, "available"
 
+    def receiver_cache_context(
+        self,
+        link_id: Any,
+        agent_index: Optional[int],
+        ego_index: Optional[int],
+        frame_id: Any,
+    ) -> Dict[str, Any]:
+        """Return Cache state available before current action execution."""
+        cache_key = self._receiver_cache_key(
+            link_id,
+            agent_index,
+            ego_index,
+            self.default_ego_index,
+        )
+        raw_entry = self.receiver_feature_cache.get(cache_key)
+        entry, status = self._get_receiver_cache_entry(
+            link_id,
+            agent_index,
+            ego_index,
+            frame_id,
+        )
+
+        age_frames = None
+        if isinstance(raw_entry, dict):
+            age_frames = self._frame_distance(
+                frame_id,
+                raw_entry.get("frame_id"),
+            )
+
+        valid_units = 0
+        total_units = 0
+        valid_ratio = 0.0
+
+        if entry is not None:
+            valid_flat = entry.get("valid_flat")
+            if torch.is_tensor(valid_flat):
+                valid_flat = valid_flat.detach().to(
+                    dtype=torch.bool
+                ).flatten()
+                total_units = int(valid_flat.numel())
+                valid_units = int(valid_flat.sum().item())
+                if total_units > 0:
+                    valid_ratio = (
+                        float(valid_units) / float(total_units)
+                    )
+            else:
+                status = "invalid_valid_mask"
+
+        max_age = max(int(self.receiver_cache_max_age_frames), 1)
+        if age_frames is None:
+            age_norm = 0.0
+        else:
+            age_norm = max(
+                0.0,
+                min(
+                    1.0,
+                    float(age_frames) / float(max_age),
+                ),
+            )
+
+        available = bool(
+            status == "available"
+            and total_units > 0
+            and valid_units > 0
+        )
+
+        return {
+            "cache_available": available,
+            "cache_status": str(status),
+            "cache_valid_unit_ratio": float(valid_ratio),
+            "cache_num_valid_units": int(valid_units),
+            "cache_num_total_units": int(total_units),
+            "cache_age_frames": age_frames,
+            "cache_age_norm": float(age_norm),
+            "cache_max_age_frames": int(max_age),
+            "cache_context_source":
+                "receiver_feature_cache_valid_unit_ratio",
+        }
+
     def _update_receiver_feature_cache(
         self,
         recovered_feature: torch.Tensor,
@@ -871,49 +960,6 @@ class ARCEFixedComm:
             return None, info
 
         num_units = int(compact_meta.get("num_tokens", 0))
-        unit_packet_indices = getattr(
-            packet_result,
-            "unit_packet_indices",
-            None,
-        )
-        if unit_packet_indices is not None:
-            source_mask = recovered_source_mask.to(
-                dtype=torch.bool
-            ).flatten()
-            valid_units = torch.zeros(
-                (num_units,),
-                dtype=torch.bool,
-                device=source_mask.device,
-            )
-            for unit_pos, packet_indices in enumerate(unit_packet_indices):
-                if unit_pos >= num_units:
-                    break
-                if not packet_indices:
-                    continue
-                packet_index = torch.tensor(
-                    list(packet_indices),
-                    dtype=torch.long,
-                    device=source_mask.device,
-                )
-                if (
-                    int(packet_index.min().item()) < 0
-                    or int(packet_index.max().item()) >= int(source_mask.numel())
-                ):
-                    raise RuntimeError(
-                        "Zero-codec unit-to-packet mapping is out of range."
-                    )
-                valid_units[unit_pos] = bool(
-                    source_mask[packet_index].all().item()
-                )
-            info.update({
-                "supported": True,
-                "reason": "zero_codec_unit_records",
-                "unit_bytes": None,
-                "units_per_packet": None,
-                "mapping": "explicit_unit_packet_indices",
-            })
-            return valid_units, info
-
         original_num_bytes = int(packet_result.original_num_bytes)
         packet_size_bytes = int(packet_result.packet_size_bytes)
         if num_units <= 0:
@@ -1098,78 +1144,45 @@ class ARCEFixedComm:
         num_source_packets = int(source_mask.numel())
         temporal_packets = 0
         if count > 0 and num_source_packets > 0:
-            packet_unit_positions = getattr(
-                packet_result,
-                "packet_unit_positions",
-                None,
-            )
-            if packet_unit_positions is not None:
-                for packet_index, unit_positions in enumerate(
-                    packet_unit_positions
-                ):
-                    if (
-                        packet_index >= num_source_packets
-                        or bool(source_mask[packet_index].item())
-                        or not unit_positions
-                    ):
-                        continue
-                    positions = torch.tensor(
-                        list(unit_positions),
-                        dtype=torch.long,
-                        device=recovered_feature.device,
-                    )
-                    if bool(effective_valid[positions].all().item()):
-                        temporal_packets += 1
-            else:
-                original_num_bytes = int(packet_result.original_num_bytes)
-                packet_size_bytes = int(packet_result.packet_size_bytes)
-                if original_num_bytes % count != 0:
-                    original_num_bytes = 0
-                if original_num_bytes > 0:
-                    unit_bytes = int(original_num_bytes // count)
-                    packet_index = torch.arange(
-                        num_source_packets,
-                        device=recovered_feature.device,
-                        dtype=torch.long,
-                    )
-                    first_unit = torch.div(
-                        packet_index * packet_size_bytes,
-                        unit_bytes,
-                        rounding_mode="floor",
-                    )
-                    last_byte = torch.minimum(
-                        (packet_index + 1) * packet_size_bytes,
-                        torch.full_like(
-                            packet_index,
-                            original_num_bytes,
-                        ),
-                    ) - 1
-                    last_unit = torch.div(
-                        last_byte,
-                        unit_bytes,
-                        rounding_mode="floor",
-                    )
-                    first_unit = torch.clamp(first_unit, 0, count - 1)
-                    last_unit = torch.clamp(last_unit, 0, count - 1)
+            original_num_bytes = int(packet_result.original_num_bytes)
+            packet_size_bytes = int(packet_result.packet_size_bytes)
+            if original_num_bytes % count == 0:
+                unit_bytes = int(original_num_bytes // count)
+                packet_index = torch.arange(
+                    num_source_packets,
+                    device=recovered_feature.device,
+                    dtype=torch.long,
+                )
+                first_unit = torch.div(packet_index * packet_size_bytes, unit_bytes, rounding_mode="floor")
+                last_byte = torch.minimum(
+                    (packet_index + 1) * packet_size_bytes,
+                    torch.full_like(
+                        packet_index,
+                        original_num_bytes,
+                    ),
+                ) - 1
+                last_unit = torch.div(last_byte, unit_bytes, rounding_mode="floor")
+                first_unit = torch.clamp(first_unit, 0, count - 1)
+                last_unit = torch.clamp(last_unit, 0, count - 1)
 
-                    invalid = (~effective_valid).to(dtype=torch.long)
-                    prefix = torch.cat(
-                        [
-                            torch.zeros(
-                                1,
-                                dtype=torch.long,
-                                device=recovered_feature.device,
-                            ),
-                            torch.cumsum(invalid, dim=0),
-                        ],
-                        dim=0,
-                    )
-                    packet_complete = (
-                        prefix[last_unit + 1] - prefix[first_unit]
-                    ) == 0
-                    temporal_packets = int(
-                        ((~source_mask) & packet_complete).sum().item()
-                    )
+                invalid = (~effective_valid).to(dtype=torch.long)
+                prefix = torch.cat(
+                    [
+                        torch.zeros(
+                            1,
+                            dtype=torch.long,
+                            device=recovered_feature.device,
+                        ),
+                        torch.cumsum(invalid, dim=0),
+                    ],
+                    dim=0,
+                )
+                packet_complete = (
+                    prefix[last_unit + 1] - prefix[first_unit]
+                ) == 0
+                temporal_packets = int(
+                    ((~source_mask) & packet_complete).sum().item()
+                )
 
         q_recv_unit = float(
             current_valid.float().mean().item()
@@ -1494,7 +1507,24 @@ class ARCEFixedComm:
         if fec_type == FEC_TYPE_XOR:
             return XORFEC({"fec": fec_cfg}), fec_cfg
 
-        if fec_type in (FEC_TYPE_RAPTOR_SIM, FEC_TYPE_RAPTOR):
+        if fec_type == FEC_TYPE_RAPTORQ:
+            fec_cfg.update({
+                "type": FEC_TYPE_RAPTORQ,
+                "codec": "raptorq",
+                "standard": "RFC6330",
+                "source_packets_per_block": int(
+                    self.raptorq_block_source_packets
+                ),
+                "source_packet_bytes": int(
+                    self.raptorq_transport.source_packet_bytes
+                ),
+                "wire_packet_bytes": int(
+                    self.raptorq_transport.wire_packet_bytes
+                ),
+            })
+            return self.raptorq_transport, fec_cfg
+
+        if fec_type == FEC_TYPE_RAPTOR_SIM:
             fec_cfg["type"] = FEC_TYPE_RAPTOR_SIM
             return RaptorSimFEC({"fec": fec_cfg}), fec_cfg
 
@@ -2177,6 +2207,13 @@ class ARCEFixedComm:
                 "bandwidth_selection": {
                     "mode": "empty_candidate",
                     "budget_bytes": float(frame_budget_bytes),
+                    "source_symbol_bytes": int(
+                        self.byte_packetizer.packet_size_bytes
+                    ),
+                    "wire_packet_bytes": None,
+                    "packet_metadata_bytes": 0,
+                    "scheduling": "not_executed_empty_candidate",
+                    "num_fec_blocks": 0,
                     "num_tx_packets": 0,
                     "num_missing_by_budget": 0,
                 },
@@ -2230,90 +2267,125 @@ class ARCEFixedComm:
                 mode=quant_mode,
             )
 
-        zero_codec_active = bool(self.zero_codec.enabled)
-        if zero_codec_active:
-            if (
-                not isinstance(compact_meta, dict)
-                or compact_meta.get("layout") != "KC"
-                or not torch.is_tensor(compact_meta.get("indices"))
-            ):
-                raise RuntimeError(
-                    "ARCE zero codec requires a KC payload with stable unit ids."
-                )
-            stream_tensor = quant_result.q_tensor
-            unit_ids = [
-                int(x)
-                for x in compact_meta["indices"].detach().cpu().flatten().tolist()
-            ]
-            packet_result = self.zero_codec.packetize(
-                q_tensor=quant_result.q_tensor,
-                quant_mode=quant_mode,
-                unit_ids=unit_ids,
-            )
-            source_tensor_kind = str(packet_result.source_tensor_kind)
+        if quant_result.packed_tensor is not None:
+            stream_tensor = quant_result.packed_tensor
+            source_tensor_kind = "packed_int4"
         else:
-            if quant_result.packed_tensor is not None:
-                stream_tensor = quant_result.packed_tensor
-                source_tensor_kind = "packed_int4"
-            else:
-                stream_tensor = quant_result.q_tensor
-                source_tensor_kind = "q_tensor"
+            stream_tensor = quant_result.q_tensor
+            source_tensor_kind = "q_tensor"
 
-            # 3. Byte-stream packetization after quantization.
-            packet_result = self.byte_packetizer.packetize(
-                stream_tensor,
-                source_tensor_kind=source_tensor_kind,
-            )
+        # 3. Byte-stream packetization after quantization.
+        packet_result = self.byte_packetizer.packetize(
+            stream_tensor,
+            source_tensor_kind=source_tensor_kind,
+        )
         source_packets = packet_result.packets
         num_source_packets = int(packet_result.num_packets)
         packet_size_bytes = int(packet_result.packet_size_bytes)
 
-        # 4. FEC encode source byte packets.
-        fec_codec, fec_runtime_cfg = self._build_fec_codec(action)
-        if fec_codec is None:
-            encode_result = self._make_no_fec_encode_result(source_packets)
-            fec_encode_dict = encode_result.as_dict(include_metas=False)
-            fec_encode_dict["enabled"] = False
-        else:
-            encode_result = fec_codec.encode(source_packets)
-            fec_encode_dict = encode_result.as_dict(include_metas=False)
-            fec_encode_dict["enabled"] = True
-
-        encoded_packets = encode_result.encoded_packets
-        num_encoded_packets = int(encode_result.num_encoded_packets)
-        num_parity_packets = int(encode_result.num_parity_packets)
-
-        # 5. Select encoded packets under budget.
+        # 4. Resolve the physical link budget before FEC. RaptorQ block
+        # admission jointly reserves source and repair packets under this
+        # budget; estimated action cost is never used as an execution budget.
         frame_budget_bytes = self._frame_budget_bytes_from_channel_profile(
             channel_profile=channel_profile,
             budget_bytes=budget_bytes,
             channel_state=active_channel_state,
         )
+        fec_codec, fec_runtime_cfg = self._build_fec_codec(action)
+        block_fec_plan = None
+        wire_packet_size_bytes = int(packet_size_bytes)
 
-        tx_mask = self._select_encoded_packets_by_budget(
-            encoded_packets=encoded_packets,
-            budget_bytes=frame_budget_bytes,
-            packet_size_bytes=packet_size_bytes,
-        )
+        if isinstance(fec_codec, PriorityBlockFECTransport):
+            block_fec_plan = fec_codec.encode_under_budget(
+                source_packets=source_packets,
+                budget_bytes=frame_budget_bytes,
+                redundancy_ratio=float(
+                    fec_runtime_cfg.get("redundancy_ratio", 0.0)
+                ),
+            )
+            encode_result = block_fec_plan
+            fec_encode_dict = block_fec_plan.as_dict(
+                include_blocks=True,
+                include_metas=False,
+            )
+            encoded_packets = block_fec_plan.encoded_packets
+            num_encoded_packets = int(block_fec_plan.num_encoded_packets)
+            num_parity_packets = int(block_fec_plan.num_repair_packets)
+            wire_packet_size_bytes = int(
+                block_fec_plan.wire_packet_bytes
+            )
+            tx_mask = torch.ones(
+                num_encoded_packets,
+                dtype=torch.bool,
+                device=encoded_packets.device,
+            )
+            source_tx_mask = block_fec_plan.admitted_source_mask
+            parity_tx_mask = torch.ones(
+                num_parity_packets,
+                dtype=torch.bool,
+                device=encoded_packets.device,
+            )
+            num_tx_source_packets = int(
+                block_fec_plan.num_admitted_source_packets
+            )
+            num_tx_parity_packets = int(num_parity_packets)
+            num_source_dropped_by_budget = int(
+                block_fec_plan.num_source_dropped_by_budget
+            )
+            num_parity_dropped_by_budget = 0
+            num_missing_by_budget = int(num_source_dropped_by_budget)
+        else:
+            if fec_codec is None:
+                encode_result = self._make_no_fec_encode_result(source_packets)
+                fec_encode_dict = encode_result.as_dict(include_metas=False)
+                fec_encode_dict["enabled"] = False
+            else:
+                encode_result = fec_codec.encode(source_packets)
+                fec_encode_dict = encode_result.as_dict(include_metas=False)
+                fec_encode_dict["enabled"] = True
+
+            encoded_packets = encode_result.encoded_packets
+            num_encoded_packets = int(encode_result.num_encoded_packets)
+            num_parity_packets = int(encode_result.num_parity_packets)
+            tx_mask = self._select_encoded_packets_by_budget(
+                encoded_packets=encoded_packets,
+                budget_bytes=frame_budget_bytes,
+                packet_size_bytes=wire_packet_size_bytes,
+            )
+            source_tx_mask = tx_mask[:num_source_packets]
+            parity_tx_mask = tx_mask[num_source_packets:num_encoded_packets]
+            num_tx_source_packets = int(source_tx_mask.sum().item())
+            num_tx_parity_packets = int(parity_tx_mask.sum().item())
+            num_source_dropped_by_budget = int(
+                num_source_packets - num_tx_source_packets
+            )
+            num_parity_dropped_by_budget = int(
+                num_parity_packets - num_tx_parity_packets
+            )
+            num_missing_by_budget = int(
+                num_source_dropped_by_budget + num_parity_dropped_by_budget
+            )
 
         num_tx_packets = int(tx_mask.sum().item())
-
-        # Systematic FEC encoders in this repository always store source packets
-        # first and parity/repair packets afterwards. Split the budget outcome so
-        # later experiments can tell whether the budget removed original payload
-        # or only protection packets. The totals are also checked for consistency.
-        source_tx_mask = tx_mask[:num_source_packets]
-        parity_tx_mask = tx_mask[num_source_packets:num_encoded_packets]
-        num_tx_source_packets = int(source_tx_mask.sum().item())
-        num_tx_parity_packets = int(parity_tx_mask.sum().item())
-        num_source_dropped_by_budget = int(
-            num_source_packets - num_tx_source_packets
+        num_protected_source_packets = int(
+            block_fec_plan.num_protected_source_packets
+            if block_fec_plan is not None
+            else 0
         )
-        num_parity_dropped_by_budget = int(
-            num_parity_packets - num_tx_parity_packets
+        num_tail_source_packets = int(
+            block_fec_plan.num_tail_source_packets
+            if block_fec_plan is not None
+            else num_tx_source_packets
         )
-        num_missing_by_budget = int(
-            num_source_dropped_by_budget + num_parity_dropped_by_budget
+        protected_redundancy_ratio = float(
+            block_fec_plan.protected_redundancy_ratio
+            if block_fec_plan is not None
+            else 0.0
+        )
+        overall_redundancy_ratio = float(
+            block_fec_plan.overall_redundancy_ratio
+            if block_fec_plan is not None
+            else num_parity_packets / max(1, num_tx_source_packets)
         )
 
         if num_tx_source_packets + num_tx_parity_packets != num_tx_packets:
@@ -2367,11 +2439,19 @@ class ARCEFixedComm:
         receive_mask = ~full_loss_mask
         received_packet_mask = receive_mask
 
-        transmitted_bytes = float(num_tx_packets * packet_size_bytes)
-        received_bytes = float(int(received_packet_mask.sum().item()) * packet_size_bytes)
+        transmitted_bytes = float(num_tx_packets * wire_packet_size_bytes)
+        received_bytes = float(
+            int(received_packet_mask.sum().item()) * wire_packet_size_bytes
+        )
 
         # 7. FEC decode.
-        if fec_codec is None:
+        if block_fec_plan is not None:
+            decode_result = fec_codec.decode(
+                plan=block_fec_plan,
+                receive_mask=receive_mask,
+                fill_value=0,
+            )
+        elif fec_codec is None:
             decode_result = self._decode_no_fec(
                 encode_result=encode_result,
                 receive_mask=receive_mask,
@@ -2395,39 +2475,25 @@ class ARCEFixedComm:
         )
 
         # 9. Rebuild quantized byte stream and dequantize.
-        codec_unit_valid_mask = None
-        if zero_codec_active:
-            recovered_q_tensor, codec_unit_valid_mask = (
-                self.zero_codec.unpacketize(
-                    packets=decoded_source_packets,
-                    meta=packet_result,
-                    recovered_source_mask=decode_result.recovered_source_mask,
-                )
-            )
-            recovered_feature = quantizer.dequantize(
-                q_tensor=recovered_q_tensor,
+        recovered_stream_tensor = self.byte_packetizer.unpacketize(
+            packets=decoded_source_packets,
+            meta=packet_result,
+        )
+
+        if source_tensor_kind == "packed_int4":
+            recovered_feature = quantizer.unpack_and_dequantize_int4(
+                packed_tensor=recovered_stream_tensor,
                 meta=quant_result.meta,
+                original_numel=int(quant_result.q_tensor.numel()),
+                shape=tuple(int(x) for x in quant_result.q_tensor.shape),
                 output_dtype=feature.dtype,
             )
         else:
-            recovered_stream_tensor = self.byte_packetizer.unpacketize(
-                packets=decoded_source_packets,
-                meta=packet_result,
+            recovered_feature = quantizer.dequantize(
+                q_tensor=recovered_stream_tensor,
+                meta=quant_result.meta,
+                output_dtype=feature.dtype,
             )
-            if source_tensor_kind == "packed_int4":
-                recovered_feature = quantizer.unpack_and_dequantize_int4(
-                    packed_tensor=recovered_stream_tensor,
-                    meta=quant_result.meta,
-                    original_numel=int(quant_result.q_tensor.numel()),
-                    shape=tuple(int(x) for x in quant_result.q_tensor.shape),
-                    output_dtype=feature.dtype,
-                )
-            else:
-                recovered_feature = quantizer.dequantize(
-                    q_tensor=recovered_stream_tensor,
-                    meta=quant_result.meta,
-                    output_dtype=feature.dtype,
-                )
 
         # Experiment-3 read-only counterfactual: reconstruct the payload using
         # only directly received systematic source packets. FEC output used by
@@ -2435,40 +2501,28 @@ class ARCEFixedComm:
         direct_recovered_feature_compact = None
         if getattr(self, "fec_recovery_auditor", None) is not None and self.fec_recovery_auditor.enabled:
             direct_source_receive_mask = (
-                receive_mask[:num_source_packets] & source_tx_mask
+                decode_result.direct_received_source_mask
             )
             direct_source_packets = source_packets.clone()
             direct_source_packets[~direct_source_receive_mask] = 0
-            if zero_codec_active:
-                direct_q_tensor, _ = self.zero_codec.unpacketize(
-                    packets=direct_source_packets,
-                    meta=packet_result,
-                    recovered_source_mask=direct_source_receive_mask,
-                )
-                direct_recovered_feature_compact = quantizer.dequantize(
-                    q_tensor=direct_q_tensor,
+            direct_stream_tensor = self.byte_packetizer.unpacketize(
+                packets=direct_source_packets,
+                meta=packet_result,
+            )
+            if source_tensor_kind == "packed_int4":
+                direct_recovered_feature_compact = quantizer.unpack_and_dequantize_int4(
+                    packed_tensor=direct_stream_tensor,
                     meta=quant_result.meta,
+                    original_numel=int(quant_result.q_tensor.numel()),
+                    shape=tuple(int(x) for x in quant_result.q_tensor.shape),
                     output_dtype=feature.dtype,
                 )
             else:
-                direct_stream_tensor = self.byte_packetizer.unpacketize(
-                    packets=direct_source_packets,
-                    meta=packet_result,
+                direct_recovered_feature_compact = quantizer.dequantize(
+                    q_tensor=direct_stream_tensor,
+                    meta=quant_result.meta,
+                    output_dtype=feature.dtype,
                 )
-                if source_tensor_kind == "packed_int4":
-                    direct_recovered_feature_compact = quantizer.unpack_and_dequantize_int4(
-                        packed_tensor=direct_stream_tensor,
-                        meta=quant_result.meta,
-                        original_numel=int(quant_result.q_tensor.numel()),
-                        shape=tuple(int(x) for x in quant_result.q_tensor.shape),
-                        output_dtype=feature.dtype,
-                    )
-                else:
-                    direct_recovered_feature_compact = quantizer.dequantize(
-                        q_tensor=direct_stream_tensor,
-                        meta=quant_result.meta,
-                        output_dtype=feature.dtype,
-                    )
 
         if update_cache:
             self._update_prev_feature_cache(
@@ -2493,21 +2547,6 @@ class ARCEFixedComm:
                 recovered_source_mask=decode_result.recovered_source_mask,
             )
         )
-        if torch.is_tensor(codec_unit_valid_mask):
-            if (
-                torch.is_tensor(current_unit_valid_mask)
-                and not torch.equal(
-                    codec_unit_valid_mask.to(
-                        device=current_unit_valid_mask.device,
-                        dtype=torch.bool,
-                    ),
-                    current_unit_valid_mask.to(dtype=torch.bool),
-                )
-            ):
-                raise RuntimeError(
-                    "Zero-codec decode validity differs from packet mapping."
-                )
-            current_unit_valid_mask = codec_unit_valid_mask
 
         # 7.5. Scatter compact recovered payload back to dense BEV feature map.
         if compact_meta is not None:
@@ -2564,45 +2603,38 @@ class ARCEFixedComm:
         q_cache = float(temporal_cache_info["q_cache"])
         q_eff = float(temporal_cache_info["q_eff"])
 
-        dense_quantized_num_bytes = int(
-            getattr(
-                packet_result,
-                "dense_num_bytes",
-                packet_result.original_num_bytes,
-            )
-        )
-        codec_metadata_bytes = int(
-            getattr(packet_result, "metadata_bytes", 0)
-        )
-        codec_padding_bytes = int(
-            getattr(packet_result, "padding_bytes", 0)
-        )
         size_info = {
             "raw_numel": int(feature.numel()),
             "raw_bytes_fp32_reference": float(feature.numel() * 4),
-            "quantized_num_bytes": float(dense_quantized_num_bytes),
+            "quantized_num_bytes": float(packet_result.original_num_bytes),
             "compressed_bytes": float(packet_result.original_num_bytes),
-            "zero_codec_enabled": bool(zero_codec_active),
-            "zero_codec_encoded_valid_bytes": float(
-                packet_result.original_num_bytes
-            ),
-            "zero_codec_metadata_bytes": float(codec_metadata_bytes),
-            "zero_codec_padding_bytes": float(codec_padding_bytes),
-            "zero_codec_compression_ratio": float(
-                packet_result.original_num_bytes
-                / max(1, dense_quantized_num_bytes)
-            ),
             "actual_num_source_packets": int(num_source_packets),
+            "actual_num_admitted_source_packets": int(num_tx_source_packets),
+            "actual_num_protected_source_packets": int(
+                num_protected_source_packets
+            ),
+            "actual_num_tail_source_packets": int(num_tail_source_packets),
             "actual_num_parity_packets": int(num_parity_packets),
             "actual_num_encoded_packets": int(num_encoded_packets),
             "actual_effective_redundancy_ratio": float(
-                num_parity_packets / max(1, num_source_packets)
+                overall_redundancy_ratio
+            ),
+            "actual_protected_redundancy_ratio": float(
+                protected_redundancy_ratio
+            ),
+            "actual_overall_redundancy_ratio": float(
+                overall_redundancy_ratio
             ),
             "actual_avg_source_packet_bytes": float(
                 packet_result.original_num_bytes / max(1, num_source_packets)
             ),
-            "actual_parity_bytes": float(num_parity_packets * packet_size_bytes),
-            "actual_metadata_bytes": float(codec_metadata_bytes),
+            "actual_parity_bytes": float(
+                num_parity_packets * wire_packet_size_bytes
+            ),
+            "actual_metadata_bytes": float(
+                num_tx_packets
+                * max(0, wire_packet_size_bytes - packet_size_bytes)
+            ),
             "actual_transmitted_bytes": float(transmitted_bytes),
             "actual_received_bytes": float(received_bytes),
             "actual_transmitted_mb": float(transmitted_bytes / 1_000_000.0),
@@ -2612,10 +2644,10 @@ class ARCEFixedComm:
             "actual_num_transmitted_source_packets": int(num_tx_source_packets),
             "actual_num_transmitted_parity_packets": int(num_tx_parity_packets),
             "actual_transmitted_source_bytes": float(
-                num_tx_source_packets * packet_size_bytes
+                num_tx_source_packets * wire_packet_size_bytes
             ),
             "actual_transmitted_parity_bytes": float(
-                num_tx_parity_packets * packet_size_bytes
+                num_tx_parity_packets * wire_packet_size_bytes
             ),
             "num_source_dropped_by_budget": int(num_source_dropped_by_budget),
             "num_parity_dropped_by_budget": int(num_parity_dropped_by_budget),
@@ -2654,11 +2686,6 @@ class ARCEFixedComm:
                     },
                 },
                 "packetization": packet_result.to_meta_dict(),
-                "zero_codec": (
-                    packet_result.to_meta_dict()
-                    if zero_codec_active
-                    else self.zero_codec.get_config()
-                ),
 
                 "compact_sparse": self._compact_meta_for_record(compact_meta),
                 "transport": {
@@ -2710,7 +2737,32 @@ class ARCEFixedComm:
                     if budget_bytes is not None
                     else self.budget_scope,
                     "budget_bytes": float(frame_budget_bytes),
+                    "source_symbol_bytes": int(packet_size_bytes),
+                    "wire_packet_bytes": int(wire_packet_size_bytes),
+                    "packet_metadata_bytes": int(
+                        max(0, wire_packet_size_bytes - packet_size_bytes)
+                    ),
+                    "scheduling": (
+                        RAPTORQ_SCHEDULING_MODE
+                        if block_fec_plan is not None
+                        else "encoded_stream_prefix"
+                    ),
+                    "num_fec_blocks": int(
+                        block_fec_plan.num_protected_blocks
+                        if block_fec_plan is not None
+                        else 0
+                    ),
+                    "num_tail_blocks": int(
+                        block_fec_plan.num_tail_blocks
+                        if block_fec_plan is not None
+                        else 0
+                    ),
                     "num_source_packets": int(num_source_packets),
+                    "num_admitted_source_packets": int(num_tx_source_packets),
+                    "num_protected_source_packets": int(
+                        num_protected_source_packets
+                    ),
+                    "num_tail_source_packets": int(num_tail_source_packets),
                     "num_parity_packets": int(num_parity_packets),
                     "num_encoded_packets": int(num_encoded_packets),
                     "num_tx_packets": int(num_tx_packets),
@@ -2726,12 +2778,21 @@ class ARCEFixedComm:
                     "selected_encoded_packet_ratio": float(
                         num_tx_packets / max(1, num_encoded_packets)
                     ),
+                    "admitted_source_packet_ratio": float(
+                        num_tx_source_packets / max(1, num_source_packets)
+                    ),
+                    "protected_redundancy_ratio": float(
+                        protected_redundancy_ratio
+                    ),
+                    "overall_redundancy_ratio": float(
+                        overall_redundancy_ratio
+                    ),
                 },
                 "patch_summary": {
                     "packetization": "byte_stream_not_spatial_patch",
                     "num_total_patches": int(num_source_packets),
                     "num_valid_patches": int(num_source_packets),
-                    "num_selected_source_patches": int(num_source_packets),
+                    "num_selected_source_patches": int(num_tx_source_packets),
                     "num_encoded_patches": int(num_encoded_packets),
                     "num_received_patches": int(num_received_encoded_packets),
                     "num_fec_recovered_patches": int(num_fec_recovered_source_packets),
@@ -2744,12 +2805,17 @@ class ARCEFixedComm:
                     "num_missing_by_budget": int(num_missing_by_budget),
                     "num_missing_by_loss": int(num_lost_by_bernoulli),
                     "selected_patch_ratio": float(
-                        num_tx_packets / max(1, num_encoded_packets)
+                        num_tx_source_packets / max(1, num_source_packets)
                     ),
                     "effective_patch_ratio": float(q_recv),
                 },
                 "packet": {
                     "num_source_packets": int(num_source_packets),
+                    "num_admitted_source_packets": int(num_tx_source_packets),
+                    "num_protected_source_packets": int(
+                        num_protected_source_packets
+                    ),
+                    "num_tail_source_packets": int(num_tail_source_packets),
                     "num_parity_packets": int(num_parity_packets),
                     "num_encoded_packets": int(num_encoded_packets),
                     "num_transmitted_packets": int(num_tx_packets),
@@ -2765,7 +2831,14 @@ class ARCEFixedComm:
                     "num_direct_received_source_packets": int(num_direct_received_source_packets),
                     "num_fec_recovered_source_packets": int(num_fec_recovered_source_packets),
                     "num_missing_source_packets": int(num_missing_source_packets),
-                    "packet_size_bytes": int(packet_size_bytes),
+                    "packet_size_bytes": int(wire_packet_size_bytes),
+                    "source_symbol_bytes": int(packet_size_bytes),
+                    "protected_redundancy_ratio": float(
+                        protected_redundancy_ratio
+                    ),
+                    "overall_redundancy_ratio": float(
+                        overall_redundancy_ratio
+                    ),
                 },
                 "size": size_info,
                 "quality": {
@@ -2804,21 +2877,15 @@ class ARCEFixedComm:
                 "rx_bytes": float(received_bytes),
                 "raw_bytes": int(feature.numel() * feature.element_size()),
                 "compressed_bytes": float(packet_result.original_num_bytes),
-                "encoded_bytes": float(num_encoded_packets * packet_size_bytes),
+                "encoded_bytes": float(
+                    num_encoded_packets * wire_packet_size_bytes
+                ),
                 "received_bytes": float(received_bytes),
                 "effective_received_bytes": float(received_bytes),
                 "late": False,
                 "dropped_by_late": False,
                 "notes": {
-                    "packetization": (
-                        "Quantize KC units, adaptively encode each unit as dense "
-                        "or bitmap-plus-nonzero values, then place self-contained "
-                        "records in fixed-size source packets."
-                        if zero_codec_active
-                        else
-                        "Quantize first, then flatten Q(F) into a byte stream "
-                        "and split by fixed packet length."
-                    ),
+                    "packetization": "Quantize first, then flatten Q(F) into a byte stream and split by fixed packet length.",
                     "fec": "FEC is applied to byte-stream source packets before Bernoulli packet loss.",
                     "loss": "Each transmitted encoded packet independently follows receive_i ~ Bernoulli(1 - PLR_t).",
                     "delay": "Good/Medium use current frame; Bad uses previous frame.",
@@ -2847,8 +2914,14 @@ class ARCEFixedComm:
             budget_accounting={
                 "accounting_version": 2,
                 "bandwidth_budget_bytes": float(frame_budget_bytes),
-                "packet_size_bytes": int(packet_size_bytes),
+                "packet_size_bytes": int(wire_packet_size_bytes),
+                "source_symbol_bytes": int(packet_size_bytes),
                 "num_source_packets": int(num_source_packets),
+                "num_admitted_source_packets": int(num_tx_source_packets),
+                "num_protected_source_packets": int(
+                    num_protected_source_packets
+                ),
+                "num_tail_source_packets": int(num_tail_source_packets),
                 "num_parity_packets": int(num_parity_packets),
                 "num_encoded_packets": int(num_encoded_packets),
                 "num_transmitted_packets": int(num_tx_packets),
@@ -2859,10 +2932,10 @@ class ARCEFixedComm:
                 "num_missing_by_budget": int(num_missing_by_budget),
                 "actual_transmitted_bytes": float(transmitted_bytes),
                 "actual_transmitted_source_bytes": float(
-                    num_tx_source_packets * packet_size_bytes
+                    num_tx_source_packets * wire_packet_size_bytes
                 ),
                 "actual_transmitted_parity_bytes": float(
-                    num_tx_parity_packets * packet_size_bytes
+                    num_tx_parity_packets * wire_packet_size_bytes
                 ),
                 "num_lost_by_bernoulli": int(num_lost_by_bernoulli),
                 "num_direct_received_source_packets": int(
@@ -2873,6 +2946,12 @@ class ARCEFixedComm:
                 ),
                 "num_recovered_source_packets": int(num_recovered_source_packets),
                 "num_missing_source_packets": int(num_missing_source_packets),
+                "protected_redundancy_ratio": float(
+                    protected_redundancy_ratio
+                ),
+                "overall_redundancy_ratio": float(
+                    overall_redundancy_ratio
+                ),
             },
             comm_record=record,
         )
@@ -2897,9 +2976,19 @@ class ARCEFixedComm:
                 fec_recovered_compact=recovered_feature_compact,
                 source_tx_mask=source_tx_mask,
                 parity_tx_mask=parity_tx_mask,
-                source_receive_mask=(receive_mask[:num_source_packets] & source_tx_mask),
-                parity_receive_mask=(receive_mask[num_source_packets:num_encoded_packets] & parity_tx_mask),
+                source_receive_mask=(
+                    decode_result.direct_received_source_mask
+                ),
+                parity_receive_mask=(
+                    block_fec_plan.repair_receive_mask(receive_mask)
+                    if block_fec_plan is not None
+                    else (
+                        receive_mask[num_source_packets:num_encoded_packets]
+                        & parity_tx_mask
+                    )
+                ),
                 num_source_packets=int(num_source_packets),
+                num_admitted_source_packets=int(num_tx_source_packets),
                 num_parity_packets=int(num_parity_packets),
                 num_encoded_packets=int(num_encoded_packets),
                 num_tx_source_packets=int(num_tx_source_packets),
@@ -2912,7 +3001,7 @@ class ARCEFixedComm:
                 bandwidth_budget_bytes=float(frame_budget_bytes),
                 actual_transmitted_bytes=float(transmitted_bytes),
                 actual_received_bytes=float(received_bytes),
-                packet_size_bytes=int(packet_size_bytes),
+                packet_size_bytes=int(wire_packet_size_bytes),
             )
             if fec_audit_summary is not None:
                 record["fec_recovery_audit"] = fec_audit_summary
@@ -3349,7 +3438,7 @@ class ARCEFixedComm:
             "packetization_mode": "byte_stream",
             "loss_model": "bernoulli",
             "latency_model": "fixed_state_delay",
-            "fec_enabled": True,
+            "fec_enabled": bool(total_parity > 0),
             "total_transmitted_bytes": float(total_tx),
             "total_received_bytes": float(total_rx),
             "total_transmitted_mb": float(total_tx / 1_000_000.0),
@@ -3384,7 +3473,6 @@ class ARCEFixedComm:
             "max_records": int(self.max_records),
             "keep_tensor_results": bool(self.keep_tensor_results),
             "byte_packetizer": self.byte_packetizer.get_config(),
-            "zero_codec": self.zero_codec.get_config(),
             "action_policy": self.action_policy.get_config(),
             "fixed_policy": self.fixed_policy.get_config(),
             "loss_model": "bernoulli",

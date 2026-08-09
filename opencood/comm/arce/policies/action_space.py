@@ -15,7 +15,9 @@ Therefore, the full action space size is:
     2 x 4 x 3 x 2 = 48
 
 The FEC type is an engineering realization of rho. It is not an additional
-PDF action dimension. By default, rho > 0 maps to raptor_sim for the main method.
+The configured ``fec_main`` selects the codec for rho > 0. The formal GRACE
+configuration uses RFC 6330 RaptorQ; ``raptor_sim`` remains available only for
+legacy reproduction.
 XOR should be used through fec_mode="xor" for FEC ablations.
 
 Important:
@@ -249,13 +251,19 @@ def infer_fec_type(rho: float, fec_mode: str = "raptor_sim") -> str:
 
     fec_mode = str(fec_mode).strip().lower()
 
+    if fec_mode == "raptorq":
+        return "raptorq"
+
     if fec_mode in ("raptor", "raptor_sim", "fountain"):
         return "raptor_sim"
 
     if fec_mode == "xor":
         return "xor"
 
-    raise ValueError(f"Unsupported fec_mode={fec_mode!r}; expected raptor_sim or xor.")
+    raise ValueError(
+        f"Unsupported fec_mode={fec_mode!r}; expected raptorq, "
+        "raptor_sim, or xor."
+    )
 
 
 def is_valid_pdf_action_combination(send: int, quant_mode: str, rho: float) -> bool:

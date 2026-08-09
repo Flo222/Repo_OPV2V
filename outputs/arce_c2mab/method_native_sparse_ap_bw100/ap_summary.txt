@@ -1,1 +1,0 @@
-408:The Average Precision at IOU 0.3 is 0.794, The Average Precision at IOU 0.5 is 0.762, The Average Precision at IOU 0.7 is 0.544

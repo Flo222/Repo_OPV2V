@@ -1,0 +1,2128 @@
+diff --git a/opencood/comm/arce/arce_c2mab_comm.py b/opencood/comm/arce/arce_c2mab_comm.py
+index 4b0f8f4..daed856 100644
+--- a/opencood/comm/arce/arce_c2mab_comm.py
++++ b/opencood/comm/arce/arce_c2mab_comm.py
+@@ -323,6 +323,17 @@ class ARCEC2MABComm:
+                 ),
+             )
+         )
++        raptorq_cfg = (self.arce_cfg.get("fec", {}) or {}).get(
++            "raptorq", {}
++        ) or {}
++        self.raptorq_block_source_packets = int(
++            raptorq_cfg.get("source_packets_per_block", 20)
++        )
++        self.raptorq_metadata_bytes_per_packet = int(
++            raptorq_cfg.get("grace_block_id_bytes", 2)
++            + raptorq_cfg.get("grace_source_count_bytes", 2)
++            + raptorq_cfg.get("raptorq_payload_id_bytes", 4)
++        )
+ 
+ 
+         reward_cfg = self.arce_cfg.get("reward", {}) or {}
+@@ -544,6 +555,12 @@ class ARCEC2MABComm:
+             raw_feature_bytes_fp32_fn=raw_feature_bytes_fp32,
+             quant_ratio_to_fp32=QUANT_RATIO_TO_FP32,
+             compact_token_info=first_compact_info,
++            raptorq_block_source_packets=int(
++                self.raptorq_block_source_packets
++            ),
++            raptorq_metadata_bytes_per_packet=int(
++                self.raptorq_metadata_bytes_per_packet
++            ),
+         )
+ 
+         predicted_allocated_budget = float(
+@@ -568,6 +585,12 @@ class ARCEC2MABComm:
+                 raw_feature_bytes_fp32_fn=raw_feature_bytes_fp32,
+                 quant_ratio_to_fp32=QUANT_RATIO_TO_FP32,
+                 compact_token_info=second_compact_info,
++                raptorq_block_source_packets=int(
++                    self.raptorq_block_source_packets
++                ),
++                raptorq_metadata_bytes_per_packet=int(
++                    self.raptorq_metadata_bytes_per_packet
++                ),
+             )
+ 
+             second_cost_info["compact_estimator_first_pass"] = dict(first_compact_info)
+diff --git a/opencood/comm/arce/arce_fixed_comm.py b/opencood/comm/arce/arce_fixed_comm.py
+index 4bfdcee..b14a108 100644
+--- a/opencood/comm/arce/arce_fixed_comm.py
++++ b/opencood/comm/arce/arce_fixed_comm.py
+@@ -57,6 +57,10 @@ from opencood.comm.arce.policies.action_adapter import (
+ from opencood.comm.arce.policies.spatial_importance import (
+     ARCESpatialImportance,
+ )
++from opencood.comm.arce.priority_block_fec_transport import (
++    PriorityBlockFECTransport,
++    SCHEDULING_MODE as RAPTORQ_SCHEDULING_MODE,
++)
+ from opencood.compression.feature_quantizer import FeatureQuantizer
+ from opencood.comm.arce.audit import CompressionAuditor, FECRecoveryAuditor
+ 
+@@ -64,7 +68,7 @@ from opencood.comm.fec import (
+     FEC_TYPE_NONE,
+     FEC_TYPE_XOR,
+     FEC_TYPE_RAPTOR_SIM,
+-    FEC_TYPE_RAPTOR,
++    FEC_TYPE_RAPTORQ,
+     normalize_fec_type,
+ )
+ from opencood.comm.fec.fec_base import (
+@@ -327,6 +331,14 @@ class ARCEFixedComm:
+ 
+         self.fec_cfg = self.arce_cfg_raw.get("fec", {}) or {}
+         self.redundancy_cfg = self.arce_cfg_raw.get("redundancy", {}) or {}
++        raptorq_cfg = self.fec_cfg.get("raptorq", {}) or {}
++        self.raptorq_block_source_packets = int(
++            raptorq_cfg.get("source_packets_per_block", 20)
++        )
++        self.raptorq_transport = PriorityBlockFECTransport(
++            source_packet_bytes=int(self.byte_packetizer.packet_size_bytes),
++            block_source_packets=self.raptorq_block_source_packets,
++        )
+         self.transport_mode = normalize_transport_mode(self.arce_cfg_raw)
+         self.arce_cfg_raw = apply_payload_native_transport_to_arce_cfg(self.arce_cfg_raw)
+         self.spatial_importance = ARCESpatialImportance(
+@@ -1495,7 +1507,24 @@ class ARCEFixedComm:
+         if fec_type == FEC_TYPE_XOR:
+             return XORFEC({"fec": fec_cfg}), fec_cfg
+ 
+-        if fec_type in (FEC_TYPE_RAPTOR_SIM, FEC_TYPE_RAPTOR):
++        if fec_type == FEC_TYPE_RAPTORQ:
++            fec_cfg.update({
++                "type": FEC_TYPE_RAPTORQ,
++                "codec": "raptorq",
++                "standard": "RFC6330",
++                "source_packets_per_block": int(
++                    self.raptorq_block_source_packets
++                ),
++                "source_packet_bytes": int(
++                    self.raptorq_transport.source_packet_bytes
++                ),
++                "wire_packet_bytes": int(
++                    self.raptorq_transport.wire_packet_bytes
++                ),
++            })
++            return self.raptorq_transport, fec_cfg
++
++        if fec_type == FEC_TYPE_RAPTOR_SIM:
+             fec_cfg["type"] = FEC_TYPE_RAPTOR_SIM
+             return RaptorSimFEC({"fec": fec_cfg}), fec_cfg
+ 
+@@ -2178,6 +2207,13 @@ class ARCEFixedComm:
+                 "bandwidth_selection": {
+                     "mode": "empty_candidate",
+                     "budget_bytes": float(frame_budget_bytes),
++                    "source_symbol_bytes": int(
++                        self.byte_packetizer.packet_size_bytes
++                    ),
++                    "wire_packet_bytes": None,
++                    "packet_metadata_bytes": 0,
++                    "scheduling": "not_executed_empty_candidate",
++                    "num_fec_blocks": 0,
+                     "num_tx_packets": 0,
+                     "num_missing_by_budget": 0,
+                 },
+@@ -2247,52 +2283,109 @@ class ARCEFixedComm:
+         num_source_packets = int(packet_result.num_packets)
+         packet_size_bytes = int(packet_result.packet_size_bytes)
+ 
+-        # 4. FEC encode source byte packets.
+-        fec_codec, fec_runtime_cfg = self._build_fec_codec(action)
+-        if fec_codec is None:
+-            encode_result = self._make_no_fec_encode_result(source_packets)
+-            fec_encode_dict = encode_result.as_dict(include_metas=False)
+-            fec_encode_dict["enabled"] = False
+-        else:
+-            encode_result = fec_codec.encode(source_packets)
+-            fec_encode_dict = encode_result.as_dict(include_metas=False)
+-            fec_encode_dict["enabled"] = True
+-
+-        encoded_packets = encode_result.encoded_packets
+-        num_encoded_packets = int(encode_result.num_encoded_packets)
+-        num_parity_packets = int(encode_result.num_parity_packets)
+-
+-        # 5. Select encoded packets under budget.
++        # 4. Resolve the physical link budget before FEC. RaptorQ block
++        # admission jointly reserves source and repair packets under this
++        # budget; estimated action cost is never used as an execution budget.
+         frame_budget_bytes = self._frame_budget_bytes_from_channel_profile(
+             channel_profile=channel_profile,
+             budget_bytes=budget_bytes,
+             channel_state=active_channel_state,
+         )
+-
+-        tx_mask = self._select_encoded_packets_by_budget(
+-            encoded_packets=encoded_packets,
+-            budget_bytes=frame_budget_bytes,
+-            packet_size_bytes=packet_size_bytes,
+-        )
++        fec_codec, fec_runtime_cfg = self._build_fec_codec(action)
++        block_fec_plan = None
++        wire_packet_size_bytes = int(packet_size_bytes)
++
++        if isinstance(fec_codec, PriorityBlockFECTransport):
++            block_fec_plan = fec_codec.encode_under_budget(
++                source_packets=source_packets,
++                budget_bytes=frame_budget_bytes,
++                redundancy_ratio=float(
++                    fec_runtime_cfg.get("redundancy_ratio", 0.0)
++                ),
++            )
++            encode_result = block_fec_plan
++            fec_encode_dict = block_fec_plan.as_dict(
++                include_blocks=True,
++                include_metas=False,
++            )
++            encoded_packets = block_fec_plan.encoded_packets
++            num_encoded_packets = int(block_fec_plan.num_encoded_packets)
++            num_parity_packets = int(block_fec_plan.num_repair_packets)
++            wire_packet_size_bytes = int(
++                block_fec_plan.wire_packet_bytes
++            )
++            tx_mask = torch.ones(
++                num_encoded_packets,
++                dtype=torch.bool,
++                device=encoded_packets.device,
++            )
++            source_tx_mask = block_fec_plan.admitted_source_mask
++            parity_tx_mask = torch.ones(
++                num_parity_packets,
++                dtype=torch.bool,
++                device=encoded_packets.device,
++            )
++            num_tx_source_packets = int(
++                block_fec_plan.num_admitted_source_packets
++            )
++            num_tx_parity_packets = int(num_parity_packets)
++            num_source_dropped_by_budget = int(
++                block_fec_plan.num_source_dropped_by_budget
++            )
++            num_parity_dropped_by_budget = 0
++            num_missing_by_budget = int(num_source_dropped_by_budget)
++        else:
++            if fec_codec is None:
++                encode_result = self._make_no_fec_encode_result(source_packets)
++                fec_encode_dict = encode_result.as_dict(include_metas=False)
++                fec_encode_dict["enabled"] = False
++            else:
++                encode_result = fec_codec.encode(source_packets)
++                fec_encode_dict = encode_result.as_dict(include_metas=False)
++                fec_encode_dict["enabled"] = True
++
++            encoded_packets = encode_result.encoded_packets
++            num_encoded_packets = int(encode_result.num_encoded_packets)
++            num_parity_packets = int(encode_result.num_parity_packets)
++            tx_mask = self._select_encoded_packets_by_budget(
++                encoded_packets=encoded_packets,
++                budget_bytes=frame_budget_bytes,
++                packet_size_bytes=wire_packet_size_bytes,
++            )
++            source_tx_mask = tx_mask[:num_source_packets]
++            parity_tx_mask = tx_mask[num_source_packets:num_encoded_packets]
++            num_tx_source_packets = int(source_tx_mask.sum().item())
++            num_tx_parity_packets = int(parity_tx_mask.sum().item())
++            num_source_dropped_by_budget = int(
++                num_source_packets - num_tx_source_packets
++            )
++            num_parity_dropped_by_budget = int(
++                num_parity_packets - num_tx_parity_packets
++            )
++            num_missing_by_budget = int(
++                num_source_dropped_by_budget + num_parity_dropped_by_budget
++            )
+ 
+         num_tx_packets = int(tx_mask.sum().item())
+-
+-        # Systematic FEC encoders in this repository always store source packets
+-        # first and parity/repair packets afterwards. Split the budget outcome so
+-        # later experiments can tell whether the budget removed original payload
+-        # or only protection packets. The totals are also checked for consistency.
+-        source_tx_mask = tx_mask[:num_source_packets]
+-        parity_tx_mask = tx_mask[num_source_packets:num_encoded_packets]
+-        num_tx_source_packets = int(source_tx_mask.sum().item())
+-        num_tx_parity_packets = int(parity_tx_mask.sum().item())
+-        num_source_dropped_by_budget = int(
+-            num_source_packets - num_tx_source_packets
++        num_protected_source_packets = int(
++            block_fec_plan.num_protected_source_packets
++            if block_fec_plan is not None
++            else 0
++        )
++        num_tail_source_packets = int(
++            block_fec_plan.num_tail_source_packets
++            if block_fec_plan is not None
++            else num_tx_source_packets
+         )
+-        num_parity_dropped_by_budget = int(
+-            num_parity_packets - num_tx_parity_packets
++        protected_redundancy_ratio = float(
++            block_fec_plan.protected_redundancy_ratio
++            if block_fec_plan is not None
++            else 0.0
+         )
+-        num_missing_by_budget = int(
+-            num_source_dropped_by_budget + num_parity_dropped_by_budget
++        overall_redundancy_ratio = float(
++            block_fec_plan.overall_redundancy_ratio
++            if block_fec_plan is not None
++            else num_parity_packets / max(1, num_tx_source_packets)
+         )
+ 
+         if num_tx_source_packets + num_tx_parity_packets != num_tx_packets:
+@@ -2346,11 +2439,19 @@ class ARCEFixedComm:
+         receive_mask = ~full_loss_mask
+         received_packet_mask = receive_mask
+ 
+-        transmitted_bytes = float(num_tx_packets * packet_size_bytes)
+-        received_bytes = float(int(received_packet_mask.sum().item()) * packet_size_bytes)
++        transmitted_bytes = float(num_tx_packets * wire_packet_size_bytes)
++        received_bytes = float(
++            int(received_packet_mask.sum().item()) * wire_packet_size_bytes
++        )
+ 
+         # 7. FEC decode.
+-        if fec_codec is None:
++        if block_fec_plan is not None:
++            decode_result = fec_codec.decode(
++                plan=block_fec_plan,
++                receive_mask=receive_mask,
++                fill_value=0,
++            )
++        elif fec_codec is None:
+             decode_result = self._decode_no_fec(
+                 encode_result=encode_result,
+                 receive_mask=receive_mask,
+@@ -2400,7 +2501,7 @@ class ARCEFixedComm:
+         direct_recovered_feature_compact = None
+         if getattr(self, "fec_recovery_auditor", None) is not None and self.fec_recovery_auditor.enabled:
+             direct_source_receive_mask = (
+-                receive_mask[:num_source_packets] & source_tx_mask
++                decode_result.direct_received_source_mask
+             )
+             direct_source_packets = source_packets.clone()
+             direct_source_packets[~direct_source_receive_mask] = 0
+@@ -2508,16 +2609,32 @@ class ARCEFixedComm:
+             "quantized_num_bytes": float(packet_result.original_num_bytes),
+             "compressed_bytes": float(packet_result.original_num_bytes),
+             "actual_num_source_packets": int(num_source_packets),
++            "actual_num_admitted_source_packets": int(num_tx_source_packets),
++            "actual_num_protected_source_packets": int(
++                num_protected_source_packets
++            ),
++            "actual_num_tail_source_packets": int(num_tail_source_packets),
+             "actual_num_parity_packets": int(num_parity_packets),
+             "actual_num_encoded_packets": int(num_encoded_packets),
+             "actual_effective_redundancy_ratio": float(
+-                num_parity_packets / max(1, num_source_packets)
++                overall_redundancy_ratio
++            ),
++            "actual_protected_redundancy_ratio": float(
++                protected_redundancy_ratio
++            ),
++            "actual_overall_redundancy_ratio": float(
++                overall_redundancy_ratio
+             ),
+             "actual_avg_source_packet_bytes": float(
+                 packet_result.original_num_bytes / max(1, num_source_packets)
+             ),
+-            "actual_parity_bytes": float(num_parity_packets * packet_size_bytes),
+-            "actual_metadata_bytes": 0.0,
++            "actual_parity_bytes": float(
++                num_parity_packets * wire_packet_size_bytes
++            ),
++            "actual_metadata_bytes": float(
++                num_tx_packets
++                * max(0, wire_packet_size_bytes - packet_size_bytes)
++            ),
+             "actual_transmitted_bytes": float(transmitted_bytes),
+             "actual_received_bytes": float(received_bytes),
+             "actual_transmitted_mb": float(transmitted_bytes / 1_000_000.0),
+@@ -2527,10 +2644,10 @@ class ARCEFixedComm:
+             "actual_num_transmitted_source_packets": int(num_tx_source_packets),
+             "actual_num_transmitted_parity_packets": int(num_tx_parity_packets),
+             "actual_transmitted_source_bytes": float(
+-                num_tx_source_packets * packet_size_bytes
++                num_tx_source_packets * wire_packet_size_bytes
+             ),
+             "actual_transmitted_parity_bytes": float(
+-                num_tx_parity_packets * packet_size_bytes
++                num_tx_parity_packets * wire_packet_size_bytes
+             ),
+             "num_source_dropped_by_budget": int(num_source_dropped_by_budget),
+             "num_parity_dropped_by_budget": int(num_parity_dropped_by_budget),
+@@ -2620,7 +2737,32 @@ class ARCEFixedComm:
+                     if budget_bytes is not None
+                     else self.budget_scope,
+                     "budget_bytes": float(frame_budget_bytes),
++                    "source_symbol_bytes": int(packet_size_bytes),
++                    "wire_packet_bytes": int(wire_packet_size_bytes),
++                    "packet_metadata_bytes": int(
++                        max(0, wire_packet_size_bytes - packet_size_bytes)
++                    ),
++                    "scheduling": (
++                        RAPTORQ_SCHEDULING_MODE
++                        if block_fec_plan is not None
++                        else "encoded_stream_prefix"
++                    ),
++                    "num_fec_blocks": int(
++                        block_fec_plan.num_protected_blocks
++                        if block_fec_plan is not None
++                        else 0
++                    ),
++                    "num_tail_blocks": int(
++                        block_fec_plan.num_tail_blocks
++                        if block_fec_plan is not None
++                        else 0
++                    ),
+                     "num_source_packets": int(num_source_packets),
++                    "num_admitted_source_packets": int(num_tx_source_packets),
++                    "num_protected_source_packets": int(
++                        num_protected_source_packets
++                    ),
++                    "num_tail_source_packets": int(num_tail_source_packets),
+                     "num_parity_packets": int(num_parity_packets),
+                     "num_encoded_packets": int(num_encoded_packets),
+                     "num_tx_packets": int(num_tx_packets),
+@@ -2636,12 +2778,21 @@ class ARCEFixedComm:
+                     "selected_encoded_packet_ratio": float(
+                         num_tx_packets / max(1, num_encoded_packets)
+                     ),
++                    "admitted_source_packet_ratio": float(
++                        num_tx_source_packets / max(1, num_source_packets)
++                    ),
++                    "protected_redundancy_ratio": float(
++                        protected_redundancy_ratio
++                    ),
++                    "overall_redundancy_ratio": float(
++                        overall_redundancy_ratio
++                    ),
+                 },
+                 "patch_summary": {
+                     "packetization": "byte_stream_not_spatial_patch",
+                     "num_total_patches": int(num_source_packets),
+                     "num_valid_patches": int(num_source_packets),
+-                    "num_selected_source_patches": int(num_source_packets),
++                    "num_selected_source_patches": int(num_tx_source_packets),
+                     "num_encoded_patches": int(num_encoded_packets),
+                     "num_received_patches": int(num_received_encoded_packets),
+                     "num_fec_recovered_patches": int(num_fec_recovered_source_packets),
+@@ -2654,12 +2805,17 @@ class ARCEFixedComm:
+                     "num_missing_by_budget": int(num_missing_by_budget),
+                     "num_missing_by_loss": int(num_lost_by_bernoulli),
+                     "selected_patch_ratio": float(
+-                        num_tx_packets / max(1, num_encoded_packets)
++                        num_tx_source_packets / max(1, num_source_packets)
+                     ),
+                     "effective_patch_ratio": float(q_recv),
+                 },
+                 "packet": {
+                     "num_source_packets": int(num_source_packets),
++                    "num_admitted_source_packets": int(num_tx_source_packets),
++                    "num_protected_source_packets": int(
++                        num_protected_source_packets
++                    ),
++                    "num_tail_source_packets": int(num_tail_source_packets),
+                     "num_parity_packets": int(num_parity_packets),
+                     "num_encoded_packets": int(num_encoded_packets),
+                     "num_transmitted_packets": int(num_tx_packets),
+@@ -2675,7 +2831,14 @@ class ARCEFixedComm:
+                     "num_direct_received_source_packets": int(num_direct_received_source_packets),
+                     "num_fec_recovered_source_packets": int(num_fec_recovered_source_packets),
+                     "num_missing_source_packets": int(num_missing_source_packets),
+-                    "packet_size_bytes": int(packet_size_bytes),
++                    "packet_size_bytes": int(wire_packet_size_bytes),
++                    "source_symbol_bytes": int(packet_size_bytes),
++                    "protected_redundancy_ratio": float(
++                        protected_redundancy_ratio
++                    ),
++                    "overall_redundancy_ratio": float(
++                        overall_redundancy_ratio
++                    ),
+                 },
+                 "size": size_info,
+                 "quality": {
+@@ -2714,7 +2877,9 @@ class ARCEFixedComm:
+                 "rx_bytes": float(received_bytes),
+                 "raw_bytes": int(feature.numel() * feature.element_size()),
+                 "compressed_bytes": float(packet_result.original_num_bytes),
+-                "encoded_bytes": float(num_encoded_packets * packet_size_bytes),
++                "encoded_bytes": float(
++                    num_encoded_packets * wire_packet_size_bytes
++                ),
+                 "received_bytes": float(received_bytes),
+                 "effective_received_bytes": float(received_bytes),
+                 "late": False,
+@@ -2749,8 +2914,14 @@ class ARCEFixedComm:
+             budget_accounting={
+                 "accounting_version": 2,
+                 "bandwidth_budget_bytes": float(frame_budget_bytes),
+-                "packet_size_bytes": int(packet_size_bytes),
++                "packet_size_bytes": int(wire_packet_size_bytes),
++                "source_symbol_bytes": int(packet_size_bytes),
+                 "num_source_packets": int(num_source_packets),
++                "num_admitted_source_packets": int(num_tx_source_packets),
++                "num_protected_source_packets": int(
++                    num_protected_source_packets
++                ),
++                "num_tail_source_packets": int(num_tail_source_packets),
+                 "num_parity_packets": int(num_parity_packets),
+                 "num_encoded_packets": int(num_encoded_packets),
+                 "num_transmitted_packets": int(num_tx_packets),
+@@ -2761,10 +2932,10 @@ class ARCEFixedComm:
+                 "num_missing_by_budget": int(num_missing_by_budget),
+                 "actual_transmitted_bytes": float(transmitted_bytes),
+                 "actual_transmitted_source_bytes": float(
+-                    num_tx_source_packets * packet_size_bytes
++                    num_tx_source_packets * wire_packet_size_bytes
+                 ),
+                 "actual_transmitted_parity_bytes": float(
+-                    num_tx_parity_packets * packet_size_bytes
++                    num_tx_parity_packets * wire_packet_size_bytes
+                 ),
+                 "num_lost_by_bernoulli": int(num_lost_by_bernoulli),
+                 "num_direct_received_source_packets": int(
+@@ -2775,6 +2946,12 @@ class ARCEFixedComm:
+                 ),
+                 "num_recovered_source_packets": int(num_recovered_source_packets),
+                 "num_missing_source_packets": int(num_missing_source_packets),
++                "protected_redundancy_ratio": float(
++                    protected_redundancy_ratio
++                ),
++                "overall_redundancy_ratio": float(
++                    overall_redundancy_ratio
++                ),
+             },
+             comm_record=record,
+         )
+@@ -2799,9 +2976,19 @@ class ARCEFixedComm:
+                 fec_recovered_compact=recovered_feature_compact,
+                 source_tx_mask=source_tx_mask,
+                 parity_tx_mask=parity_tx_mask,
+-                source_receive_mask=(receive_mask[:num_source_packets] & source_tx_mask),
+-                parity_receive_mask=(receive_mask[num_source_packets:num_encoded_packets] & parity_tx_mask),
++                source_receive_mask=(
++                    decode_result.direct_received_source_mask
++                ),
++                parity_receive_mask=(
++                    block_fec_plan.repair_receive_mask(receive_mask)
++                    if block_fec_plan is not None
++                    else (
++                        receive_mask[num_source_packets:num_encoded_packets]
++                        & parity_tx_mask
++                    )
++                ),
+                 num_source_packets=int(num_source_packets),
++                num_admitted_source_packets=int(num_tx_source_packets),
+                 num_parity_packets=int(num_parity_packets),
+                 num_encoded_packets=int(num_encoded_packets),
+                 num_tx_source_packets=int(num_tx_source_packets),
+@@ -2814,7 +3001,7 @@ class ARCEFixedComm:
+                 bandwidth_budget_bytes=float(frame_budget_bytes),
+                 actual_transmitted_bytes=float(transmitted_bytes),
+                 actual_received_bytes=float(received_bytes),
+-                packet_size_bytes=int(packet_size_bytes),
++                packet_size_bytes=int(wire_packet_size_bytes),
+             )
+             if fec_audit_summary is not None:
+                 record["fec_recovery_audit"] = fec_audit_summary
+@@ -3251,7 +3438,7 @@ class ARCEFixedComm:
+             "packetization_mode": "byte_stream",
+             "loss_model": "bernoulli",
+             "latency_model": "fixed_state_delay",
+-            "fec_enabled": True,
++            "fec_enabled": bool(total_parity > 0),
+             "total_transmitted_bytes": float(total_tx),
+             "total_received_bytes": float(total_rx),
+             "total_transmitted_mb": float(total_tx / 1_000_000.0),
+diff --git a/opencood/comm/arce/audit/compression_auditor.py b/opencood/comm/arce/audit/compression_auditor.py
+index ec35a92..8da7c5e 100644
+--- a/opencood/comm/arce/audit/compression_auditor.py
++++ b/opencood/comm/arce/audit/compression_auditor.py
+@@ -484,6 +484,11 @@ class CompressionAuditor:
+                 "num_encoded_packets", "actual_num_encoded_packets",
+                 runtime_num_source + num_parity_packets
+             ))
++            num_admitted_source = int(_pick(
++                "num_admitted_source_packets",
++                "actual_num_admitted_source_packets",
++                int(source_tx_mask.to(dtype=torch.bool).sum().item()),
++            ))
+             num_tx_source = int(_pick(
+                 "num_transmitted_source_packets",
+                 "actual_num_transmitted_source_packets",
+@@ -510,6 +515,7 @@ class CompressionAuditor:
+                 and all(key in runtime_accounting for key in (
+                     "bandwidth_budget_bytes",
+                     "num_source_packets",
++                    "num_admitted_source_packets",
+                     "num_parity_packets",
+                     "num_encoded_packets",
+                     "num_transmitted_source_packets",
+@@ -522,7 +528,9 @@ class CompressionAuditor:
+             )
+             accounting_valid = bool(
+                 runtime_num_source == num_source_packets
+-                and num_encoded_packets == num_source_packets + num_parity_packets
++                and num_encoded_packets == num_admitted_source + num_parity_packets
++                and 0 <= num_admitted_source <= num_source_packets
++                and num_admitted_source == num_tx_source
+                 and num_tx_source + num_source_drop == num_source_packets
+                 and num_tx_parity + num_parity_drop == num_parity_packets
+                 and num_source_drop + num_parity_drop == num_total_drop
+diff --git a/opencood/comm/arce/audit/fec_recovery_auditor.py b/opencood/comm/arce/audit/fec_recovery_auditor.py
+index 213eca0..f2347d0 100644
+--- a/opencood/comm/arce/audit/fec_recovery_auditor.py
++++ b/opencood/comm/arce/audit/fec_recovery_auditor.py
+@@ -230,6 +230,7 @@ class FECRecoveryAuditor:
+         actual_transmitted_bytes: float,
+         actual_received_bytes: float,
+         packet_size_bytes: int,
++        num_admitted_source_packets: Optional[int] = None,
+         bandwidth_budget_bytes: Optional[float] = None,
+     ) -> Optional[Dict[str, Any]]:
+         if not self.enabled:
+@@ -241,6 +242,11 @@ class FECRecoveryAuditor:
+             parity_receive_mask = _mask_to_cpu_bool(parity_receive_mask)
+ 
+             k = int(num_source_packets)
++            admitted_source = (
++                int(num_admitted_source_packets)
++                if num_admitted_source_packets is not None
++                else int(num_tx_source_packets)
++            )
+             p = int(num_parity_packets)
+             encoded = int(num_encoded_packets)
+             tx_source = int(num_tx_source_packets)
+@@ -275,7 +281,13 @@ class FECRecoveryAuditor:
+ 
+             sanity = {
+                 "source_packet_accounting_valid": bool(direct + fec_rec + missing == k),
+-                "encoded_packet_accounting_valid": bool(k + p == encoded),
++                "encoded_packet_accounting_valid": bool(
++                    admitted_source + p == encoded
++                ),
++                "admitted_source_count_valid": bool(
++                    0 <= admitted_source <= k
++                    and admitted_source == tx_source
++                ),
+                 "source_budget_accounting_valid": bool(tx_source + source_budget_drop == k),
+                 "parity_budget_accounting_valid": bool(tx_parity + parity_budget_drop == p),
+                 "source_channel_accounting_valid": bool(source_received + source_channel_lost == tx_source),
+@@ -294,6 +306,7 @@ class FECRecoveryAuditor:
+             required = [
+                 sanity["source_packet_accounting_valid"],
+                 sanity["encoded_packet_accounting_valid"],
++                sanity["admitted_source_count_valid"],
+                 sanity["source_budget_accounting_valid"],
+                 sanity["parity_budget_accounting_valid"],
+                 sanity["source_channel_accounting_valid"],
+diff --git a/opencood/comm/arce/policies/action_space.py b/opencood/comm/arce/policies/action_space.py
+index 655999b..b163575 100644
+--- a/opencood/comm/arce/policies/action_space.py
++++ b/opencood/comm/arce/policies/action_space.py
+@@ -15,7 +15,9 @@ Therefore, the full action space size is:
+     2 x 4 x 3 x 2 = 48
+ 
+ The FEC type is an engineering realization of rho. It is not an additional
+-PDF action dimension. By default, rho > 0 maps to raptor_sim for the main method.
++The configured ``fec_main`` selects the codec for rho > 0. The formal GRACE
++configuration uses RFC 6330 RaptorQ; ``raptor_sim`` remains available only for
++legacy reproduction.
+ XOR should be used through fec_mode="xor" for FEC ablations.
+ 
+ Important:
+@@ -249,13 +251,19 @@ def infer_fec_type(rho: float, fec_mode: str = "raptor_sim") -> str:
+ 
+     fec_mode = str(fec_mode).strip().lower()
+ 
++    if fec_mode == "raptorq":
++        return "raptorq"
++
+     if fec_mode in ("raptor", "raptor_sim", "fountain"):
+         return "raptor_sim"
+ 
+     if fec_mode == "xor":
+         return "xor"
+ 
+-    raise ValueError(f"Unsupported fec_mode={fec_mode!r}; expected raptor_sim or xor.")
++    raise ValueError(
++        f"Unsupported fec_mode={fec_mode!r}; expected raptorq, "
++        "raptor_sim, or xor."
++    )
+ 
+ 
+ def is_valid_pdf_action_combination(send: int, quant_mode: str, rho: float) -> bool:
+@@ -484,4 +492,4 @@ __all__ = [
+     "feasible_action_costs",
+     "action_by_id",
+     "is_valid_pdf_action_combination",
+-]
+\ No newline at end of file
++]
+diff --git a/opencood/comm/arce/policies/communication_cost_estimator.py b/opencood/comm/arce/policies/communication_cost_estimator.py
+index be56fb6..61737ba 100644
+--- a/opencood/comm/arce/policies/communication_cost_estimator.py
++++ b/opencood/comm/arce/policies/communication_cost_estimator.py
+@@ -16,9 +16,40 @@ The estimator covers:
+ from __future__ import annotations
+ 
+ import math
++from fractions import Fraction
+ from typing import Any, Callable, Dict, Optional, Sequence
+ 
+ 
++def _exact_raptorq_parity_packets(
++    source_packets: int,
++    rho: float,
++    block_source_packets: int,
++) -> int:
++    """Estimate repair packets for exact-ratio protected blocks.
++
++    Source symbols that cannot form one complete exact-ratio group are the
++    best-effort tail and therefore do not receive repair symbols.
++    """
++    ratio = Fraction(str(float(rho))).limit_denominator(1000)
++    source_unit = int(ratio.denominator)
++    repair_unit = int(ratio.numerator)
++    block_limit = max(1, int(block_source_packets))
++    protected_per_block = block_limit - block_limit % source_unit
++    if protected_per_block <= 0:
++        return 0
++
++    remaining = max(0, int(source_packets))
++    parity_packets = 0
++    while remaining >= source_unit:
++        protected = min(protected_per_block, remaining)
++        protected -= protected % source_unit
++        if protected <= 0:
++            break
++        parity_packets += protected // source_unit * repair_unit
++        remaining -= protected
++    return int(parity_packets)
++
++
+ def estimate_byte_stream_fec_cost(
+     feature_shape: Sequence[int],
+     action: Any,
+@@ -28,6 +59,8 @@ def estimate_byte_stream_fec_cost(
+     raw_feature_bytes_fp32_fn: Callable[[Sequence[int]], float],
+     quant_ratio_to_fp32: Dict[str, float],
+     compact_token_info: Optional[Dict[str, Any]] = None,
++    raptorq_block_source_packets: int = 20,
++    raptorq_metadata_bytes_per_packet: int = 8,
+ ) -> Dict[str, Any]:
+     if getattr(action, "is_no_send", False):
+         return {
+@@ -74,7 +107,16 @@ def estimate_byte_stream_fec_cost(
+     source_bytes = float(raw_fp32 * quant_ratio)
+ 
+     packet_size = int(packet_size_bytes)
++    fec_type = str(getattr(action, "fec_type", "none")).strip().lower()
++    is_raptorq = fec_type == "raptorq" and float(
++        getattr(action, "redundancy_ratio", 0.0)
++    ) > 0.0
+     metadata_per_packet = max(0, int(metadata_bytes_per_packet))
++    if is_raptorq:
++        metadata_per_packet = max(
++            metadata_per_packet,
++            int(raptorq_metadata_bytes_per_packet),
++        )
+     packet_unit = float(packet_size + metadata_per_packet)
+ 
+     source_packets = (
+@@ -84,7 +126,14 @@ def estimate_byte_stream_fec_cost(
+     )
+ 
+     rho = float(getattr(action, "redundancy_ratio", 0.0))
+-    parity_packets = int(math.ceil(source_packets * max(rho, 0.0)))
++    if is_raptorq:
++        parity_packets = _exact_raptorq_parity_packets(
++            source_packets=source_packets,
++            rho=rho,
++            block_source_packets=raptorq_block_source_packets,
++        )
++    else:
++        parity_packets = int(math.ceil(source_packets * max(rho, 0.0)))
+     encoded_packets = int(source_packets + parity_packets)
+ 
+     metadata_bytes = float(encoded_packets * metadata_per_packet)
+@@ -120,7 +169,7 @@ def estimate_byte_stream_fec_cost(
+         "feasible": bool(feasible),
+         "send": int(getattr(action, "send", 1)),
+         "quant_mode": q,
+-        "fec_type": str(getattr(action, "fec_type", "none")),
++        "fec_type": fec_type,
+         "rho": float(rho),
+         "raw_fp32_bytes": float(raw_fp32),
+         "source_bytes": float(source_bytes),
+@@ -133,6 +182,10 @@ def estimate_byte_stream_fec_cost(
+         "max_tx_packets_under_budget": int(max_tx_packets),
+         "effective_packet_ratio": float(effective_ratio),
+         "packet_size_bytes": int(packet_size),
++        "wire_packet_size_bytes": int(packet_size + metadata_per_packet),
++        "raptorq_block_source_packets": (
++            int(raptorq_block_source_packets) if is_raptorq else None
++        ),
+         "budget_bytes": float(budget_bytes) if budget_bytes is not None else None,
+         "proposal_budget_share": float(proposal_share),
+         "cost_model": str(cost_model),
+@@ -147,4 +200,3 @@ def estimate_byte_stream_fec_cost(
+             else None
+         ),
+     }
+-
+diff --git a/opencood/comm/arce/priority_block_fec_transport.py b/opencood/comm/arce/priority_block_fec_transport.py
+new file mode 100644
+index 0000000..cd8886c
+--- /dev/null
++++ b/opencood/comm/arce/priority_block_fec_transport.py
+@@ -0,0 +1,609 @@
++"""Priority-preserving, budget-aware block scheduling for packet FEC."""
++
++from __future__ import annotations
++
++import math
++from dataclasses import dataclass, field
++from fractions import Fraction
++from typing import Any, Dict, List, Tuple
++
++import torch
++
++from opencood.comm.fec.fec_raptorq import (
++    RaptorQBlockCodec,
++    RaptorQEncodedBlock,
++)
++
++
++SCHEDULING_MODE = "exact_ratio_protected_prefix_with_best_effort_tail"
++REDUNDANCY_POLICY = "exact_protected_prefix_with_best_effort_tail"
++
++
++def exact_redundancy_group(rho: float) -> tuple:
++    """Return the smallest exact ``(source, repair)`` group for ``rho``."""
++    rho = float(rho)
++    if not math.isfinite(rho) or rho <= 0.0:
++        raise ValueError("rho must be finite and positive")
++    ratio = Fraction(str(rho)).limit_denominator(1000)
++    if abs(float(ratio) - rho) > 1e-9:
++        raise ValueError("rho cannot be represented by a stable packet ratio")
++    return int(ratio.denominator), int(ratio.numerator)
++
++
++def exact_repair_packets_for_block(
++    num_source_packets: int,
++    rho: float,
++) -> int:
++    """Return an exact repair count; reject a non-integral protection block."""
++    num_source_packets = int(num_source_packets)
++    if num_source_packets <= 0:
++        return 0
++    source_unit, repair_unit = exact_redundancy_group(rho)
++    if num_source_packets % source_unit != 0:
++        raise ValueError(
++            "Protected source count {} is not a multiple of the exact group {}"
++            .format(num_source_packets, source_unit)
++        )
++    return int(num_source_packets // source_unit * repair_unit)
++
++
++def largest_exact_protected_source_block(
++    remaining_wire_packets: int,
++    remaining_source_packets: int,
++    target_source_packets: int,
++    rho: float,
++) -> int:
++    upper = min(
++        int(remaining_wire_packets),
++        int(remaining_source_packets),
++        int(target_source_packets),
++    )
++    source_unit, _ = exact_redundancy_group(rho)
++    upper -= upper % source_unit
++    for source_count in range(upper, 0, -source_unit):
++        repair_count = exact_repair_packets_for_block(source_count, rho)
++        if source_count + repair_count <= int(remaining_wire_packets):
++            return source_count
++    return 0
++
++
++def plan_exact_protected_prefix(
++    total_source_packets: int,
++    wire_packet_slots: int,
++    block_source_packets: int,
++    rho: float,
++) -> Tuple[List[int], int]:
++    """Plan exact-ratio protection blocks and an unprotected source tail."""
++    remaining_source = max(0, int(total_source_packets))
++    remaining_slots = max(0, int(wire_packet_slots))
++    protected_blocks: List[int] = []
++
++    while remaining_source > 0 and remaining_slots > 0:
++        source_count = largest_exact_protected_source_block(
++            remaining_wire_packets=remaining_slots,
++            remaining_source_packets=remaining_source,
++            target_source_packets=block_source_packets,
++            rho=rho,
++        )
++        if source_count <= 0:
++            break
++        repair_count = exact_repair_packets_for_block(source_count, rho)
++        protected_blocks.append(source_count)
++        remaining_source -= source_count
++        remaining_slots -= source_count + repair_count
++
++    tail_source_packets = min(remaining_source, remaining_slots)
++    return protected_blocks, int(tail_source_packets)
++
++
++@dataclass(frozen=True)
++class ScheduledRaptorQBlock:
++    block_id: int
++    role: str
++    global_source_start: int
++    encoded_start: int
++    encoded_end: int
++    encoded: RaptorQEncodedBlock
++
++    @property
++    def num_source_packets(self) -> int:
++        return self.encoded.num_source_packets
++
++    @property
++    def num_repair_packets(self) -> int:
++        return self.encoded.num_repair_packets
++
++    def as_dict(self) -> Dict[str, Any]:
++        result = self.encoded.as_dict()
++        result.update({
++            "block_role": str(self.role),
++            "protected": bool(self.role == "protected"),
++            "global_source_start": int(self.global_source_start),
++            "global_source_end": int(
++                self.global_source_start + self.num_source_packets
++            ),
++            "encoded_start": int(self.encoded_start),
++            "encoded_end": int(self.encoded_end),
++        })
++        return result
++
++
++@dataclass
++class PriorityBlockFECPlan:
++    source_packets: torch.Tensor
++    wire_packets: torch.Tensor
++    blocks: List[ScheduledRaptorQBlock]
++    admitted_source_mask: torch.Tensor
++    protected_source_mask: torch.Tensor
++    tail_source_mask: torch.Tensor
++    source_wire_positions: torch.Tensor
++    repair_wire_positions: torch.Tensor
++    budget_bytes: float
++    source_packet_bytes: int
++    wire_packet_bytes: int
++    redundancy_ratio: float
++    block_source_packets: int
++
++    @property
++    def num_source_packets(self) -> int:
++        return int(self.source_packets.shape[0])
++
++    @property
++    def num_admitted_source_packets(self) -> int:
++        return int(self.admitted_source_mask.sum().item())
++
++    @property
++    def num_source_dropped_by_budget(self) -> int:
++        return self.num_source_packets - self.num_admitted_source_packets
++
++    @property
++    def num_protected_source_packets(self) -> int:
++        return int(self.protected_source_mask.sum().item())
++
++    @property
++    def num_tail_source_packets(self) -> int:
++        return int(self.tail_source_mask.sum().item())
++
++    @property
++    def num_repair_packets(self) -> int:
++        return int(self.repair_wire_positions.numel())
++
++    @property
++    def num_protected_blocks(self) -> int:
++        return sum(block.role == "protected" for block in self.blocks)
++
++    @property
++    def num_tail_blocks(self) -> int:
++        return sum(block.role == "best_effort_tail" for block in self.blocks)
++
++    @property
++    def num_parity_packets(self) -> int:
++        return self.num_repair_packets
++
++    @property
++    def num_encoded_packets(self) -> int:
++        return int(self.wire_packets.shape[0])
++
++    @property
++    def protected_redundancy_ratio(self) -> float:
++        if self.num_protected_source_packets <= 0:
++            return 0.0
++        return float(
++            self.num_repair_packets / self.num_protected_source_packets
++        )
++
++    @property
++    def overall_redundancy_ratio(self) -> float:
++        if self.num_admitted_source_packets <= 0:
++            return 0.0
++        return float(
++            self.num_repair_packets / self.num_admitted_source_packets
++        )
++
++    @property
++    def encoded_packets(self) -> torch.Tensor:
++        return self.wire_packets
++
++    @property
++    def actual_transmitted_bytes(self) -> int:
++        return int(self.num_encoded_packets * self.wire_packet_bytes)
++
++    @property
++    def metadata_bytes(self) -> int:
++        return int(
++            self.num_encoded_packets
++            * (self.wire_packet_bytes - self.source_packet_bytes)
++        )
++
++    @property
++    def unused_budget_bytes(self) -> float:
++        return float(self.budget_bytes - self.actual_transmitted_bytes)
++
++    def repair_receive_mask(self, receive_mask: torch.Tensor) -> torch.Tensor:
++        receive_mask = torch.as_tensor(
++            receive_mask,
++            dtype=torch.bool,
++            device=self.wire_packets.device,
++        ).flatten()
++        return receive_mask[self.repair_wire_positions]
++
++    def as_dict(
++        self,
++        include_blocks: bool = True,
++        include_metas: bool = False,
++    ) -> Dict[str, Any]:
++        _ = bool(include_metas)
++        block_records = []
++        if include_blocks:
++            for block in self.blocks:
++                block_record = block.as_dict()
++                is_protected = block.role == "protected"
++                block_record.update({
++                    "action_redundancy_ratio_target": float(
++                        self.redundancy_ratio
++                    ),
++                    "redundancy_ratio_target": float(
++                        self.redundancy_ratio if is_protected else 0.0
++                    ),
++                    "redundancy_ratio_effective": float(
++                        block.num_repair_packets
++                        / max(1, block.num_source_packets)
++                    ),
++                    "redundancy_rounding": (
++                        "exact_rational_group" if is_protected else "none"
++                    ),
++                })
++                block_records.append(block_record)
++
++        result = {
++            "enabled": True,
++            "fec_type": "raptorq",
++            "codec": "raptorq",
++            "standard": "RFC6330",
++            "scheduling": SCHEDULING_MODE,
++            "redundancy_policy": REDUNDANCY_POLICY,
++            "num_source_packets": int(self.num_source_packets),
++            "num_admitted_source_packets": int(
++                self.num_admitted_source_packets
++            ),
++            "num_protected_source_packets": int(
++                self.num_protected_source_packets
++            ),
++            "num_tail_source_packets": int(self.num_tail_source_packets),
++            "num_source_dropped_by_budget": int(
++                self.num_source_dropped_by_budget
++            ),
++            "num_repair_packets": int(self.num_repair_packets),
++            "num_parity_packets": int(self.num_repair_packets),
++            "num_encoded_packets": int(self.num_encoded_packets),
++            "num_transmitted_packets": int(self.num_encoded_packets),
++            "redundancy_ratio_config": float(self.redundancy_ratio),
++            "redundancy_ratio_target": float(self.redundancy_ratio),
++            "effective_redundancy_ratio": float(
++                self.overall_redundancy_ratio
++            ),
++            "protected_redundancy_ratio": float(
++                self.protected_redundancy_ratio
++            ),
++            "overall_redundancy_ratio": float(
++                self.overall_redundancy_ratio
++            ),
++            "redundancy_rounding": "exact_rational_groups",
++            "tail_policy": "best_effort_source_without_repair",
++            "block_source_packets": int(self.block_source_packets),
++            "num_blocks": int(len(self.blocks)),
++            "num_protected_blocks": int(self.num_protected_blocks),
++            "num_tail_blocks": int(self.num_tail_blocks),
++            "source_packet_bytes": int(self.source_packet_bytes),
++            "wire_packet_bytes": int(self.wire_packet_bytes),
++            "metadata_bytes_per_packet": int(
++                self.wire_packet_bytes - self.source_packet_bytes
++            ),
++            "metadata_bytes": int(self.metadata_bytes),
++            "budget_bytes": float(self.budget_bytes),
++            "actual_transmitted_bytes": int(self.actual_transmitted_bytes),
++            "unused_budget_bytes": float(self.unused_budget_bytes),
++        }
++        if include_blocks:
++            result["blocks"] = block_records
++        return result
++
++
++@dataclass
++class PriorityBlockFECDecodeResult:
++    recovered_packets: torch.Tensor
++    recovered_source_mask: torch.Tensor
++    direct_received_source_mask: torch.Tensor
++    fec_recovered_source_mask: torch.Tensor
++    missing_source_mask: torch.Tensor
++    receive_mask: torch.Tensor
++    loss_mask: torch.Tensor
++    fec_type: str = "raptorq"
++    info: Dict[str, Any] = field(default_factory=dict)
++
++    @property
++    def num_source_packets(self) -> int:
++        return int(self.recovered_packets.shape[0])
++
++    @property
++    def num_encoded_packets(self) -> int:
++        return int(self.receive_mask.numel())
++
++    @property
++    def num_recovered_source_packets(self) -> int:
++        return int(self.recovered_source_mask.sum().item())
++
++    @property
++    def num_direct_received_source_packets(self) -> int:
++        return int(self.direct_received_source_mask.sum().item())
++
++    @property
++    def num_fec_recovered_source_packets(self) -> int:
++        return int(self.fec_recovered_source_mask.sum().item())
++
++    @property
++    def num_missing_source_packets(self) -> int:
++        return int(self.missing_source_mask.sum().item())
++
++    @property
++    def full_recovery(self) -> bool:
++        return bool(self.recovered_source_mask.all().item())
++
++    @property
++    def recovery_ratio(self) -> float:
++        return float(
++            self.num_recovered_source_packets / max(1, self.num_source_packets)
++        )
++
++    def as_dict(self) -> Dict[str, Any]:
++        return {
++            "fec_type": self.fec_type,
++            "num_source_packets": int(self.num_source_packets),
++            "num_encoded_packets": int(self.num_encoded_packets),
++            "num_received_encoded_packets": int(self.receive_mask.sum().item()),
++            "num_lost_encoded_packets": int(self.loss_mask.sum().item()),
++            "num_recovered_source_packets": int(
++                self.num_recovered_source_packets
++            ),
++            "num_direct_received_source_packets": int(
++                self.num_direct_received_source_packets
++            ),
++            "num_fec_recovered_source_packets": int(
++                self.num_fec_recovered_source_packets
++            ),
++            "num_missing_source_packets": int(
++                self.num_missing_source_packets
++            ),
++            "full_recovery": bool(self.full_recovery),
++            "recovery_ratio": float(self.recovery_ratio),
++            "info": dict(self.info),
++        }
++
++
++class PriorityBlockFECTransport:
++    def __init__(
++        self,
++        source_packet_bytes: int = 1024,
++        block_source_packets: int = 20,
++    ):
++        self.source_packet_bytes = int(source_packet_bytes)
++        self.block_source_packets = int(block_source_packets)
++        if self.source_packet_bytes <= 0:
++            raise ValueError("source_packet_bytes must be positive")
++        if self.block_source_packets <= 0:
++            raise ValueError("block_source_packets must be positive")
++        self.codec = RaptorQBlockCodec(self.source_packet_bytes)
++
++    @property
++    def wire_packet_bytes(self) -> int:
++        return self.codec.wire_packet_bytes
++
++    def encode_under_budget(
++        self,
++        source_packets: torch.Tensor,
++        budget_bytes: float,
++        redundancy_ratio: float,
++    ) -> PriorityBlockFECPlan:
++        if not torch.is_tensor(source_packets) or source_packets.dim() != 2:
++            raise ValueError("source_packets must have shape [K, packet_bytes]")
++        if int(source_packets.shape[1]) != self.source_packet_bytes:
++            raise ValueError("source packet width does not match transport config")
++        budget_bytes = float(budget_bytes)
++        if not math.isfinite(budget_bytes) or budget_bytes < 0.0:
++            raise ValueError("budget_bytes must be finite and non-negative")
++        redundancy_ratio = float(redundancy_ratio)
++        if not math.isfinite(redundancy_ratio) or redundancy_ratio <= 0.0:
++            raise ValueError("Block RaptorQ transport requires rho > 0")
++
++        total_source = int(source_packets.shape[0])
++        remaining_slots = int(math.floor(budget_bytes / self.wire_packet_bytes))
++        source_cursor = 0
++        encoded_cursor = 0
++        encoded_rows = []
++        blocks: List[ScheduledRaptorQBlock] = []
++        source_positions: List[int] = []
++        repair_positions: List[int] = []
++
++        protected_blocks, tail_source_packets = plan_exact_protected_prefix(
++            total_source_packets=total_source,
++            wire_packet_slots=remaining_slots,
++            block_source_packets=self.block_source_packets,
++            rho=redundancy_ratio,
++        )
++        for k in protected_blocks:
++            p = exact_repair_packets_for_block(k, redundancy_ratio)
++            block_id = len(blocks)
++            encoded = self.codec.encode_block(
++                source_packets=source_packets[source_cursor:source_cursor + k],
++                num_repair_packets=p,
++                block_id=block_id,
++            )
++            n = encoded.num_encoded_packets
++            if n != k + p or n > remaining_slots:
++                raise RuntimeError("RaptorQ block violates admission plan")
++
++            encoded_rows.append(encoded.wire_packets)
++            source_positions.extend(range(encoded_cursor, encoded_cursor + k))
++            repair_positions.extend(
++                range(encoded_cursor + k, encoded_cursor + n)
++            )
++            blocks.append(ScheduledRaptorQBlock(
++                block_id=block_id,
++                role="protected",
++                global_source_start=source_cursor,
++                encoded_start=encoded_cursor,
++                encoded_end=encoded_cursor + n,
++                encoded=encoded,
++            ))
++            source_cursor += k
++            encoded_cursor += n
++            remaining_slots -= n
++
++        protected_source_end = source_cursor
++
++        # An incomplete exact-ratio group is not over-protected. Remaining
++        # packet slots carry the next lower-priority source symbols without
++        # repair, preserving payload coverage and the selected prefix order.
++        tail_remaining = int(tail_source_packets)
++        while tail_remaining > 0:
++            k = min(
++                tail_remaining,
++                self.block_source_packets,
++            )
++            if k <= 0:
++                break
++            block_id = len(blocks)
++            encoded = self.codec.encode_block(
++                source_packets=source_packets[source_cursor:source_cursor + k],
++                num_repair_packets=0,
++                block_id=block_id,
++            )
++            n = encoded.num_encoded_packets
++            if n != k or n > remaining_slots:
++                raise RuntimeError("RaptorQ tail block violates admission plan")
++
++            encoded_rows.append(encoded.wire_packets)
++            source_positions.extend(range(encoded_cursor, encoded_cursor + k))
++            blocks.append(ScheduledRaptorQBlock(
++                block_id=block_id,
++                role="best_effort_tail",
++                global_source_start=source_cursor,
++                encoded_start=encoded_cursor,
++                encoded_end=encoded_cursor + n,
++                encoded=encoded,
++            ))
++            source_cursor += k
++            encoded_cursor += n
++            remaining_slots -= n
++            tail_remaining -= k
++
++        if encoded_rows:
++            wire_packets = torch.cat(encoded_rows, dim=0)
++        else:
++            wire_packets = torch.empty(
++                (0, self.wire_packet_bytes),
++                dtype=torch.uint8,
++                device=source_packets.device,
++            )
++        admitted = torch.zeros(
++            total_source,
++            dtype=torch.bool,
++            device=source_packets.device,
++        )
++        admitted[:source_cursor] = True
++        protected = torch.zeros_like(admitted)
++        protected[:protected_source_end] = True
++        tail = admitted & ~protected
++        return PriorityBlockFECPlan(
++            source_packets=source_packets,
++            wire_packets=wire_packets,
++            blocks=blocks,
++            admitted_source_mask=admitted,
++            protected_source_mask=protected,
++            tail_source_mask=tail,
++            source_wire_positions=torch.tensor(
++                source_positions,
++                dtype=torch.long,
++                device=source_packets.device,
++            ),
++            repair_wire_positions=torch.tensor(
++                repair_positions,
++                dtype=torch.long,
++                device=source_packets.device,
++            ),
++            budget_bytes=budget_bytes,
++            source_packet_bytes=self.source_packet_bytes,
++            wire_packet_bytes=self.wire_packet_bytes,
++            redundancy_ratio=redundancy_ratio,
++            block_source_packets=self.block_source_packets,
++        )
++
++    def decode(
++        self,
++        plan: PriorityBlockFECPlan,
++        receive_mask: torch.Tensor,
++        fill_value: int = 0,
++    ) -> PriorityBlockFECDecodeResult:
++        receive_mask = torch.as_tensor(
++            receive_mask,
++            dtype=torch.bool,
++            device=plan.wire_packets.device,
++        ).flatten()
++        if int(receive_mask.numel()) != plan.num_encoded_packets:
++            raise ValueError("Block transport receive mask length mismatch")
++
++        recovered = torch.full_like(plan.source_packets, int(fill_value))
++        direct = torch.zeros(
++            plan.num_source_packets,
++            dtype=torch.bool,
++            device=recovered.device,
++        )
++        fec_recovered = torch.zeros_like(direct)
++        block_records = []
++
++        for scheduled in plan.blocks:
++            local_receive = receive_mask[
++                scheduled.encoded_start:scheduled.encoded_end
++            ]
++            local = self.codec.decode_block(
++                scheduled.encoded,
++                receive_mask=local_receive,
++                fill_value=fill_value,
++            )
++            start = scheduled.global_source_start
++            end = start + scheduled.num_source_packets
++            recovered[start:end] = local.recovered_packets
++            direct[start:end] = local.direct_received_source_mask
++            fec_recovered[start:end] = local.fec_recovered_source_mask
++            block_records.append({
++                "block_id": int(scheduled.block_id),
++                "block_role": str(scheduled.role),
++                "num_source_packets": int(scheduled.num_source_packets),
++                "num_repair_packets": int(scheduled.num_repair_packets),
++                "num_received_encoded_packets": int(local_receive.sum().item()),
++                "num_direct_received_source_packets": int(
++                    local.direct_received_source_mask.sum().item()
++                ),
++                "num_fec_recovered_source_packets": int(
++                    local.fec_recovered_source_mask.sum().item()
++                ),
++                "full_recovery": bool(local.full_recovery),
++            })
++
++        recovered_mask = direct | fec_recovered
++        return PriorityBlockFECDecodeResult(
++            recovered_packets=recovered,
++            recovered_source_mask=recovered_mask,
++            direct_received_source_mask=direct,
++            fec_recovered_source_mask=fec_recovered,
++            missing_source_mask=~recovered_mask,
++            receive_mask=receive_mask,
++            loss_mask=~receive_mask,
++            info={
++                "codec": "raptorq",
++                "standard": "RFC6330",
++                "scheduling": SCHEDULING_MODE,
++                "redundancy_policy": REDUNDANCY_POLICY,
++                "blocks": block_records,
++            },
++        )
+diff --git a/opencood/comm/fec/__init__.py b/opencood/comm/fec/__init__.py
+index 9a0682b..3b7834f 100644
+--- a/opencood/comm/fec/__init__.py
++++ b/opencood/comm/fec/__init__.py
+@@ -20,6 +20,9 @@ Planned modules:
+    Raptor / fountain-code style abstract simulation.
+    This is a recovery-threshold simulator, not a real Raptor codec.
+ 
++5. fec_raptorq.py
++   RFC 6330 RaptorQ adapter backed by the pinned ``raptorq`` package.
++
+ Design note:
+     Keep this __init__.py lightweight.
+ 
+@@ -40,6 +43,7 @@ FEC_TYPE_NONE = "none"
+ FEC_TYPE_XOR = "xor"
+ FEC_TYPE_RAPTOR_SIM = "raptor_sim"
+ FEC_TYPE_RAPTOR = "raptor"
++FEC_TYPE_RAPTORQ = "raptorq"
+ 
+ DEFAULT_FEC_TYPE = FEC_TYPE_NONE
+ DEFAULT_REDUNDANCY_RATIO = 0.0
+@@ -51,9 +55,12 @@ VALID_FEC_TYPES = (
+     FEC_TYPE_XOR,
+     FEC_TYPE_RAPTOR_SIM,
+     FEC_TYPE_RAPTOR,
++    FEC_TYPE_RAPTORQ,
+ )
+ 
+ CANONICAL_FEC_TYPE = {
++    # Preserve legacy experiment semantics. Standard RFC 6330 RaptorQ must
++    # always be requested explicitly as ``raptorq``.
+     FEC_TYPE_RAPTOR: FEC_TYPE_RAPTOR_SIM,
+ }
+ 
+@@ -77,13 +84,13 @@ def normalize_fec_type(fec_type: Optional[str] = None) -> str:
+             none
+             xor
+             raptor_sim
+-            raptor
++            raptor / raptorq
+ 
+     Returns
+     -------
+     str
+         Canonical FEC type.
+-        "raptor" is mapped to "raptor_sim".
++        "raptor" is retained as a compatibility alias for "raptor_sim".
+ 
+     Raises
+     ------
+@@ -289,7 +296,7 @@ def estimate_parity_packets(
+         group_size = normalize_group_size(group_size)
+         return int(math.ceil(k / group_size))
+ 
+-    if fec_type == FEC_TYPE_RAPTOR_SIM:
++    if fec_type in (FEC_TYPE_RAPTOR_SIM, FEC_TYPE_RAPTORQ):
+         return int(math.ceil(k * redundancy_ratio))
+ 
+     raise ValueError(f"Unsupported canonical FEC type: {fec_type}")
+@@ -550,6 +557,7 @@ __all__ = [
+     "FEC_TYPE_XOR",
+     "FEC_TYPE_RAPTOR_SIM",
+     "FEC_TYPE_RAPTOR",
++    "FEC_TYPE_RAPTORQ",
+     "DEFAULT_FEC_TYPE",
+     "DEFAULT_REDUNDANCY_RATIO",
+     "DEFAULT_XOR_GROUP_SIZE",
+@@ -570,4 +578,4 @@ __all__ = [
+     "get_fec_config_summary",
+     "loss_mask_to_receive_mask",
+     "receive_mask_to_loss_mask",
+-]
+\ No newline at end of file
++]
+diff --git a/opencood/comm/fec/fec_raptorq.py b/opencood/comm/fec/fec_raptorq.py
+new file mode 100644
+index 0000000..cf5b961
+--- /dev/null
++++ b/opencood/comm/fec/fec_raptorq.py
+@@ -0,0 +1,295 @@
++"""RFC 6330 RaptorQ codec adapter used by GRACE block transport.
++
++The external ``raptorq`` package performs the standardized codec work.  This
++module only converts between PyTorch packet tensors and serialized RaptorQ
++encoding packets.  It deliberately does not make scheduling or budget
++decisions.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Any, Dict, List, Optional
++
++import torch
++
++
++RAPTORQ_PAYLOAD_ID_BYTES = 4
++GRACE_BLOCK_ID_BYTES = 2
++GRACE_SOURCE_COUNT_BYTES = 2
++GRACE_BLOCK_HEADER_BYTES = (
++    GRACE_BLOCK_ID_BYTES + GRACE_SOURCE_COUNT_BYTES
++)
++
++
++def require_raptorq_backend():
++    try:
++        from raptorq import Decoder, Encoder
++    except ImportError as exc:
++        raise RuntimeError(
++            "RFC 6330 RaptorQ backend is unavailable. Install the pinned "
++            "Linux wheel with: pip install raptorq==1.6.3"
++        ) from exc
++    return Encoder, Decoder
++
++
++def _validate_source_packets(source_packets: torch.Tensor) -> torch.Tensor:
++    if not torch.is_tensor(source_packets):
++        raise TypeError("source_packets must be a torch.Tensor")
++    if source_packets.dim() != 2:
++        raise ValueError(
++            "RaptorQ source packets must have shape [K, symbol_bytes], got {}"
++            .format(tuple(source_packets.shape))
++        )
++    if source_packets.dtype != torch.uint8:
++        raise ValueError(
++            "RaptorQ source packets must use torch.uint8, got {}"
++            .format(source_packets.dtype)
++        )
++    if int(source_packets.shape[0]) <= 0:
++        raise ValueError("A RaptorQ source block must contain at least one packet")
++    if int(source_packets.shape[1]) <= 0:
++        raise ValueError("RaptorQ symbol size must be positive")
++    return source_packets
++
++
++def _row_to_bytes(row: torch.Tensor) -> bytes:
++    row = row.detach().to(device="cpu", dtype=torch.uint8).contiguous()
++    return row.numpy().tobytes()
++
++
++def _bytes_rows_to_tensor(rows: List[bytes], device: torch.device) -> torch.Tensor:
++    if not rows:
++        return torch.empty((0, 0), dtype=torch.uint8, device=device)
++    width = len(rows[0])
++    if any(len(row) != width for row in rows):
++        raise RuntimeError("RaptorQ produced variable-size encoding packets")
++    flat = torch.tensor(
++        list(b"".join(rows)),
++        dtype=torch.uint8,
++        device=device,
++    )
++    return flat.reshape(len(rows), width)
++
++
++@dataclass(frozen=True)
++class RaptorQEncodedBlock:
++    block_id: int
++    source_packets: torch.Tensor
++    wire_packets: torch.Tensor
++    num_repair_packets: int
++    source_symbol_bytes: int
++    grace_header_bytes: int = GRACE_BLOCK_HEADER_BYTES
++    raptorq_payload_id_bytes: int = RAPTORQ_PAYLOAD_ID_BYTES
++
++    @property
++    def num_source_packets(self) -> int:
++        return int(self.source_packets.shape[0])
++
++    @property
++    def num_encoded_packets(self) -> int:
++        return int(self.wire_packets.shape[0])
++
++    @property
++    def wire_packet_bytes(self) -> int:
++        return int(self.wire_packets.shape[1])
++
++    def as_dict(self) -> Dict[str, Any]:
++        return {
++            "block_id": int(self.block_id),
++            "codec": "raptorq",
++            "standard": "RFC6330",
++            "is_standard_raptorq": True,
++            "num_source_packets": int(self.num_source_packets),
++            "num_repair_packets": int(self.num_repair_packets),
++            "num_encoded_packets": int(self.num_encoded_packets),
++            "source_symbol_bytes": int(self.source_symbol_bytes),
++            "grace_header_bytes": int(self.grace_header_bytes),
++            "raptorq_payload_id_bytes": int(self.raptorq_payload_id_bytes),
++            "wire_packet_bytes": int(self.wire_packet_bytes),
++        }
++
++
++@dataclass
++class RaptorQBlockDecodeResult:
++    recovered_packets: torch.Tensor
++    direct_received_source_mask: torch.Tensor
++    fec_recovered_source_mask: torch.Tensor
++    recovered_source_mask: torch.Tensor
++    missing_source_mask: torch.Tensor
++    receive_mask: torch.Tensor
++    full_recovery: bool
++
++    @property
++    def num_fec_recovered_source_packets(self) -> int:
++        return int(self.fec_recovered_source_mask.sum().item())
++
++
++class RaptorQBlockCodec:
++    """Encode and decode one independent GRACE protection block."""
++
++    def __init__(self, source_symbol_bytes: int = 1024):
++        self.source_symbol_bytes = int(source_symbol_bytes)
++        if self.source_symbol_bytes <= 0 or self.source_symbol_bytes > 65535:
++            raise ValueError("source_symbol_bytes must be in [1, 65535]")
++
++    @property
++    def wire_packet_bytes(self) -> int:
++        return (
++            self.source_symbol_bytes
++            + RAPTORQ_PAYLOAD_ID_BYTES
++            + GRACE_BLOCK_HEADER_BYTES
++        )
++
++    def encode_block(
++        self,
++        source_packets: torch.Tensor,
++        num_repair_packets: int,
++        block_id: int,
++    ) -> RaptorQEncodedBlock:
++        source_packets = _validate_source_packets(source_packets)
++        if int(source_packets.shape[1]) != self.source_symbol_bytes:
++            raise ValueError(
++                "Source symbol width mismatch: expected {}, got {}"
++                .format(self.source_symbol_bytes, int(source_packets.shape[1]))
++            )
++        num_repair_packets = int(num_repair_packets)
++        if num_repair_packets < 0:
++            raise ValueError("num_repair_packets must be non-negative")
++        block_id = int(block_id)
++        if block_id < 0 or block_id > 65535:
++            raise ValueError("block_id must fit in two bytes")
++
++        Encoder, _ = require_raptorq_backend()
++        block_cpu = source_packets.detach().to(
++            device="cpu", dtype=torch.uint8
++        ).contiguous()
++        data = block_cpu.numpy().tobytes()
++        encoder = Encoder.with_defaults(data, self.source_symbol_bytes)
++        serialized_packets = list(
++            encoder.get_encoded_packets(num_repair_packets)
++        )
++
++        expected = int(source_packets.shape[0]) + num_repair_packets
++        if len(serialized_packets) != expected:
++            raise RuntimeError(
++                "RaptorQ backend partitioned a GRACE block unexpectedly: "
++                "expected {} packets, got {}. Reduce source_packets_per_block."
++                .format(expected, len(serialized_packets))
++            )
++
++        expected_rq_bytes = self.source_symbol_bytes + RAPTORQ_PAYLOAD_ID_BYTES
++        source_count = int(source_packets.shape[0])
++        if source_count > 65535:
++            raise ValueError("RaptorQ source_count must fit in two bytes")
++        block_header = (
++            block_id.to_bytes(GRACE_BLOCK_ID_BYTES, "big")
++            + source_count.to_bytes(GRACE_SOURCE_COUNT_BYTES, "big")
++        )
++        wire_rows = []
++        for packet in serialized_packets:
++            packet = bytes(packet)
++            if len(packet) != expected_rq_bytes:
++                raise RuntimeError(
++                    "Unexpected serialized RaptorQ packet size: expected {}, got {}"
++                    .format(expected_rq_bytes, len(packet))
++                )
++            wire_rows.append(block_header + packet)
++
++        wire_packets = _bytes_rows_to_tensor(
++            wire_rows,
++            device=source_packets.device,
++        )
++        return RaptorQEncodedBlock(
++            block_id=block_id,
++            source_packets=source_packets.clone(),
++            wire_packets=wire_packets,
++            num_repair_packets=num_repair_packets,
++            source_symbol_bytes=self.source_symbol_bytes,
++            grace_header_bytes=GRACE_BLOCK_HEADER_BYTES,
++        )
++
++    def decode_block(
++        self,
++        encoded_block: RaptorQEncodedBlock,
++        receive_mask: torch.Tensor,
++        fill_value: int = 0,
++    ) -> RaptorQBlockDecodeResult:
++        receive_mask = torch.as_tensor(
++            receive_mask,
++            dtype=torch.bool,
++            device=encoded_block.wire_packets.device,
++        ).flatten()
++        if int(receive_mask.numel()) != encoded_block.num_encoded_packets:
++            raise ValueError("RaptorQ block receive mask length mismatch")
++
++        k = encoded_block.num_source_packets
++        recovered = torch.full_like(encoded_block.source_packets, int(fill_value))
++        direct = torch.zeros(k, dtype=torch.bool, device=recovered.device)
++
++        for local_source_id in range(k):
++            if bool(receive_mask[local_source_id].item()):
++                row = encoded_block.wire_packets[local_source_id]
++                payload_start = (
++                    GRACE_BLOCK_HEADER_BYTES + RAPTORQ_PAYLOAD_ID_BYTES
++                )
++                recovered[local_source_id] = row[payload_start:]
++                direct[local_source_id] = True
++
++        _, Decoder = require_raptorq_backend()
++        decoder = Decoder.with_defaults(
++            k * self.source_symbol_bytes,
++            self.source_symbol_bytes,
++        )
++        decoded: Optional[bytes] = None
++        for encoded_id in range(encoded_block.num_encoded_packets):
++            if not bool(receive_mask[encoded_id].item()):
++                continue
++            wire = _row_to_bytes(encoded_block.wire_packets[encoded_id])
++            header_block_id = int.from_bytes(
++                wire[:GRACE_BLOCK_ID_BYTES], "big"
++            )
++            if header_block_id != encoded_block.block_id:
++                raise RuntimeError("RaptorQ block header mismatch")
++            source_count_start = GRACE_BLOCK_ID_BYTES
++            header_source_count = int.from_bytes(
++                wire[
++                    source_count_start:
++                    source_count_start + GRACE_SOURCE_COUNT_BYTES
++                ],
++                "big",
++            )
++            if header_source_count != k:
++                raise RuntimeError("RaptorQ source-count header mismatch")
++            decoded = decoder.decode(wire[GRACE_BLOCK_HEADER_BYTES:])
++            if decoded is not None:
++                break
++
++        fec_recovered = torch.zeros_like(direct)
++        if decoded is not None:
++            expected_bytes = k * self.source_symbol_bytes
++            decoded = bytes(decoded)
++            if len(decoded) != expected_bytes:
++                raise RuntimeError(
++                    "RaptorQ decoded length mismatch: expected {}, got {}"
++                    .format(expected_bytes, len(decoded))
++                )
++            decoded_tensor = torch.tensor(
++                list(decoded),
++                dtype=torch.uint8,
++                device=recovered.device,
++            ).reshape(k, self.source_symbol_bytes)
++            recovered.copy_(decoded_tensor)
++            fec_recovered = ~direct
++
++        recovered_mask = direct | fec_recovered
++        missing = ~recovered_mask
++        return RaptorQBlockDecodeResult(
++            recovered_packets=recovered,
++            direct_received_source_mask=direct,
++            fec_recovered_source_mask=fec_recovered,
++            recovered_source_mask=recovered_mask,
++            missing_source_mask=missing,
++            receive_mask=receive_mask,
++            full_recovery=bool(recovered_mask.all().item()),
++        )
+diff --git a/opencood/logs/main_opv2v_where2comm_grace_full/config.yaml b/opencood/logs/main_opv2v_where2comm_grace_full/config.yaml
+index cca7e32..d5a0235 100644
+--- a/opencood/logs/main_opv2v_where2comm_grace_full/config.yaml
++++ b/opencood/logs/main_opv2v_where2comm_grace_full/config.yaml
+@@ -182,7 +182,7 @@ model:
+       link_scope: non_ego
+       seed: 2026
+       action_space:
+-        type: no_fec_ablation
++        type: final_25_rfc6330
+         send:
+         - 0
+         - 1
+@@ -201,18 +201,27 @@ model:
+         - int4
+         rho:
+         - 0.0
++        - 0.1
++        - 0.25
++        - 0.6
+         redundancy_ratios:
+         - 0.0
++        - 0.1
++        - 0.25
++        - 0.6
+         cache:
+         - 0
+         - 1
+         cache_values:
+         - 0
+         - 1
+-        fec_main: raptor_sim
++        fec_main: raptorq
+         proposal_send_only: true
+         online_redundancy_ratios:
+         - 0.0
++        - 0.1
++        - 0.25
++        - 0.6
+         online_quant_modes:
+         - fp16
+         - int8
+@@ -324,6 +333,19 @@ model:
+         fec_type: none
+         redundancy_ratio: 0.0
+         apply_to: byte_stream_packets
++        default_type: raptorq
++        raptorq:
++          backend: raptorq
++          backend_version: "1.6.3"
++          standard: RFC6330
++          source_packets_per_block: 20
++          scheduling: exact_ratio_protected_prefix_with_best_effort_tail
++          redundancy_policy: exact_protected_prefix_with_best_effort_tail
++          tail_policy: best_effort_source_without_repair
++          grace_block_id_bytes: 2
++          grace_source_count_bytes: 2
++          raptorq_payload_id_bytes: 4
++          strict_backend: true
+       metrics:
+         save_frame_records: true
+         save_link_records: true
+diff --git a/scripts/preflight_grace_raptorq.py b/scripts/preflight_grace_raptorq.py
+new file mode 100644
+index 0000000..6180e2a
+--- /dev/null
++++ b/scripts/preflight_grace_raptorq.py
+@@ -0,0 +1,59 @@
++#!/usr/bin/env python
++from __future__ import annotations
++
++import json
++
++try:
++    from importlib.metadata import version
++except ImportError:  # Python 3.7
++    from importlib_metadata import version
++
++from opencood.comm.arce.policies.action_space import build_pdf_action_space
++from opencood.comm.fec.fec_raptorq import require_raptorq_backend
++
++
++def main() -> None:
++    require_raptorq_backend()
++    backend_version = version("raptorq")
++    if backend_version != "1.6.3":
++        raise RuntimeError(
++            "Expected raptorq==1.6.3, got {}".format(backend_version)
++        )
++
++    actions = build_pdf_action_space(
++        fec_mode="raptorq",
++        quant_modes=("fp16", "int8", "int4"),
++        redundancy_ratios=(0.0, 0.10, 0.25, 0.60),
++        cache_values=(0, 1),
++    )
++    if len(actions) != 25:
++        raise RuntimeError("Expected 25 online actions, got {}".format(len(actions)))
++    invalid = [
++        action.action_id
++        for action in actions
++        if float(action.redundancy_ratio) > 0.0
++        and str(action.fec_type) != "raptorq"
++    ]
++    if invalid:
++        raise RuntimeError("Non-RaptorQ redundant actions: {}".format(invalid))
++
++    print(json.dumps({
++        "pass": True,
++        "backend": "raptorq",
++        "backend_version": backend_version,
++        "standard": "RFC6330",
++        "action_count": len(actions),
++        "redundant_action_count": sum(
++            float(action.redundancy_ratio) > 0.0 for action in actions
++        ),
++        "scheduling": "exact_ratio_protected_prefix_with_best_effort_tail",
++        "redundancy_policy": (
++            "exact_protected_prefix_with_best_effort_tail"
++        ),
++        "source_symbol_bytes": 1024,
++        "wire_packet_bytes": 1032,
++    }, indent=2))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/scripts/test_grace_raptorq_planner_unit.py b/scripts/test_grace_raptorq_planner_unit.py
+new file mode 100644
+index 0000000..9735f42
+--- /dev/null
++++ b/scripts/test_grace_raptorq_planner_unit.py
+@@ -0,0 +1,88 @@
++#!/usr/bin/env python
++from __future__ import annotations
++
++import unittest
++from types import SimpleNamespace
++
++from opencood.comm.arce.policies.communication_cost_estimator import (
++    estimate_byte_stream_fec_cost,
++)
++from opencood.comm.arce.priority_block_fec_transport import (
++    exact_redundancy_group,
++    exact_repair_packets_for_block,
++    largest_exact_protected_source_block,
++    plan_exact_protected_prefix,
++)
++
++
++class RaptorQPlannerTest(unittest.TestCase):
++    def test_exact_packet_groups_match_configured_ratio(self):
++        self.assertEqual(exact_redundancy_group(0.10), (10, 1))
++        self.assertEqual(exact_redundancy_group(0.25), (4, 1))
++        self.assertEqual(exact_redundancy_group(0.60), (5, 3))
++        self.assertEqual(exact_repair_packets_for_block(20, 0.10), 2)
++        self.assertEqual(exact_repair_packets_for_block(20, 0.25), 5)
++        self.assertEqual(exact_repair_packets_for_block(20, 0.60), 12)
++
++    def test_block_admission_uses_only_complete_exact_groups(self):
++        self.assertEqual(
++            largest_exact_protected_source_block(12, 100, 20, 0.60),
++            5,
++        )
++        self.assertEqual(
++            largest_exact_protected_source_block(25, 100, 20, 0.25),
++            20,
++        )
++        self.assertEqual(
++            largest_exact_protected_source_block(10, 100, 20, 0.10),
++            0,
++        )
++
++    def test_non_integral_protection_block_is_rejected(self):
++        with self.assertRaises(ValueError):
++            exact_repair_packets_for_block(9, 0.25)
++        with self.assertRaises(ValueError):
++            exact_repair_packets_for_block(7, 0.60)
++
++    def test_bad_budget_uses_remaining_slots_for_source_tail(self):
++        expected = {
++            0.10: ([10], 1),
++            0.25: ([8], 2),
++            0.60: ([5], 4),
++        }
++        for rho, expected_plan in expected.items():
++            self.assertEqual(
++                plan_exact_protected_prefix(100, 12, 20, rho),
++                expected_plan,
++            )
++
++    def test_estimator_counts_rfc6330_wire_metadata(self):
++        action = SimpleNamespace(
++            is_no_send=False,
++            send=1,
++            quant_mode="int8",
++            fec_type="raptorq",
++            redundancy_ratio=0.25,
++        )
++        result = estimate_byte_stream_fec_cost(
++            feature_shape=(64, 320, 1),
++            action=action,
++            budget_bytes=62500.0,
++            packet_size_bytes=1024,
++            metadata_bytes_per_packet=0,
++            raw_feature_bytes_fp32_fn=lambda shape: float(
++                shape[0] * shape[1] * shape[2] * 4
++            ),
++            quant_ratio_to_fp32={"int8": 0.25},
++            raptorq_block_source_packets=20,
++            raptorq_metadata_bytes_per_packet=8,
++        )
++        self.assertEqual(result["fec_type"], "raptorq")
++        self.assertEqual(result["wire_packet_size_bytes"], 1032)
++        self.assertEqual(result["source_packets"], 20)
++        self.assertEqual(result["parity_packets"], 5)
++        self.assertEqual(result["encoded_packets"], 25)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/scripts/test_grace_raptorq_transport.py b/scripts/test_grace_raptorq_transport.py
+new file mode 100644
+index 0000000..492e1c9
+--- /dev/null
++++ b/scripts/test_grace_raptorq_transport.py
+@@ -0,0 +1,134 @@
++#!/usr/bin/env python
++from __future__ import annotations
++
++import unittest
++
++import torch
++
++from opencood.comm.arce.priority_block_fec_transport import (
++    PriorityBlockFECTransport,
++)
++from opencood.comm.fec.fec_raptorq import (
++    GRACE_BLOCK_HEADER_BYTES,
++    RAPTORQ_PAYLOAD_ID_BYTES,
++    RaptorQBlockCodec,
++    require_raptorq_backend,
++)
++
++
++def source_packets(count: int, width: int = 1024) -> torch.Tensor:
++    values = torch.arange(count * width, dtype=torch.int64) % 251
++    return values.to(torch.uint8).reshape(count, width)
++
++
++class RaptorQTransportTest(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        require_raptorq_backend()
++
++    def test_systematic_packets_preserve_source_order(self):
++        source = source_packets(20)
++        encoded = RaptorQBlockCodec(1024).encode_block(source, 5, block_id=3)
++        self.assertEqual(tuple(encoded.wire_packets.shape), (25, 1032))
++        payload_start = GRACE_BLOCK_HEADER_BYTES + RAPTORQ_PAYLOAD_ID_BYTES
++        self.assertTrue(torch.equal(
++            encoded.wire_packets[:20, payload_start:],
++            source,
++        ))
++
++    def test_rfc6330_recovers_lost_source_symbols_exactly(self):
++        source = source_packets(20)
++        codec = RaptorQBlockCodec(1024)
++        encoded = codec.encode_block(source, 12, block_id=0)
++        receive = torch.ones(encoded.num_encoded_packets, dtype=torch.bool)
++        receive[1] = False
++        receive[7] = False
++        result = codec.decode_block(encoded, receive)
++        self.assertTrue(result.full_recovery)
++        self.assertTrue(torch.equal(result.recovered_packets, source))
++        self.assertEqual(result.num_fec_recovered_source_packets, 2)
++
++    def test_priority_blocks_share_budget_with_repair_packets(self):
++        source = source_packets(100)
++        transport = PriorityBlockFECTransport(
++            source_packet_bytes=1024,
++            block_source_packets=20,
++        )
++        budget = 38 * transport.wire_packet_bytes
++        plan = transport.encode_under_budget(source, budget, 0.25)
++
++        self.assertEqual(plan.actual_transmitted_bytes, budget)
++        self.assertEqual(plan.num_protected_source_packets, 28)
++        self.assertEqual(plan.num_tail_source_packets, 3)
++        self.assertEqual(plan.num_admitted_source_packets, 31)
++        self.assertEqual(plan.num_repair_packets, 7)
++        self.assertEqual(len(plan.blocks), 3)
++        self.assertEqual(plan.num_protected_blocks, 2)
++        self.assertEqual(plan.num_tail_blocks, 1)
++        self.assertEqual(
++            [block.role for block in plan.blocks],
++            ["protected", "protected", "best_effort_tail"],
++        )
++        self.assertAlmostEqual(plan.protected_redundancy_ratio, 0.25)
++        self.assertAlmostEqual(plan.overall_redundancy_ratio, 7.0 / 31.0)
++        self.assertEqual(
++            plan.source_wire_positions.tolist(),
++            list(range(20)) + list(range(25, 33)) + list(range(35, 38)),
++        )
++        self.assertEqual(
++            plan.repair_wire_positions.tolist(),
++            list(range(20, 25)) + list(range(33, 35)),
++        )
++
++        receive = torch.ones(plan.num_encoded_packets, dtype=torch.bool)
++        receive[0] = False
++        receive[25] = False
++        receive[35] = False
++        decoded = transport.decode(plan, receive)
++        self.assertTrue(torch.equal(decoded.recovered_packets[:28], source[:28]))
++        self.assertTrue(decoded.recovered_source_mask[:28].all().item())
++        self.assertFalse(decoded.recovered_source_mask[28].item())
++        self.assertTrue(decoded.recovered_source_mask[29:31].all().item())
++        self.assertFalse(decoded.recovered_source_mask[31:].any().item())
++
++    def test_bad_budget_keeps_exact_protection_and_uses_tail_slots(self):
++        source = source_packets(100)
++        transport = PriorityBlockFECTransport(1024, 20)
++        budget = 12 * transport.wire_packet_bytes
++        expected = {
++            0.10: (10, 1, 1),
++            0.25: (8, 2, 2),
++            0.60: (5, 4, 3),
++        }
++        for rho, (protected, tail, repair) in expected.items():
++            plan = transport.encode_under_budget(source, budget, rho)
++            self.assertEqual(plan.num_protected_source_packets, protected)
++            self.assertEqual(plan.num_tail_source_packets, tail)
++            self.assertEqual(plan.num_repair_packets, repair)
++            self.assertEqual(plan.num_encoded_packets, 12)
++            self.assertAlmostEqual(plan.protected_redundancy_ratio, rho)
++            self.assertLess(plan.overall_redundancy_ratio, rho)
++
++    def test_markov_budgets_are_hard_upper_bounds(self):
++        source = source_packets(1000)
++        transport = PriorityBlockFECTransport(1024, 20)
++        for budget in (337500.0, 62500.0, 12500.0):
++            for rho in (0.10, 0.25, 0.60):
++                plan = transport.encode_under_budget(source, budget, rho)
++                self.assertLessEqual(plan.actual_transmitted_bytes, budget)
++                self.assertGreater(plan.num_repair_packets, 0)
++                self.assertEqual(
++                    plan.num_encoded_packets,
++                    plan.num_admitted_source_packets + plan.num_repair_packets,
++                )
++                self.assertAlmostEqual(
++                    plan.protected_redundancy_ratio,
++                    rho,
++                )
++                self.assertLessEqual(plan.overall_redundancy_ratio, rho)
++                self.assertTrue(plan.admitted_source_mask[:plan.num_admitted_source_packets].all())
++                self.assertFalse(plan.admitted_source_mask[plan.num_admitted_source_packets:].any())
++
++
++if __name__ == "__main__":
++    unittest.main()

@@ -130,6 +130,11 @@ class RoCooperComm(nn.Module):
 
         self.return_masks = bool(self.cfg.get("return_masks", False))
 
+        # Measurement-only wire accounting. This does not alter impairment.
+        wire_cfg = self.cfg.get("wire_audit", {}) or {}
+        self.wire_packet_size_bytes = max(1, int(wire_cfg.get("packet_size_bytes", 1024)))
+        self.wire_bytes_per_value = int(wire_cfg.get("bytes_per_value", 0))
+
         # Channel fading config
         self.channel_cfg = self.cfg.get("channel_fading", {}) or {}
         self.channel_enabled = bool(self.channel_cfg.get("enabled", False))
@@ -257,6 +262,21 @@ class RoCooperComm(nn.Module):
         x, bandwidth_info = self._apply_bandwidth_limit(x, impair_mask)
         comm_info.update(bandwidth_info)
 
+        wire_records = self._build_wire_records(
+            features=features,
+            record_len_list=record_len_list,
+            bandwidth_info=bandwidth_info,
+            beyond_range_mask=beyond_range_mask,
+        )
+        comm_info["wire_records"] = wire_records
+        comm_info["source_payload_bytes"] = int(sum(
+            int(r.get("source_payload_bytes", 0)) for r in wire_records
+        ))
+        comm_info["transmitted_wire_bytes"] = int(sum(
+            int(r.get("transmitted_wire_bytes", 0)) for r in wire_records
+        ))
+        comm_info["received_wire_bytes"] = None
+
         # --------------------------------------------------------------
         # 2. Wireless channel fading + AWGN
         # --------------------------------------------------------------
@@ -297,6 +317,88 @@ class RoCooperComm(nn.Module):
             comm_info["num_beyond_range_dropped"] = 0
 
         return x, comm_info
+
+    def _build_wire_records(
+        self,
+        features: torch.Tensor,
+        record_len_list: List[int],
+        bandwidth_info: Dict[str, Any],
+        beyond_range_mask: torch.Tensor,
+    ) -> List[Dict[str, Any]]:
+        """Build per-link pre-loss wire records for the current RoCooper model.
+
+        Resolution-reduction events transmit the low-resolution tensor; fading,
+        block loss, delay, and frame drop happen after bytes enter the link and
+        therefore do not reduce transmitted_wire_bytes.
+        """
+        if features.dim() != 4:
+            return []
+        _, channels, height, width = features.shape
+        bytes_per_value = (
+            int(self.wire_bytes_per_value)
+            if int(self.wire_bytes_per_value) > 0
+            else int(features.element_size())
+        )
+        event_indices = set(int(v) for v in bandwidth_info.get(
+            "bandwidth_event_indices", []
+        ))
+        low_h = int(bandwidth_info.get("bandwidth_low_height", height))
+        low_w = int(bandwidth_info.get("bandwidth_low_width", width))
+
+        records: List[Dict[str, Any]] = []
+        global_idx = 0
+        for batch_idx, cav_num in enumerate(record_len_list):
+            for local_idx in range(int(cav_num)):
+                idx = global_idx + local_idx
+                if local_idx == 0 and not self.impair_ego:
+                    continue
+                source_payload = int(channels * height * width * bytes_per_value)
+                dropped_by_range = bool(
+                    torch.is_tensor(beyond_range_mask)
+                    and idx < beyond_range_mask.numel()
+                    and bool(beyond_range_mask[idx].item())
+                    and self.drop_beyond_range
+                )
+                if dropped_by_range:
+                    tx_payload = 0
+                elif idx in event_indices:
+                    tx_payload = int(channels * low_h * low_w * bytes_per_value)
+                else:
+                    tx_payload = source_payload
+                tx_packets = (
+                    int(math.ceil(tx_payload / float(self.wire_packet_size_bytes)))
+                    if tx_payload > 0 else 0
+                )
+                records.append({
+                    "batch": int(batch_idx),
+                    "cav": int(local_idx),
+                    "sender_id": int(local_idx),
+                    "global_idx": int(idx),
+                    "link_key": "b{}_cav{}".format(batch_idx, local_idx),
+                    "state": "rocooper_configured_channel",
+                    "kind": "rocooper_wire_audit",
+                    "source_payload_bytes": source_payload,
+                    "tx_payload_bytes": tx_payload,
+                    "packet_size_bytes": int(self.wire_packet_size_bytes),
+                    "num_source_packets": (
+                        int(math.ceil(source_payload / float(self.wire_packet_size_bytes)))
+                        if source_payload > 0 else 0
+                    ),
+                    "num_transmitted_packets": tx_packets,
+                    "transmitted_wire_bytes": int(
+                        tx_packets * self.wire_packet_size_bytes
+                    ),
+                    "received_wire_bytes": None,
+                    "bandwidth_resolution_reduced": bool(idx in event_indices),
+                    "dropped_before_send_beyond_range": dropped_by_range,
+                    "channels": int(channels),
+                    "height": int(height),
+                    "width": int(width),
+                    "transmitted_height": int(low_h if idx in event_indices else height),
+                    "transmitted_width": int(low_w if idx in event_indices else width),
+                })
+            global_idx += int(cav_num)
+        return records
 
     # ------------------------------------------------------------------
     # Mode control
@@ -475,6 +577,9 @@ class RoCooperComm(nn.Module):
         info: Dict[str, Any] = {
             "bandwidth_enabled": enabled,
             "num_bandwidth_limited": 0,
+            "bandwidth_event_indices": [],
+            "bandwidth_low_height": int(x.shape[-2]),
+            "bandwidth_low_width": int(x.shape[-1]),
         }
 
         if not enabled:
@@ -540,6 +645,11 @@ class RoCooperComm(nn.Module):
         x[event_mask] = selected_restored
 
         info["num_bandwidth_limited"] = int(event_mask.sum().item())
+        info["bandwidth_event_indices"] = [
+            int(v) for v in torch.nonzero(event_mask, as_tuple=False).view(-1).detach().cpu().tolist()
+        ]
+        info["bandwidth_low_height"] = int(new_h)
+        info["bandwidth_low_width"] = int(new_w)
         info["bandwidth_prob_mean"] = mean
         info["bandwidth_prob_std"] = std
         info["bandwidth_compression_ratio"] = compression_ratio

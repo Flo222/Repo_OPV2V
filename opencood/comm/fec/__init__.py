@@ -20,6 +20,9 @@ Planned modules:
    Raptor / fountain-code style abstract simulation.
    This is a recovery-threshold simulator, not a real Raptor codec.
 
+5. fec_raptorq.py
+   RFC 6330 RaptorQ adapter backed by the pinned ``raptorq`` package.
+
 Design note:
     Keep this __init__.py lightweight.
 
@@ -40,6 +43,7 @@ FEC_TYPE_NONE = "none"
 FEC_TYPE_XOR = "xor"
 FEC_TYPE_RAPTOR_SIM = "raptor_sim"
 FEC_TYPE_RAPTOR = "raptor"
+FEC_TYPE_RAPTORQ = "raptorq"
 
 DEFAULT_FEC_TYPE = FEC_TYPE_NONE
 DEFAULT_REDUNDANCY_RATIO = 0.0
@@ -51,9 +55,12 @@ VALID_FEC_TYPES = (
     FEC_TYPE_XOR,
     FEC_TYPE_RAPTOR_SIM,
     FEC_TYPE_RAPTOR,
+    FEC_TYPE_RAPTORQ,
 )
 
 CANONICAL_FEC_TYPE = {
+    # Preserve legacy experiment semantics. Standard RFC 6330 RaptorQ must
+    # always be requested explicitly as ``raptorq``.
     FEC_TYPE_RAPTOR: FEC_TYPE_RAPTOR_SIM,
 }
 
@@ -77,13 +84,13 @@ def normalize_fec_type(fec_type: Optional[str] = None) -> str:
             none
             xor
             raptor_sim
-            raptor
+            raptor / raptorq
 
     Returns
     -------
     str
         Canonical FEC type.
-        "raptor" is mapped to "raptor_sim".
+        "raptor" is retained as a compatibility alias for "raptor_sim".
 
     Raises
     ------
@@ -289,7 +296,7 @@ def estimate_parity_packets(
         group_size = normalize_group_size(group_size)
         return int(math.ceil(k / group_size))
 
-    if fec_type == FEC_TYPE_RAPTOR_SIM:
+    if fec_type in (FEC_TYPE_RAPTOR_SIM, FEC_TYPE_RAPTORQ):
         return int(math.ceil(k * redundancy_ratio))
 
     raise ValueError(f"Unsupported canonical FEC type: {fec_type}")
@@ -550,6 +557,7 @@ __all__ = [
     "FEC_TYPE_XOR",
     "FEC_TYPE_RAPTOR_SIM",
     "FEC_TYPE_RAPTOR",
+    "FEC_TYPE_RAPTORQ",
     "DEFAULT_FEC_TYPE",
     "DEFAULT_REDUNDANCY_RATIO",
     "DEFAULT_XOR_GROUP_SIZE",

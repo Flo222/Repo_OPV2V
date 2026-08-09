@@ -6,28 +6,17 @@ import argparse
 import csv
 import json
 import os
-from typing import Any
 
 import torch
 from torch.utils.data import DataLoader
 
 import opencood.hypes_yaml.yaml_utils as yaml_utils
 from opencood.tools import train_utils
+from opencood.tools.arce_eval_runtime import set_deterministic_seed
+from opencood.tools.arce_reward_audit import save_reward_runtime_audit
 from opencood.data_utils.datasets import build_dataset
 from opencood.comm.arce.policies.communication_volume_summary import summarize_bw_records
 from opencood.tools.arce_bw_breakdown_utils import save_arce_bw_breakdown
-
-
-def move_to_cuda(x: Any):
-    if torch.is_tensor(x):
-        return x.cuda()
-    if isinstance(x, dict):
-        return {k: move_to_cuda(v) for k, v in x.items()}
-    if isinstance(x, list):
-        return [move_to_cuda(v) for v in x]
-    if isinstance(x, tuple):
-        return tuple(move_to_cuda(v) for v in x)
-    return x
 
 
 def write_csv(path: str, summary: dict) -> None:
@@ -52,119 +41,6 @@ def write_csv(path: str, summary: dict) -> None:
         writer.writerow({k: summary.get(k, "") for k in fields})
 
 
-def _safe_float(x: Any, default: float = 0.0) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return float(default)
-
-
-def _stats(values):
-    vals = []
-    for v in values:
-        try:
-            vals.append(float(v))
-        except Exception:
-            pass
-
-    if not vals:
-        return {"n": 0}
-
-    vals = sorted(vals)
-
-    def pct(q):
-        if len(vals) == 1:
-            return float(vals[0])
-        idx = int(round(float(q) * float(len(vals) - 1)))
-        idx = max(0, min(len(vals) - 1, idx))
-        return float(vals[idx])
-
-    return {
-        "n": int(len(vals)),
-        "min": float(vals[0]),
-        "p10": pct(0.10),
-        "p50": pct(0.50),
-        "p90": pct(0.90),
-        "max": float(vals[-1]),
-        "mean": float(sum(vals) / max(len(vals), 1)),
-        "pos": int(sum(1 for x in vals if x > 0.0)),
-        "neg": int(sum(1 for x in vals if x < 0.0)),
-        "zero": int(sum(1 for x in vals if x == 0.0)),
-    }
-
-
-def _compact_reward_update(update_index: int, update: dict) -> dict:
-    row = {
-        "update_index": int(update_index),
-        "collab_confidence": update.get("collab_confidence"),
-        "ego_confidence": update.get("ego_confidence"),
-        "delta_confidence": update.get("delta_confidence"),
-        "num_updated": update.get("num_updated"),
-        "num_send_updated": update.get("num_send_updated"),
-        "num_no_send_updated": update.get("num_no_send_updated"),
-        "mean_reward": update.get("mean_reward"),
-        "reward_delta_source": update.get("reward_delta_source"),
-        "delta_confidence_override": update.get("delta_confidence_override"),
-        "ap_proxy_delta": update.get("ap_proxy_delta"),
-        "reward_term_summary": update.get("reward_term_summary"),
-    }
-
-    delta_dbg = update.get("delta_ap_proxy_reward")
-    if isinstance(delta_dbg, dict):
-        row["delta_ap_proxy_used"] = delta_dbg.get("delta_ap_proxy_used")
-        row["delta_ap_proxy_source"] = delta_dbg.get("source")
-        row["delta_ap_hat"] = delta_dbg.get("delta_ap_hat")
-
-    ap_dbg = update.get("ap_proxy_reward")
-    if isinstance(ap_dbg, dict):
-        row["ap_proxy_used"] = ap_dbg.get("ap_proxy_used")
-        row["collab_confidence_source"] = ap_dbg.get("collab_confidence_source")
-
-    ego_dbg = update.get("ego_ap_proxy_reward")
-    if isinstance(ego_dbg, dict):
-        row["ego_ap_proxy_used"] = ego_dbg.get("ap_proxy_used")
-        row["ego_confidence_source"] = ego_dbg.get("collab_confidence_source")
-
-    return row
-
-
-def save_reward_runtime_audit(records, out_dir: Path, frame_count: int) -> dict:
-    rows = []
-    for rec in records:
-        if not isinstance(rec, dict):
-            continue
-        update = rec.get("reward_update")
-        if not isinstance(update, dict):
-            continue
-        rows.append(_compact_reward_update(len(rows), update))
-
-    summary = {
-        "frame_count": int(frame_count),
-        "reward_update_count": int(len(rows)),
-        "delta_confidence": _stats([r.get("delta_confidence") for r in rows]),
-        "mean_reward": _stats([r.get("mean_reward") for r in rows]),
-        "num_updated": _stats([r.get("num_updated") for r in rows]),
-        "num_send_updated": _stats([r.get("num_send_updated") for r in rows]),
-        "num_no_send_updated": _stats([r.get("num_no_send_updated") for r in rows]),
-    }
-
-    audit = {
-        "frame_count": int(frame_count),
-        "reward_update_count": int(len(rows)),
-        "summary": summary,
-        "rows": rows,
-    }
-
-    path = out_dir / "reward_runtime_audit.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(audit, f, indent=2, ensure_ascii=False)
-
-    return {
-        "reward_runtime_audit_json": str(path),
-        "reward_update_count": int(len(rows)),
-    }
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Summarize ARCE communication bandwidth from a model directory."
@@ -177,7 +53,9 @@ def main():
     parser.add_argument("--out_csv", default=None)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--progress_interval", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=2026)
     args = parser.parse_args()
+    set_deterministic_seed(args.seed)
 
     hypes = yaml_utils.load_yaml(os.path.join(args.model_dir, "config.yaml"))
     dataset = build_dataset(hypes, visualize=False, train=False)
@@ -189,7 +67,8 @@ def main():
         collate_fn=dataset.collate_batch_test,
     )
 
-    model = train_utils.create_model(hypes).cuda()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = train_utils.create_model(hypes).to(device)
     _, model = train_utils.load_saved_model(args.model_dir, model)
     model.eval()
 
@@ -207,7 +86,7 @@ def main():
             if max_frames is not None and i >= max_frames:
                 break
 
-            batch = move_to_cuda(batch)
+            batch = train_utils.to_device(batch, device)
             _ = model(batch["ego"])
             frame_count += 1
 

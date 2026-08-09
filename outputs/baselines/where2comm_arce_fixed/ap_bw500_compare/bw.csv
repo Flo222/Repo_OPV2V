@@ -1,2 +1,0 @@
-method,scenario,frame_count,record_count,transmitted_link_count,no_send_count,BW,bw_MB_per_frame,total_tx_MB,int4_count,packed_int4_count,all_int4_packed
-Where2Comm-ARCE-Fixed,Markov,500,823,823,0,0.047007744,0.047007744,23.503872,0,0,

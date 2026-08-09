@@ -92,7 +92,6 @@ from opencood.comm.arce.c2mab_common import (
     normalize_state_name as _normalize_state_name,
 )
 
-from opencood.comm.arce.policies.quant_quality import merge_quant_quality_prior
 
 
 
@@ -168,14 +167,24 @@ class ARCEC2MABComm:
         context_cfg = self.arce_cfg.get("context", {})
         self.include_cav_confidence = bool(context_cfg.get("include_cav_confidence", True))
         self.context_builder = PDFContextBuilder(
-            b_max_mbps=float(context_cfg.get("b_max_mbps", 27.0)),
+            b_max_mbps=float(
+                context_cfg.get(
+                    "b_max_mbps",
+                    context_cfg.get("normalize_bandwidth_by_mbps", 27.0),
+                )
+            ),
             stale_max_ms=float(
                 context_cfg.get(
                     "stale_max_ms",
-                    context_cfg.get("deadline_ms", 400.0),
+                    context_cfg.get(
+                        "normalize_delay_by_ms",
+                        context_cfg.get("deadline_ms", 400.0),
+                    ),
                 )
             ),
-            confidence_threshold=float(context_cfg.get("confidence_threshold", 0.3)),
+            confidence_threshold=float(
+                context_cfg.get("confidence_threshold", 0.3)
+            ),
             include_cav_confidence=self.include_cav_confidence,
         )
 
@@ -214,10 +223,7 @@ class ARCEC2MABComm:
         oracle_cfg = self.arce_cfg.get("ego_oracle", {})
         self.oracle = EgoGreedyKnapsackOracle(
             eps_cost=float(oracle_cfg.get("eps_cost", 1.0)),
-            lambda_comp=float(oracle_cfg.get("lambda_comp", 0.5)),
-            lambda_red=float(oracle_cfg.get("lambda_red", 0.5)),
             diversity_aware=bool(oracle_cfg.get("diversity_aware", True)),
-            cost_alpha=float(oracle_cfg.get("cost_alpha", self.arce_cfg.get("cost_alpha", 0.25))),
             min_marginal_coverage=float(
                 oracle_cfg.get(
                     "min_marginal_coverage",
@@ -243,12 +249,6 @@ class ARCEC2MABComm:
                 oracle_cfg.get("explore_warmup_pulls_per_cache", 4)
             ),
             explore_bonus=float(oracle_cfg.get("explore_bonus", 1.0)),
-            quant_quality_prior=merge_quant_quality_prior({
-                "quant_quality_prior": oracle_cfg.get(
-                    "quant_quality_prior",
-                    self.arce_cfg.get("quant_quality_prior", {}),
-                )
-            }),
         )
 
 
@@ -322,6 +322,17 @@ class ARCEC2MABComm:
                     0,
                 ),
             )
+        )
+        raptorq_cfg = (self.arce_cfg.get("fec", {}) or {}).get(
+            "raptorq", {}
+        ) or {}
+        self.raptorq_block_source_packets = int(
+            raptorq_cfg.get("source_packets_per_block", 20)
+        )
+        self.raptorq_metadata_bytes_per_packet = int(
+            raptorq_cfg.get("grace_block_id_bytes", 2)
+            + raptorq_cfg.get("grace_source_count_bytes", 2)
+            + raptorq_cfg.get("raptorq_payload_id_bytes", 4)
         )
 
 
@@ -544,6 +555,12 @@ class ARCEC2MABComm:
             raw_feature_bytes_fp32_fn=raw_feature_bytes_fp32,
             quant_ratio_to_fp32=QUANT_RATIO_TO_FP32,
             compact_token_info=first_compact_info,
+            raptorq_block_source_packets=int(
+                self.raptorq_block_source_packets
+            ),
+            raptorq_metadata_bytes_per_packet=int(
+                self.raptorq_metadata_bytes_per_packet
+            ),
         )
 
         predicted_allocated_budget = float(
@@ -568,6 +585,12 @@ class ARCEC2MABComm:
                 raw_feature_bytes_fp32_fn=raw_feature_bytes_fp32,
                 quant_ratio_to_fp32=QUANT_RATIO_TO_FP32,
                 compact_token_info=second_compact_info,
+                raptorq_block_source_packets=int(
+                    self.raptorq_block_source_packets
+                ),
+                raptorq_metadata_bytes_per_packet=int(
+                    self.raptorq_metadata_bytes_per_packet
+                ),
             )
 
             second_cost_info["compact_estimator_first_pass"] = dict(first_compact_info)
@@ -582,6 +605,21 @@ class ARCEC2MABComm:
             predicted_allocated_budget
         )
         return first_cost_info
+
+    def _decision_receiver_cache_context(
+        self,
+        batch_idx: Any,
+        ego_id: Any,
+        sender_idx: int,
+        ego_index: int,
+        frame_id: Any,
+    ) -> Dict[str, Any]:
+        return self.executor.receiver_cache_context(
+            link_id=(batch_idx, ego_id, int(sender_idx)),
+            agent_index=int(sender_idx),
+            ego_index=int(ego_index),
+            frame_id=frame_id,
+        )
 
     def _cache_quality(self, ego_id: Any, sender_id: Any) -> float:
         return cru_cache_quality(
@@ -815,7 +853,11 @@ class ARCEC2MABComm:
             runtime_message_masks = None
             runtime_priority_maps = None
 
-        proposals, no_send_candidates = build_c2mab_proposals(
+        (
+            proposals,
+            no_send_candidates,
+            decision_contexts,
+        ) = build_c2mab_proposals(
             features_shape=features.shape[1:],
             features=features,
             collaborator_indices=collaborator_indices,
@@ -848,7 +890,15 @@ class ARCEC2MABComm:
             sender_include_low_cost=bool(self.sender_include_low_cost),
             profile_for_state_fn=self._profile_for_state,
             profile_scalar_fn=_profile_scalar,
-            cache_quality_fn=self._cache_quality,
+            cache_quality_fn=lambda query_ego_id, query_sender_idx: (
+                self._decision_receiver_cache_context(
+                    batch_idx=batch_idx,
+                    ego_id=query_ego_id,
+                    sender_idx=int(query_sender_idx),
+                    ego_index=int(ego_index),
+                    frame_id=frame_id,
+                )
+            ),
             estimate_cost_fn=self._estimate_byte_stream_fec_cost,
             get_policy_fn=self.get_policy,
         )
@@ -924,6 +974,9 @@ class ARCEC2MABComm:
                     num_collaborators=int(num_collaborators),
                     ego_conf=float(ego_conf),
                     local_cav_confidences=local_cav_confidences,
+                    decision_context=decision_contexts.get(
+                        int(sender_idx)
+                    ),
                     context_builder=self.context_builder,
                     pending_reward=self.pending_reward,
                     make_no_send_record_fn=self._make_no_send_record,
@@ -997,6 +1050,64 @@ class ARCEC2MABComm:
                 link_budgets=link_budgets,
                 debug_records=bool(self.arce_cfg.get("debug_records", False)),
             )
+
+            decision_cache_fields = (
+                "decision_cache_available",
+                "decision_cache_status",
+                "decision_cache_valid_unit_ratio",
+                "decision_cache_num_valid_units",
+                "decision_cache_num_total_units",
+                "decision_cache_age_frames",
+                "decision_cache_age_norm",
+                "decision_cache_context_source",
+            )
+            for field_name in decision_cache_fields:
+                if field_name in selected.record:
+                    record[field_name] = selected.record[field_name]
+
+            context_obj = getattr(selected, "context", None)
+            context_vector = getattr(context_obj, "vector", None)
+            if context_vector is not None:
+                if hasattr(context_vector, "detach"):
+                    context_values = (
+                        context_vector.detach()
+                        .cpu()
+                        .flatten()
+                        .tolist()
+                    )
+                elif hasattr(context_vector, "tolist"):
+                    context_values = context_vector.tolist()
+                else:
+                    context_values = list(context_vector)
+
+                context_values = [
+                    float(value)
+                    for value in context_values
+                ]
+                record["decision_context_vector"] = context_values
+                record["decision_context_source"] = (
+                    "proposal_time_decision_context"
+                )
+
+                if len(context_values) > 4:
+                    record[
+                        "decision_context_cache_component"
+                    ] = float(context_values[4])
+
+                    expected_cache = float(
+                        record.get(
+                            "decision_cache_valid_unit_ratio",
+                            context_values[4],
+                        )
+                    )
+                    record[
+                        "decision_context_cache_matches_record"
+                    ] = bool(
+                        abs(
+                            float(context_values[4])
+                            - expected_cache
+                        ) <= 1e-9
+                    )
 
             tx_bytes = selected_transmitted_bytes(record, selected)
 

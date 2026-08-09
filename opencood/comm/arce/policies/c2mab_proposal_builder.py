@@ -42,12 +42,17 @@ def build_c2mab_proposals(
     sender_include_low_cost: bool,
     profile_for_state_fn: Callable[[str], Dict[str, Any]],
     profile_scalar_fn: Callable[[Any, float], float],
-    cache_quality_fn: Callable[[Any, Any], float],
+    cache_quality_fn: Callable[[Any, Any], Any],
     estimate_cost_fn: Callable[..., Dict[str, Any]],
     get_policy_fn: Callable[[Any, Any], Any],
-) -> Tuple[List[CAVProposal], Dict[int, PDFARCEAction]]:
+) -> Tuple[
+    List[CAVProposal],
+    Dict[int, PDFARCEAction],
+    Dict[int, Any],
+]:
     proposals: List[CAVProposal] = []
     no_send_candidates: Dict[int, PDFARCEAction] = {}
+    decision_contexts: Dict[int, Any] = {}
 
     for sender_idx in collaborator_indices:
         state_name = link_states.get(sender_idx, "medium")
@@ -66,7 +71,40 @@ def build_c2mab_proposals(
             profile.get("delay_ms", profile.get("fixed_delay_ms", 50.0)),
             50.0,
         )
-        cache_q = cache_quality_fn(ego_id, sender_idx)
+        cache_state_raw = cache_quality_fn(
+            ego_id,
+            sender_idx,
+        )
+        if isinstance(cache_state_raw, dict):
+            cache_state = copy.deepcopy(cache_state_raw)
+            cache_q = float(
+                cache_state.get(
+                    "cache_valid_unit_ratio",
+                    0.0,
+                )
+            )
+        else:
+            cache_q = float(cache_state_raw)
+            cache_state = {
+                "cache_available": bool(cache_q > 0.0),
+                "cache_status": "legacy_history_quality",
+                "cache_valid_unit_ratio": float(cache_q),
+                "cache_num_valid_units": 0,
+                "cache_num_total_units": 0,
+                "cache_age_frames": None,
+                "cache_age_norm": 0.0,
+                "cache_context_source":
+                    "legacy_last_receive_quality",
+            }
+
+        if not math.isfinite(cache_q):
+            raise ValueError(
+                "Decision Cache quality must be finite, got {}".format(
+                    cache_q
+                )
+            )
+
+        cache_q = max(0.0, min(1.0, cache_q))
 
         payload_context_cfg = (
             (arce_cfg.get("context", {}) or {}).get("payload_context", {}) or {}
@@ -145,6 +183,7 @@ def build_c2mab_proposals(
             complementarity=comp_norm,
             cav_confidence=float(cav_confidence_value),
         )
+        decision_contexts[int(sender_idx)] = context
 
         feasible = []
         for action in actions:
@@ -209,6 +248,49 @@ def build_c2mab_proposals(
                         "ego_confidence_source": str(ego_confidence_source),
                         "cav_confidence": float(cav_confidence_value),
                         "cav_confidence_source": str(cav_confidence_source),
+                        "decision_cache_available": bool(
+                            cache_state.get(
+                                "cache_available",
+                                False,
+                            )
+                        ),
+                        "decision_cache_status": str(
+                            cache_state.get(
+                                "cache_status",
+                                "unknown",
+                            )
+                        ),
+                        "decision_cache_valid_unit_ratio": float(
+                            cache_q
+                        ),
+                        "decision_cache_num_valid_units": int(
+                            cache_state.get(
+                                "cache_num_valid_units",
+                                0,
+                            )
+                        ),
+                        "decision_cache_num_total_units": int(
+                            cache_state.get(
+                                "cache_num_total_units",
+                                0,
+                            )
+                        ),
+                        "decision_cache_age_frames": cache_state.get(
+                            "cache_age_frames",
+                            None,
+                        ),
+                        "decision_cache_age_norm": float(
+                            cache_state.get(
+                                "cache_age_norm",
+                                0.0,
+                            )
+                        ),
+                        "decision_cache_context_source": str(
+                            cache_state.get(
+                                "cache_context_source",
+                                "unknown",
+                            )
+                        ),
                         "complementarity": float(comp_i_ego),
                         "complementarity_source": str(comp_source),
                         "complementarity_stats": copy.deepcopy(comp_stats),
@@ -285,4 +367,4 @@ def build_c2mab_proposals(
                 )
             )
 
-    return proposals, no_send_candidates
+    return proposals, no_send_candidates, decision_contexts

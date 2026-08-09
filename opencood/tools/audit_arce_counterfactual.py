@@ -62,6 +62,301 @@ warnings.filterwarnings(
 )
 
 
+RECEIVER_TRANSPORT_FEATURES = (
+    "rx_q_recv_unit",
+    "rx_q_cache_unit",
+    "rx_q_eff_unit",
+    "rx_q_recv_packet",
+    "rx_q_cache_packet",
+    "rx_q_eff_packet",
+    "rx_num_source_packets",
+    "rx_num_transmitted_source_packets",
+    "rx_num_source_dropped_by_budget",
+    "rx_num_received_packets",
+    "rx_num_direct_received_source_packets",
+    "rx_num_fec_recovered_source_packets",
+    "rx_num_missing_source_packets",
+    "rx_num_temporal_filled_packets",
+    "rx_num_zero_filled_packets",
+    "rx_num_total_units",
+    "rx_num_current_recovered_units",
+    "rx_num_temporal_filled_units",
+    "rx_num_effective_recovered_units",
+    "rx_cache_hit",
+    "rx_tx_source_ratio",
+    "rx_direct_receive_ratio",
+    "rx_effective_unit_ratio",
+)
+
+
+RUNTIME_CONTEXT_NAMES = (
+    "B_norm",
+    "p_loss",
+    "d_norm",
+    "ego_confidence",
+    "cache_quality",
+    "complementarity",
+    "cav_confidence",
+)
+
+RUNTIME_CONTEXT_CSV_FIELDS = (
+    "decision_context_available",
+    "decision_context_source",
+    "decision_context_B_norm",
+    "decision_context_p_loss",
+    "decision_context_d_norm",
+    "decision_context_ego_confidence",
+    "decision_context_cache_quality",
+    "decision_context_complementarity",
+    "decision_context_cav_confidence",
+    "update_context_available",
+    "update_context_B_norm",
+    "update_context_p_loss",
+    "update_context_d_norm",
+    "update_context_ego_confidence",
+    "update_context_cache_quality",
+    "update_context_complementarity",
+    "update_context_cav_confidence",
+    "decision_update_context_max_abs_diff",
+)
+
+
+def _context_from_vector(vector, source):
+    if not isinstance(vector, (list, tuple)) or len(vector) != 7:
+        return {
+            "available": False,
+            "source": str(source),
+            "vector": None,
+        }
+    values = [_finite_number(value, float("nan")) for value in vector]
+    if not all(math.isfinite(value) for value in values):
+        return {
+            "available": False,
+            "source": str(source),
+            "vector": None,
+        }
+    return {
+        "available": True,
+        "source": str(source),
+        "vector": list(values),
+        **dict(zip(RUNTIME_CONTEXT_NAMES, values)),
+    }
+
+
+def _decision_context_from_record(record):
+    """Extract the exact context attached to a scored send proposal."""
+    record = record if isinstance(record, dict) else {}
+    dc2mab = record.get("dc2mab")
+    dc2mab = dc2mab if isinstance(dc2mab, dict) else {}
+    proposal = dc2mab.get("proposal")
+    proposal = proposal if isinstance(proposal, dict) else {}
+    context = proposal.get("context")
+    context = context if isinstance(context, dict) else {}
+
+    vector = context.get("vector")
+    if not isinstance(vector, (list, tuple)):
+        if all(context.get(name) is not None for name in RUNTIME_CONTEXT_NAMES):
+            vector = [context[name] for name in RUNTIME_CONTEXT_NAMES]
+
+    return _context_from_vector(vector, "dc2mab.proposal.context")
+
+
+def _update_context_from_record(record, decision_context):
+    """Extract the context used for the reward update when it is recorded."""
+    record = record if isinstance(record, dict) else {}
+    vector = record.get("context_vector")
+    update = _context_from_vector(vector, "record.context_vector")
+    if update.get("available"):
+        return update
+    if isinstance(decision_context, dict) and decision_context.get("available"):
+        copied = copy.deepcopy(decision_context)
+        copied["source"] = "dc2mab.proposal.context"
+        return copied
+    return update
+
+
+def _flatten_runtime_contexts(row):
+    decision = row.get("decision_context")
+    decision = decision if isinstance(decision, dict) else {}
+    update = row.get("reward_update_context")
+    update = update if isinstance(update, dict) else {}
+
+    row["decision_context_available"] = bool(decision.get("available", False))
+    row["decision_context_source"] = str(decision.get("source", "missing"))
+    row["update_context_available"] = bool(update.get("available", False))
+
+    for name in RUNTIME_CONTEXT_NAMES:
+        row["decision_context_" + name] = decision.get(name)
+        row["update_context_" + name] = update.get(name)
+
+    if decision.get("available") and update.get("available"):
+        row["decision_update_context_max_abs_diff"] = max(
+            abs(float(a) - float(b))
+            for a, b in zip(decision["vector"], update["vector"])
+        )
+    else:
+        row["decision_update_context_max_abs_diff"] = None
+
+
+def _attach_group_decision_context(action_rows):
+    """Attach one action-independent decision context to all seven trials."""
+    candidates = [
+        row.get("decision_context")
+        for row in action_rows
+        if isinstance(row, dict)
+        and not bool(row.get("no_send", False))
+        and isinstance(row.get("decision_context"), dict)
+        and bool(row["decision_context"].get("available", False))
+    ]
+    if not candidates:
+        raise RuntimeError(
+            "No scored send proposal context was recorded for this seven-action group."
+        )
+
+    canonical = candidates[0]
+    for other in candidates[1:]:
+        max_diff = max(
+            abs(float(a) - float(b))
+            for a, b in zip(canonical["vector"], other["vector"])
+        )
+        if max_diff > 1e-9:
+            raise RuntimeError(
+                "Counterfactual send trials do not share one decision context: "
+                "max_abs_diff={}".format(max_diff)
+            )
+
+    for row in action_rows:
+        if not isinstance(row, dict) or row.get("error") is not None:
+            continue
+        row["decision_context"] = copy.deepcopy(canonical)
+        _flatten_runtime_contexts(row)
+
+
+def _finite_number(value, default=0.0):
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return result if math.isfinite(result) else float(default)
+
+
+def _first_number(candidates, default=0.0):
+    for mapping, key in candidates:
+        if isinstance(mapping, dict) and mapping.get(key) is not None:
+            return _finite_number(mapping.get(key), default)
+    return float(default)
+
+
+def _receiver_transport_features(record):
+    """Return post-action receiver measurements; never use as bandit context."""
+    record = record if isinstance(record, dict) else {}
+    quality = record.get("quality")
+    quality = quality if isinstance(quality, dict) else {}
+    packet = record.get("packet")
+    packet = packet if isinstance(packet, dict) else {}
+    partial = record.get("partial_reconstruction")
+    partial = partial if isinstance(partial, dict) else {}
+    temporal = partial.get("temporal_cache")
+    temporal = temporal if isinstance(temporal, dict) else {}
+
+    def pick(*candidates):
+        return _first_number(candidates, 0.0)
+
+    source_packets = pick(
+        (packet, "num_source_packets"),
+        (quality, "num_source_packets"),
+    )
+    transmitted_source = pick(
+        (packet, "num_transmitted_source_packets"),
+    )
+    direct_received = pick(
+        (packet, "num_direct_received_source_packets"),
+        (partial, "num_direct_received_packets"),
+    )
+    total_units = pick(
+        (temporal, "num_total_units"),
+    )
+    effective_units = pick(
+        (temporal, "num_effective_recovered_units"),
+        (partial, "num_effective_recovered_units"),
+    )
+
+    result = {
+        "rx_q_recv_unit": pick(
+            (quality, "q_recv_unit"),
+            (temporal, "q_recv_unit"),
+        ),
+        "rx_q_cache_unit": pick(
+            (quality, "q_cache_unit"),
+            (temporal, "q_cache_unit"),
+        ),
+        "rx_q_eff_unit": pick(
+            (quality, "q_eff_unit"),
+            (temporal, "q_eff_unit"),
+        ),
+        "rx_q_recv_packet": pick(
+            (quality, "q_recv_packet"),
+            (temporal, "q_recv_packet"),
+        ),
+        "rx_q_cache_packet": pick(
+            (quality, "q_cache_packet"),
+            (temporal, "q_cache_packet"),
+        ),
+        "rx_q_eff_packet": pick(
+            (quality, "q_eff_packet"),
+            (temporal, "q_eff_packet"),
+        ),
+        "rx_num_source_packets": source_packets,
+        "rx_num_transmitted_source_packets": transmitted_source,
+        "rx_num_source_dropped_by_budget": pick(
+            (packet, "num_source_dropped_by_budget"),
+        ),
+        "rx_num_received_packets": pick(
+            (packet, "num_received_packets"),
+        ),
+        "rx_num_direct_received_source_packets": direct_received,
+        "rx_num_fec_recovered_source_packets": pick(
+            (packet, "num_fec_recovered_source_packets"),
+            (partial, "num_fec_recovered_packets"),
+        ),
+        "rx_num_missing_source_packets": pick(
+            (packet, "num_missing_source_packets"),
+            (quality, "num_still_missing"),
+            (partial, "num_still_missing"),
+        ),
+        "rx_num_temporal_filled_packets": pick(
+            (quality, "num_temporal_filled_packets"),
+            (temporal, "num_temporal_filled_packets"),
+            (partial, "num_temporal_filled_packets"),
+        ),
+        "rx_num_zero_filled_packets": pick(
+            (partial, "num_zero_filled_packets"),
+        ),
+        "rx_num_total_units": total_units,
+        "rx_num_current_recovered_units": pick(
+            (temporal, "num_current_recovered_units"),
+            (partial, "num_current_recovered_units"),
+        ),
+        "rx_num_temporal_filled_units": pick(
+            (temporal, "num_temporal_filled_units"),
+            (partial, "num_temporal_filled_units"),
+        ),
+        "rx_num_effective_recovered_units": effective_units,
+        "rx_cache_hit": 1.0 if bool(temporal.get("cache_hit", False)) else 0.0,
+        "rx_tx_source_ratio": (
+            transmitted_source / source_packets if source_packets > 0.0 else 0.0
+        ),
+        "rx_direct_receive_ratio": (
+            direct_received / source_packets if source_packets > 0.0 else 0.0
+        ),
+        "rx_effective_unit_ratio": (
+            effective_units / total_units if total_units > 0.0 else 0.0
+        ),
+    }
+    return {name: _finite_number(result.get(name), 0.0)
+            for name in RECEIVER_TRANSPORT_FEATURES}
+
+
 def _core_model(model):
     return model.module if hasattr(model, "module") else model
 
@@ -606,7 +901,11 @@ def _write_proxy_dataset(
         + list(delta_decoded_feature_names())
         + list(PAIRED_DECODED_MATCH_FEATURES)
     )
-    feature_cols = head_feature_cols + decoded_feature_cols
+    feature_cols = (
+        head_feature_cols
+        + decoded_feature_cols
+        + list(RECEIVER_TRANSPORT_FEATURES)
+    )
     fieldnames = [
         "frame_idx",
         "sequence_id",
@@ -628,7 +927,7 @@ def _write_proxy_dataset(
         "proxy_delta_quality",
         "proxy_action_delta",
         "proxy_source",
-    ] + feature_cols
+    ] + list(RUNTIME_CONTEXT_CSV_FIELDS) + feature_cols
 
     rows = []
     for frame in frame_rows:
@@ -667,6 +966,8 @@ def _write_proxy_dataset(
                 "proxy_action_delta": action.get("proxy_action_delta"),
                 "proxy_source": action.get("proxy_source"),
             }
+            for name in RUNTIME_CONTEXT_CSV_FIELDS:
+                row[name] = action.get(name)
             for name in feature_cols:
                 row[name] = action.get(name)
             rows.append(row)
@@ -833,6 +1134,9 @@ def main():
                             if torch.is_tensor(pred_scores) else None
                         )
                         feature_delta = _feature_delta(output)
+                        decision_context = _decision_context_from_record(
+                            raw_target_record
+                        )
                         row = {
                             "action_id": str(action_id),
                             "executed_action_id": target_record.get("action_id"),
@@ -870,8 +1174,16 @@ def main():
                             ),
                             "psm": _tensor_summary(output.get("psm")),
                             "policy_update_applied": update.get("policy_update_applied"),
+                            "decision_context": decision_context,
+                            "reward_update_context": _update_context_from_record(
+                                raw_target_record,
+                                decision_context,
+                            ),
                         }
                         row.update(proxy_features)
+                        row.update(
+                            _receiver_transport_features(raw_target_record)
+                        )
                         row.update(
                             decoded_box_features(pred_boxes, pred_scores)
                         )
@@ -894,6 +1206,8 @@ def main():
                             "error": "{}: {}".format(type(exc).__name__, exc),
                         }
                     action_rows.append(row)
+
+                _attach_group_decision_context(action_rows)
 
                 no_send_id = next(
                     (

@@ -13,6 +13,8 @@ RUN_BW="${RUN_BW:-1}"
 MAX_FRAMES="${MAX_FRAMES:--1}"
 SCENARIO="${SCENARIO:-Markov}"
 PROGRESS_INTERVAL="${PROGRESS_INTERVAL:-50}"
+NUM_WORKERS="${NUM_WORKERS:-0}"
+SEED="${SEED:-2026}"
 SINGLE_PASS_AP_BW="${SINGLE_PASS_AP_BW:-1}"
 WINDOW_SIZE="${WINDOW_SIZE:-100}"
 WINDOW_STRIDE="${WINDOW_STRIDE:-100}"
@@ -23,8 +25,30 @@ export OUT_DIR
 export METHOD_NAME
 export MODEL_DIR
 export SCENARIO
+export RUN_AP
+export RUN_BW
+export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
+
+for flag_name in RUN_AP RUN_BW SINGLE_PASS_AP_BW GLOBAL_SORT_DETECTIONS; do
+  flag_value="${!flag_name}"
+  if [ "$flag_value" != "0" ] && [ "$flag_value" != "1" ]; then
+    echo "$flag_name must be 0 or 1, got: $flag_value" >&2
+    exit 2
+  fi
+done
+
+if [ "$RUN_AP" = "0" ] && [ "$RUN_BW" = "0" ]; then
+  echo "At least one of RUN_AP or RUN_BW must be 1." >&2
+  exit 2
+fi
+
+if [ ! -f "$MODEL_DIR/config.yaml" ]; then
+  echo "Missing model config: $MODEL_DIR/config.yaml" >&2
+  exit 2
+fi
 
 mkdir -p "$OUT_DIR"
+rm -f "$OUT_DIR/final_summary.json" "$OUT_DIR/final_table.csv"
 
 echo "===== Single ARCE evaluation ====="
 echo "Method: $METHOD_NAME"
@@ -33,6 +57,8 @@ echo "Output dir: $OUT_DIR"
 echo "RUN_AP: $RUN_AP"
 echo "RUN_BW: $RUN_BW"
 echo "MAX_FRAMES: $MAX_FRAMES"
+echo "NUM_WORKERS: $NUM_WORKERS"
+echo "SEED: $SEED"
 echo "Scenario: $SCENARIO"
 echo "Single-pass AP+BW: $SINGLE_PASS_AP_BW"
 echo
@@ -54,10 +80,12 @@ if [ "$RUN_AP" = "1" ] && [ "$RUN_BW" = "1" ] && [ "$SINGLE_PASS_AP_BW" = "1" ];
     --scenario "$SCENARIO" \
     --fusion_method intermediate \
     --max_frames "$MAX_FRAMES" \
+    --num_workers "$NUM_WORKERS" \
     --progress_interval "$PROGRESS_INTERVAL" \
     --window_size "$WINDOW_SIZE" \
     --window_stride "$WINDOW_STRIDE" \
     --warmup_frames "$WARMUP_FRAMES" \
+    --seed "$SEED" \
     "${EXTRA_ARGS[@]}" \
     2>&1 | tee "$OUT_DIR/online_eval.log"
 
@@ -68,12 +96,20 @@ if [ "$RUN_AP" = "1" ] && [ "$RUN_BW" = "1" ] && [ "$SINGLE_PASS_AP_BW" = "1" ];
 fi
 
 if [ "$RUN_AP" = "1" ]; then
+  rm -f "$OUT_DIR/ap.log" "$OUT_DIR/ap_summary.txt"
   echo
   echo "===== Run AP: $METHOD_NAME ====="
+  AP_EXTRA_ARGS=()
+  if [ "$GLOBAL_SORT_DETECTIONS" = "1" ]; then
+    AP_EXTRA_ARGS+=(--global_sort_detections)
+  fi
   python opencood/tools/inference.py \
     --model_dir "$MODEL_DIR" \
     --fusion_method intermediate \
     --max_frames "$MAX_FRAMES" \
+    --num_workers "$NUM_WORKERS" \
+    --seed "$SEED" \
+    "${AP_EXTRA_ARGS[@]}" \
     2>&1 | tee "$OUT_DIR/ap.log"
 
   echo
@@ -86,6 +122,7 @@ else
 fi
 
 if [ "$RUN_BW" = "1" ]; then
+  rm -f "$OUT_DIR/bw.json" "$OUT_DIR/bw.csv" "$OUT_DIR/bw.log"
   echo
   echo "===== Run BW: $METHOD_NAME ====="
   PYTHONUNBUFFERED=1 python opencood/tools/arce_bw_summary.py \
@@ -95,7 +132,9 @@ if [ "$RUN_BW" = "1" ]; then
     --max_frames "$MAX_FRAMES" \
     --out_json "$OUT_DIR/bw.json" \
     --out_csv "$OUT_DIR/bw.csv" \
+    --num_workers "$NUM_WORKERS" \
     --progress_interval "$PROGRESS_INTERVAL" \
+    --seed "$SEED" \
     2>&1 | tee "$OUT_DIR/bw.log"
 else
   echo
@@ -104,67 +143,12 @@ fi
 
 echo
 echo "===== Build single final summary ====="
-python - <<'PY'
-import csv
-import json
-import os
-import re
-
-out_dir = os.environ["OUT_DIR"]
-method = os.environ["METHOD_NAME"]
-
-ap_log = os.path.join(out_dir, "ap.log")
-bw_json = os.path.join(out_dir, "bw.json")
-
-ap_re = re.compile(
-    r"Average Precision at IOU 0\.3 is ([0-9.]+), "
-    r"The Average Precision at IOU 0\.5 is ([0-9.]+), "
-    r"The Average Precision at IOU 0\.7 is ([0-9.]+)"
-)
-
-ap03 = ap05 = ap07 = None
-if os.path.exists(ap_log):
-    with open(ap_log, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            m = ap_re.search(line)
-            if m:
-                ap03, ap05, ap07 = map(float, m.groups())
-
-bw = {}
-if os.path.exists(bw_json):
-    with open(bw_json, "r", encoding="utf-8") as f:
-        bw = json.load(f)
-
-row = {
-    "Method": method,
-    "AP@0.3-Markov": ap03,
-    "AP@0.5-Markov": ap05,
-    "AP@0.7-Markov": ap07,
-    "BW-Markov": bw.get("BW"),
-    "total_tx_MB": bw.get("total_tx_MB"),
-    "frame_count": bw.get("frame_count"),
-    "record_count": bw.get("record_count"),
-    "transmitted_link_count": bw.get("transmitted_link_count"),
-    "no_send_count": bw.get("no_send_count"),
-    "int4_count": bw.get("int4_count"),
-    "packed_int4_count": bw.get("packed_int4_count"),
-    "all_int4_packed": bw.get("all_int4_packed"),
-}
-
-summary_path = os.path.join(out_dir, "final_summary.json")
-with open(summary_path, "w", encoding="utf-8") as f:
-    json.dump(row, f, indent=2, ensure_ascii=False)
-
-csv_path = os.path.join(out_dir, "final_table.csv")
-with open(csv_path, "w", newline="", encoding="utf-8") as f:
-    writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-    writer.writeheader()
-    writer.writerow(row)
-
-print(json.dumps(row, indent=2, ensure_ascii=False))
-print("saved:", summary_path)
-print("saved:", csv_path)
-PY
+python opencood/tools/build_arce_eval_summary.py \
+  --out_dir "$OUT_DIR" \
+  --method "$METHOD_NAME" \
+  --scenario "$SCENARIO" \
+  --include_ap "$RUN_AP" \
+  --include_bw "$RUN_BW"
 
 echo
 echo "===== Finished single ARCE evaluation ====="

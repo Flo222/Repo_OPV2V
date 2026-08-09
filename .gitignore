@@ -143,3 +143,9 @@ spconv/
 pdf_dc2mab_patch/
 pdf_dc2mab_patch.zip
 audit_runs/
+
+# ============================================================
+# Generated experiment / audit artifacts
+# ============================================================
+outputs/
+review_packages/

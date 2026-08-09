@@ -1,2 +1,0 @@
-Method,AP@0.3-Markov,AP@0.5-Markov,AP@0.7-Markov,BW-Markov,total_tx_MB,frame_count,record_count,transmitted_link_count,no_send_count,int4_count
-ARCE-C2MAB,0.8156429576537578,0.8014590828269725,0.6329667630201683,0.0616731133640553,133.830656,2170,3444,3392,52,1379

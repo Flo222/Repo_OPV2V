@@ -167,15 +167,39 @@ def _proposal_light_summary(selected: Any) -> Dict[str, Any]:
         }
 
     if ctx is not None:
-        summary["context"] = {
-            "B_norm": float(getattr(ctx, "B_norm", 0.0)),
-            "p_loss": float(getattr(ctx, "p_loss", 0.0)),
-            "d_norm": float(getattr(ctx, "d_norm", 0.0)),
-            "ego_confidence": float(getattr(ctx, "ego_confidence", 0.0)),
-            "cache_quality": float(getattr(ctx, "cache_quality", 0.0)),
-            "complementarity": float(getattr(ctx, "complementarity", 0.0)),
-            "cav_confidence": float(getattr(ctx, "cav_confidence", 0.0)),
+        raw_vector = getattr(ctx, "vector", None)
+        if hasattr(raw_vector, "tolist"):
+            raw_vector = raw_vector.tolist()
+        if not isinstance(raw_vector, (list, tuple)):
+            raise RuntimeError(
+                "Selected proposal context does not expose a vector."
+            )
+        vector = [float(value) for value in raw_vector]
+        if len(vector) not in (6, 7):
+            raise RuntimeError(
+                "Selected proposal context must be 6D or 7D, got {}D.".format(
+                    len(vector)
+                )
+            )
+        names = (
+            "B_norm",
+            "p_loss",
+            "d_norm",
+            "ego_confidence",
+            "cache_quality",
+            "complementarity",
+            "cav_confidence",
+        )
+        context_summary = {
+            "vector": list(vector),
+            **dict(zip(names, vector)),
         }
+        info = getattr(ctx, "info", None)
+        if isinstance(info, dict):
+            for key in ("bandwidth_mbps", "latency_ms"):
+                if info.get(key) is not None:
+                    context_summary[key] = float(info[key])
+        summary["context"] = context_summary
 
     return summary
 
@@ -273,6 +297,17 @@ def enrich_selected_execution_record(
     ):
         if key in proposal_summary:
             record[key] = proposal_summary[key]
+
+    proposal_context = proposal_summary.get("context", {})
+    if isinstance(proposal_context, dict):
+        proposal_context_vector = proposal_context.get("vector")
+        if isinstance(proposal_context_vector, (list, tuple)):
+            # This is also the context passed to the selected-action reward
+            # update. Keep an explicit copy for decision/update audits.
+            record["context_vector"] = [
+                float(value) for value in proposal_context_vector
+            ]
+            record["context_vector_source"] = "selected_proposal"
 
     record["pdf_action"] = pdf_action.as_dict()
     record["system_budget"] = {
